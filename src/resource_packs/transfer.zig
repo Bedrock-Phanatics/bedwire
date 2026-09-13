@@ -1,5 +1,6 @@
 const std = @import("std");
 const protocol = @import("bedrock_protocol");
+
 const Limits = @import("../framing/limits.zig").DecodeLimits;
 
 pub const Metadata = struct {
@@ -17,6 +18,7 @@ pub const Metadata = struct {
         if (!std.unicode.utf8ValidateSlice(self.pack_id)) return error.InvalidUtf8;
         if (self.size > limits.max_resource_pack_bytes or self.chunk_size > limits.protocol.max_byte_array_bytes) return error.LimitExceeded;
         if (self.size == 0 or self.chunk_size == 0) return error.InvalidPack;
+
         const count = self.size / self.chunk_size + @intFromBool(self.size % self.chunk_size != 0);
         if (count > std.math.maxInt(i32) or count != self.chunk_count) return error.InvalidPack;
         if (self.pack_type < 1 or self.pack_type > 8) return error.InvalidPack;
@@ -30,9 +32,19 @@ pub const Metadata = struct {
         const size = try reader.readU64();
         const hash = try reader.readByteArray();
         if (hash.len != 32) return error.InvalidPack;
-        const result: Metadata = .{ .pack_id = id, .chunk_size = chunk_size, .chunk_count = count, .size = size, .hash = hash[0..32].*, .premium = try reader.readBool(), .pack_type = try reader.readU8() };
+
+        const result: Metadata = .{
+            .pack_id = id,
+            .chunk_size = chunk_size,
+            .chunk_count = count,
+            .size = size,
+            .hash = hash[0..32].*,
+            .premium = try reader.readBool(),
+            .pack_type = try reader.readU8(),
+        };
         try reader.finish();
         try result.validate(limits);
+
         return result;
     }
 
@@ -44,6 +56,7 @@ pub const Metadata = struct {
         try self.validate(limits);
         if (self.encodedSize() > limits.protocol.max_packet_bytes) return error.LimitExceeded;
         if (self.encodedSize() > dest.len) return error.NoSpaceLeft;
+
         var writer = protocol.Writer.init(dest);
         try writer.writeString(self.pack_id);
         try writer.writeU32(self.chunk_size);
@@ -52,16 +65,10 @@ pub const Metadata = struct {
         try writer.writeByteArray(&self.hash);
         try writer.writeBool(self.premium);
         try writer.writeU8(self.pack_type);
+
         return dest[0..writer.cursor];
     }
 };
-
-fn stringSize(len: usize) usize {
-    var bytes: [10]u8 = undefined;
-    var writer = protocol.Writer.init(&bytes);
-    writer.writeVarU64(len) catch unreachable;
-    return len + writer.cursor;
-}
 
 pub const Chunk = struct {
     pack_id: []const u8,
@@ -71,8 +78,14 @@ pub const Chunk = struct {
 
     pub fn decode(bytes: []const u8, limits: Limits) !Chunk {
         var reader = try protocol.Reader.init(bytes, limits.protocol);
-        const result: Chunk = .{ .pack_id = try reader.readString(), .index = try reader.readU32(), .offset = try reader.readU64(), .data = try reader.readByteArray() };
+        const result: Chunk = .{
+            .pack_id = try reader.readString(),
+            .index = try reader.readU32(),
+            .offset = try reader.readU64(),
+            .data = try reader.readByteArray(),
+        };
         try reader.finish();
+
         return result;
     }
 
@@ -82,17 +95,22 @@ pub const Chunk = struct {
 
     /// Input slices must not overlap destination. Failure leaves destination unchanged.
     pub fn encode(self: Chunk, dest: []u8, limits: Limits) ![]u8 {
-        const within_limits = self.pack_id.len <= limits.protocol.max_string_bytes and self.data.len <= limits.protocol.max_byte_array_bytes and
-            self.pack_id.len <= std.math.maxInt(u32) and self.data.len <= std.math.maxInt(u32);
+        const within_limits =
+            self.pack_id.len <= limits.protocol.max_string_bytes and
+            self.data.len <= limits.protocol.max_byte_array_bytes and
+            self.pack_id.len <= std.math.maxInt(u32) and
+            self.data.len <= std.math.maxInt(u32);
         if (!within_limits) return error.LimitExceeded;
         if (!std.unicode.utf8ValidateSlice(self.pack_id)) return error.InvalidUtf8;
         if (self.size() > limits.protocol.max_packet_bytes) return error.LimitExceeded;
         if (self.size() > dest.len) return error.NoSpaceLeft;
+
         var writer = protocol.Writer.init(dest);
         try writer.writeString(self.pack_id);
         try writer.writeU32(self.index);
         try writer.writeU64(self.offset);
         try writer.writeByteArray(self.data);
+
         return dest[0..writer.cursor];
     }
 };
@@ -120,9 +138,11 @@ pub const Request = struct {
         if (!std.unicode.utf8ValidateSlice(self.pack_id)) return error.InvalidUtf8;
         if (self.size() > limits.protocol.max_packet_bytes) return error.LimitExceeded;
         if (self.size() > dest.len) return error.NoSpaceLeft;
+
         var writer = protocol.Writer.init(dest);
         try writer.writeString(self.pack_id);
         try writer.writeU32(self.index);
+
         return dest[0..writer.cursor];
     }
 };
@@ -140,6 +160,7 @@ pub const Transfer = struct {
 
     pub fn init(allocator: std.mem.Allocator, metadata: Metadata, limits: Limits) !Transfer {
         try metadata.validate(limits);
+
         var owned = metadata;
         owned.pack_id = try allocator.dupe(u8, metadata.pack_id);
         return .{ .allocator = allocator, .metadata = owned };
@@ -158,14 +179,20 @@ pub const Transfer = struct {
     pub fn accept(self: *Transfer, chunk: Chunk) !void {
         if (self.failed or self.complete) return error.InvalidState;
         errdefer self.failed = true;
+
         const expected = @min(self.metadata.chunk_size, self.metadata.size - self.offset);
-        const valid = std.mem.eql(u8, chunk.pack_id, self.metadata.pack_id) and chunk.index == self.next_index and
-            chunk.offset == self.offset and chunk.data.len == expected;
+        const valid =
+            std.mem.eql(u8, chunk.pack_id, self.metadata.pack_id) and
+            chunk.index == self.next_index and
+            chunk.offset == self.offset and
+            chunk.data.len == expected;
         if (!valid) return error.InvalidChunk;
+
         var hash = self.hash;
         hash.update(chunk.data);
         const done = self.next_index + 1 == self.metadata.chunk_count;
         if (done and !std.crypto.timing_safe.eql([32]u8, hash.finalResult(), self.metadata.hash)) return error.IntegrityMismatch;
+
         self.hash = hash;
         self.next_index += 1;
         self.offset += chunk.data.len;
@@ -175,9 +202,26 @@ pub const Transfer = struct {
     /// Validates a server-side chunk request and returns a borrowed archive slice.
     pub fn serve(metadata: Metadata, archive: []const u8, req: Request, limits: Limits) !Chunk {
         try metadata.validate(limits);
-        const valid = std.mem.eql(u8, metadata.pack_id, req.pack_id) and req.index < metadata.chunk_count and archive.len == metadata.size;
+        const valid =
+            std.mem.eql(u8, metadata.pack_id, req.pack_id) and
+            req.index < metadata.chunk_count and
+            archive.len == metadata.size;
         if (!valid) return error.InvalidChunk;
+
         const offset: usize = @intCast(@as(u64, req.index) * metadata.chunk_size);
-        return .{ .pack_id = metadata.pack_id, .index = req.index, .offset = offset, .data = archive[offset..][0..@min(metadata.chunk_size, archive.len - offset)] };
+        return .{
+            .pack_id = metadata.pack_id,
+            .index = req.index,
+            .offset = offset,
+            .data = archive[offset..][0..@min(metadata.chunk_size, archive.len - offset)],
+        };
     }
 };
+
+fn stringSize(len: usize) usize {
+    var bytes: [10]u8 = undefined;
+    var writer = protocol.Writer.init(&bytes);
+    writer.writeVarU64(len) catch unreachable;
+
+    return len + writer.cursor;
+}

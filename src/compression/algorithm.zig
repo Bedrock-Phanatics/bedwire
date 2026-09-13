@@ -1,5 +1,8 @@
 const protocol = @import("bedrock_protocol");
+
+const snappy = @import("snappy.zig");
 const Workspace = @import("flate.zig").Workspace;
+
 pub const Algorithm = protocol.batch.Compression;
 
 pub const Settings = struct {
@@ -19,6 +22,7 @@ pub const Settings = struct {
             if (input.len > limits.max_decompressed_batch_bytes) return error.LimitExceeded;
             return input;
         }
+
         if (input.len == 0) return error.EndOfStream;
         const algorithm: Algorithm = switch (input[0]) {
             0 => .deflate,
@@ -26,14 +30,17 @@ pub const Settings = struct {
             0xff => .none,
             else => return error.UnsupportedCompression,
         };
+
         if (algorithm == .none) {
             if (input.len - 1 > limits.max_decompressed_batch_bytes) return error.LimitExceeded;
             return input[1..];
         }
+
         if (algorithm != self.algorithm) return error.UnexpectedCompression;
+
         return switch (algorithm) {
             .deflate => workspace.decompress(input[1..], limits),
-            .snappy => @import("snappy.zig").decompress(input[1..], workspace.output, limits),
+            .snappy => snappy.decompress(input[1..], workspace.output, limits),
             .none => unreachable,
         };
     }

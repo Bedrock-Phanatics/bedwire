@@ -9,9 +9,13 @@ pub const DecodeLimits = struct {
     max_resource_packs: usize = 128,
 
     pub fn validate(self: DecodeLimits) !void {
-        const valid = self.protocol.valid() and self.max_jwt_header_bytes > 0 and
-            self.max_jwt_payload_bytes > 0 and self.max_chain_length > 0 and
-            self.max_resource_pack_bytes > 0 and self.max_resource_packs > 0;
+        const valid =
+            self.protocol.valid() and
+            self.max_jwt_header_bytes > 0 and
+            self.max_jwt_payload_bytes > 0 and
+            self.max_chain_length > 0 and
+            self.max_resource_pack_bytes > 0 and
+            self.max_resource_packs > 0;
         if (!valid) return error.InvalidLimits;
     }
 };
