@@ -6,12 +6,12 @@ import tempfile
 
 root = pathlib.Path(__file__).resolve().parents[2]
 command = [
-    "zig", "run", "-OReleaseSafe", "--dep", "zigrock",
+    "zig", "run", "-OReleaseSafe", "--dep", "bedwire",
     "-Mroot=tools/interop/export.zig", "-OReleaseSafe", "--dep", "bedrock_protocol",
-    "-Mzigrock=src/root.zig", "-OReleaseSafe", "-Mbedrock_protocol=../zig-protocol/src/root.zig",
+    "-Mbedwire=src/root.zig", "-OReleaseSafe", "-Mbedrock_protocol=../zig-protocol/src/root.zig",
 ]
 encoded = subprocess.run(command, cwd=root, capture_output=True, check=True).stderr
-with tempfile.TemporaryDirectory(prefix="zigrock-interop-") as temporary:
+with tempfile.TemporaryDirectory(prefix="bedwire-interop-") as temporary:
     packet = pathlib.Path(temporary) / "snappy.bin"
     packet.write_bytes(bytes.fromhex(encoded.decode()))
     result = subprocess.run(

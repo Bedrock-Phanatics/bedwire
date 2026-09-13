@@ -1,10 +1,10 @@
 const std = @import("std");
-const zigrock = @import("zigrock");
+const bedwire = @import("bedwire");
 
 test "raw DEFLATE round trip, truncation, bomb, and allocator cleanup" {
-    const encoder = try zigrock.FlateWorkspace.create(std.testing.allocator, 4096);
+    const encoder = try bedwire.FlateWorkspace.create(std.testing.allocator, 4096);
     defer encoder.destroy();
-    const decoder = try zigrock.FlateWorkspace.create(std.testing.allocator, 4096);
+    const decoder = try bedwire.FlateWorkspace.create(std.testing.allocator, 4096);
     defer decoder.destroy();
     const input = "bedrock network " ** 64;
     const compressed = try encoder.compress(input);
@@ -20,7 +20,7 @@ test "raw DEFLATE round trip, truncation, bomb, and allocator cleanup" {
 }
 
 fn allocationCase(allocator: std.mem.Allocator) !void {
-    const workspace = try zigrock.FlateWorkspace.create(allocator, 100);
+    const workspace = try bedwire.FlateWorkspace.create(allocator, 100);
     defer workspace.destroy();
 }
 

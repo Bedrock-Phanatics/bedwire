@@ -1,8 +1,8 @@
 const std = @import("std");
-const zigrock = @import("zigrock");
+const bedwire = @import("bedwire");
 const fixtures = @import("jwt.zig");
 
-pub fn makeChain(allocator: std.mem.Allocator, keys: [3]zigrock.spki.Ecdsa.KeyPair) ![]u8 {
+pub fn makeChain(allocator: std.mem.Allocator, keys: [3]bedwire.spki.Ecdsa.KeyPair) ![]u8 {
     var tokens: [3][]u8 = undefined;
     var initialized: usize = 0;
     defer for (tokens[0..initialized]) |token| allocator.free(token);
@@ -17,8 +17,8 @@ pub fn makeChain(allocator: std.mem.Allocator, keys: [3]zigrock.spki.Ecdsa.KeyPa
     return std.fmt.allocPrint(allocator, "{{\"chain\":[\"{s}\",\"{s}\",\"{s}\"]}}", .{ tokens[0], tokens[1], tokens[2] });
 }
 
-fn verifyCase(allocator: std.mem.Allocator, chain: []const u8, client: []const u8, root: zigrock.spki.Ecdsa.PublicKey) !void {
-    var identity = try zigrock.auth.verifyLegacy(allocator, chain, client, .{ .now = 100, .root = root }, .{});
+fn verifyCase(allocator: std.mem.Allocator, chain: []const u8, client: []const u8, root: bedwire.spki.Ecdsa.PublicKey) !void {
+    var identity = try bedwire.auth.verifyLegacy(allocator, chain, client, .{ .now = 100, .root = root }, .{});
     defer identity.deinit();
     try std.testing.expectEqualStrings("Steve", identity.display_name);
     try std.testing.expect(identity.online);
@@ -26,7 +26,7 @@ fn verifyCase(allocator: std.mem.Allocator, chain: []const u8, client: []const u
 
 test "online chain anchors root and binds client-data; allocation cleanup" {
     const a = std.testing.allocator;
-    const keys = [3]zigrock.spki.Ecdsa.KeyPair{
+    const keys = [3]bedwire.spki.Ecdsa.KeyPair{
         try .generateDeterministic(@splat(1)),
         try .generateDeterministic(@splat(2)),
         try .generateDeterministic(@splat(3)),
@@ -37,33 +37,33 @@ test "online chain anchors root and binds client-data; allocation cleanup" {
     defer a.free(client);
     try verifyCase(a, chain, client, keys[1].public_key);
     try std.testing.checkAllAllocationFailures(a, verifyCase, .{ chain, client, keys[1].public_key });
-    try std.testing.expectError(error.UntrustedChain, zigrock.auth.verifyLegacy(a, chain, client, .{ .now = 100 }, .{}));
+    try std.testing.expectError(error.UntrustedChain, bedwire.auth.verifyLegacy(a, chain, client, .{ .now = 100 }, .{}));
     const forged = try fixtures.sign(a, keys[2], "{\"alg\":\"ES384\"}", "{}");
     defer a.free(forged);
-    try std.testing.expectError(error.InvalidSignature, zigrock.auth.verifyLegacy(a, chain, forged, .{ .now = 100, .root = keys[1].public_key }, .{}));
-    try std.testing.expectError(error.ExpiredToken, zigrock.auth.verifyLegacy(a, chain, client, .{ .now = 201, .root = keys[1].public_key }, .{}));
+    try std.testing.expectError(error.InvalidSignature, bedwire.auth.verifyLegacy(a, chain, forged, .{ .now = 100, .root = keys[1].public_key }, .{}));
+    try std.testing.expectError(error.ExpiredToken, bedwire.auth.verifyLegacy(a, chain, client, .{ .now = 201, .root = keys[1].public_key }, .{}));
 }
 
 test "OIDC supplied key, issuer, audience, and cpk binding" {
     const a = std.testing.allocator;
-    const key = try zigrock.spki.Ecdsa.KeyPair.generateDeterministic(@splat(4));
-    const client_key = try zigrock.spki.Ecdsa.KeyPair.generateDeterministic(@splat(5));
+    const key = try bedwire.spki.Ecdsa.KeyPair.generateDeterministic(@splat(4));
+    const client_key = try bedwire.spki.Ecdsa.KeyPair.generateDeterministic(@splat(5));
     const payload = try std.fmt.allocPrint(a, "{{\"exp\":200,\"iss\":\"issuer\",\"aud\":\"audience\",\"cpk\":\"{s}\",\"xname\":\"Steve\",\"mid\":\"b1b01c3d-6df3-3635-b286-9a2cfbcf76be\",\"xid\":\"1234\"}}", .{fixtures.public(client_key.public_key)});
     defer a.free(payload);
     const token = try fixtures.sign(a, key, "{\"alg\":\"ES384\",\"kid\":\"one\"}", payload);
     defer a.free(token);
     const client = try fixtures.sign(a, client_key, "{\"alg\":\"ES384\"}", "{}");
     defer a.free(client);
-    var policy: zigrock.auth.OidcPolicy = .{ .now = 100, .issuer = "issuer", .audience = "audience", .keys = &.{.{ .kid = "one", .key = key.public_key }} };
-    var identity = try zigrock.auth.verifyOidc(a, token, client, policy, .{});
+    var policy: bedwire.auth.OidcPolicy = .{ .now = 100, .issuer = "issuer", .audience = "audience", .keys = &.{.{ .kid = "one", .key = key.public_key }} };
+    var identity = try bedwire.auth.verifyOidc(a, token, client, policy, .{});
     defer identity.deinit();
     policy.audience = "wrong";
-    try std.testing.expectError(error.InvalidClaims, zigrock.auth.verifyOidc(a, token, client, policy, .{}));
+    try std.testing.expectError(error.InvalidClaims, bedwire.auth.verifyOidc(a, token, client, policy, .{}));
 }
 
 test "offline chain requires explicit policy and strips untrusted XUID" {
     const a = std.testing.allocator;
-    const key = try zigrock.spki.Ecdsa.KeyPair.generateDeterministic(@splat(8));
+    const key = try bedwire.spki.Ecdsa.KeyPair.generateDeterministic(@splat(8));
     const header = try std.fmt.allocPrint(a, "{{\"alg\":\"ES384\",\"x5u\":\"{s}\"}}", .{fixtures.public(key.public_key)});
     defer a.free(header);
     const payload = try std.fmt.allocPrint(a, "{{\"exp\":200,\"identityPublicKey\":\"{s}\",\"extraData\":{{\"displayName\":\"Offline\",\"identity\":\"b1b01c3d-6df3-3635-b286-9a2cfbcf76be\",\"XUID\":\"spoofed\"}}}}", .{fixtures.public(key.public_key)});
@@ -74,8 +74,8 @@ test "offline chain requires explicit policy and strips untrusted XUID" {
     defer a.free(chain);
     const client = try fixtures.sign(a, key, header, "{}");
     defer a.free(client);
-    try std.testing.expectError(error.UntrustedChain, zigrock.auth.verifyLegacy(a, chain, client, .{ .now = 100 }, .{}));
-    var identity = try zigrock.auth.verifyLegacy(a, chain, client, .{ .now = 100, .allow_offline = true }, .{});
+    try std.testing.expectError(error.UntrustedChain, bedwire.auth.verifyLegacy(a, chain, client, .{ .now = 100 }, .{}));
+    var identity = try bedwire.auth.verifyLegacy(a, chain, client, .{ .now = 100, .allow_offline = true }, .{});
     defer identity.deinit();
     try std.testing.expect(!identity.online);
     try std.testing.expectEqualStrings("", identity.xuid);

@@ -1,5 +1,5 @@
 const std = @import("std");
-const zigrock = @import("zigrock");
+const bedwire = @import("bedwire");
 
 const Mock = struct {
     input: []const u8 = &.{ 0xfe, 6, 0xc1, 1, 0, 0, 0, 1 },
@@ -17,11 +17,11 @@ const Mock = struct {
         self.closed = true;
     }
 };
-const limits: zigrock.DecodeLimits = .{ .protocol = .{ .max_batch_bytes = 4096, .max_decompressed_batch_bytes = 4096 } };
+const limits: bedwire.DecodeLimits = .{ .protocol = .{ .max_batch_bytes = 4096, .max_decompressed_batch_bytes = 4096 } };
 
 test "send records only the last successfully sent packet and preserves it for empty batches" {
     var mock: Mock = .{};
-    var conn = try zigrock.Connection(Mock).init(std.testing.allocator, &mock, .server, limits);
+    var conn = try bedwire.Connection(Mock).init(std.testing.allocator, &mock, .server, limits);
     defer conn.deinit();
     conn.state = .in_game;
     try conn.send(&.{ &.{9}, &.{10} });
@@ -34,28 +34,28 @@ test "send records only the last successfully sent packet and preserves it for e
 
 test "both compression algorithms carry authenticated encrypted sessions end to end" {
     const a = std.testing.allocator;
-    const keys = [3]zigrock.spki.Ecdsa.KeyPair{ try .generateDeterministic(@splat(1)), try .generateDeterministic(@splat(2)), try .generateDeterministic(@splat(3)) };
-    const server_key = try zigrock.spki.Ecdsa.KeyPair.generateDeterministic(@splat(4));
+    const keys = [3]bedwire.spki.Ecdsa.KeyPair{ try .generateDeterministic(@splat(1)), try .generateDeterministic(@splat(2)), try .generateDeterministic(@splat(3)) };
+    const server_key = try bedwire.spki.Ecdsa.KeyPair.generateDeterministic(@splat(4));
     const chain = try @import("../auth/chain.zig").makeChain(a, keys);
     defer a.free(chain);
-    const client_data = try zigrock.login.sign(a, keys[0], "{\"alg\":\"ES384\"}", "{}", .{});
+    const client_data = try bedwire.login.sign(a, keys[0], "{\"alg\":\"ES384\"}", "{}", .{});
     defer a.free(client_data);
-    const handshake = try zigrock.login.serverHandshake(a, server_key, @splat(9), .{});
+    const handshake = try bedwire.login.serverHandshake(a, server_key, @splat(9), .{});
     defer a.free(handshake);
-    for ([_]zigrock.compression.Algorithm{ .deflate, .snappy }) |algorithm| {
+    for ([_]bedwire.compression.Algorithm{ .deflate, .snappy }) |algorithm| {
         var client_carrier: Mock = .{};
         var server_carrier: Mock = .{};
-        var client = try zigrock.Connection(Mock).init(a, &client_carrier, .client, limits);
+        var client = try bedwire.Connection(Mock).init(a, &client_carrier, .client, limits);
         defer client.deinit();
-        var server = try zigrock.Connection(Mock).init(a, &server_carrier, .server, limits);
+        var server = try bedwire.Connection(Mock).init(a, &server_carrier, .server, limits);
         defer server.deinit();
         try client.send(&.{&.{ 0xc1, 1, 0, 0, 3, 0xb0 }});
         server_carrier.input = client_carrier.output[0..client_carrier.len];
         _ = try server.receive();
         var settings: [12]u8 = undefined;
-        var settings_writer = zigrock.protocol.Writer.init(&settings);
+        var settings_writer = bedwire.protocol.Writer.init(&settings);
         try settings_writer.writeVarU32(143);
-        try zigrock.protocol.codecs.network_settings.encode(&settings_writer, .{ .compression_threshold = 0, .compression_algorithm = @intFromEnum(algorithm), .client_throttle = false, .client_throttle_threshold = 0, .client_throttle_scalar = 0 });
+        try bedwire.protocol.codecs.network_settings.encode(&settings_writer, .{ .compression_threshold = 0, .compression_algorithm = @intFromEnum(algorithm), .client_throttle = false, .client_throttle_threshold = 0, .client_throttle_scalar = 0 });
         try server.send(&.{settings_writer.written()});
         try server.enableCompression(algorithm, 0);
         client_carrier.input = server_carrier.output[0..server_carrier.len];
@@ -68,15 +68,15 @@ test "both compression algorithms carry authenticated encrypted sessions end to 
         var identity = try server.authenticateLegacy(a, chain, client_data, .{ .now = 100, .root = keys[1].public_key });
         defer identity.deinit();
         var packet_storage: [1024]u8 = undefined;
-        var writer = zigrock.protocol.Writer.init(&packet_storage);
+        var writer = bedwire.protocol.Writer.init(&packet_storage);
         try writer.writeU8(3);
         try writer.writeString(handshake);
         try server.send(&.{writer.written()});
         try server.installServerCrypto(server_key.secret_key, @splat(9));
         client_carrier.input = server_carrier.output[0..server_carrier.len];
         var packets = try client.receive();
-        const envelope = try zigrock.protocol.packet.decode((try packets.next()).?, .{});
-        var reader = try zigrock.protocol.Reader.init(envelope.payload, .{});
+        const envelope = try bedwire.protocol.packet.decode((try packets.next()).?, .{});
+        var reader = try bedwire.protocol.Reader.init(envelope.payload, .{});
         try client.acceptServerHandshake(a, try reader.readString(), keys[0].secret_key);
         try client.send(&.{&.{4}});
         try client.advance(.resource_packs);
@@ -100,13 +100,13 @@ test "both compression algorithms carry authenticated encrypted sessions end to 
 
 test "forged client-data closes authenticating connection" {
     const a = std.testing.allocator;
-    const keys = [3]zigrock.spki.Ecdsa.KeyPair{ try .generateDeterministic(@splat(1)), try .generateDeterministic(@splat(2)), try .generateDeterministic(@splat(3)) };
+    const keys = [3]bedwire.spki.Ecdsa.KeyPair{ try .generateDeterministic(@splat(1)), try .generateDeterministic(@splat(2)), try .generateDeterministic(@splat(3)) };
     const chain = try @import("../auth/chain.zig").makeChain(a, keys);
     defer a.free(chain);
-    const forged = try zigrock.login.sign(a, keys[2], "{\"alg\":\"ES384\"}", "{}", .{});
+    const forged = try bedwire.login.sign(a, keys[2], "{\"alg\":\"ES384\"}", "{}", .{});
     defer a.free(forged);
     var mock: Mock = .{ .input = &.{ 0xfe, 0xff, 1, 1 } };
-    var conn = try zigrock.Connection(Mock).init(a, &mock, .server, limits);
+    var conn = try bedwire.Connection(Mock).init(a, &mock, .server, limits);
     defer conn.deinit();
     conn.state = .authenticating;
     conn.compression.enabled = true;
@@ -116,16 +116,16 @@ test "forged client-data closes authenticating connection" {
 }
 
 test "steady-state encrypted Flate and Snappy make no allocator calls" {
-    for ([_]zigrock.compression.Algorithm{ .deflate, .snappy }) |algorithm| {
+    for ([_]bedwire.compression.Algorithm{ .deflate, .snappy }) |algorithm| {
         var allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
         var mock: Mock = .{};
-        var conn = try zigrock.Connection(Mock).init(allocator.allocator(), &mock, .server, limits);
+        var conn = try bedwire.Connection(Mock).init(allocator.allocator(), &mock, .server, limits);
         defer conn.deinit();
         allocator.fail_index = allocator.alloc_index;
         allocator.resize_fail_index = allocator.resize_index;
         conn.state = .in_game;
         conn.compression = .{ .enabled = true, .algorithm = algorithm, .threshold = 0 };
-        conn.crypto = zigrock.SessionCrypto.init(@splat(0x42));
+        conn.crypto = bedwire.SessionCrypto.init(@splat(0x42));
         const packet = [_]u8{9} ++ ([_]u8{'a'} ** 256);
         for (0..100) |_| {
             try conn.send(&.{&packet});
@@ -139,7 +139,7 @@ test "steady-state encrypted Flate and Snappy make no allocator calls" {
 
 test "control payload validation, duplicate negotiation and OIDC state gate" {
     var mock: Mock = .{ .input = &.{ 0xfe, 2, 0xc1, 1 } };
-    var conn = try zigrock.Connection(Mock).init(std.testing.allocator, &mock, .server, limits);
+    var conn = try bedwire.Connection(Mock).init(std.testing.allocator, &mock, .server, limits);
     defer conn.deinit();
     try std.testing.expectError(error.InvalidState, conn.authenticateOidc(std.testing.allocator, "", "", .{ .now = 0, .issuer = "", .audience = "", .keys = &.{} }));
     try std.testing.expectError(error.EndOfStream, conn.receive());
@@ -148,7 +148,7 @@ test "control payload validation, duplicate negotiation and OIDC state gate" {
 
 test "Snappy accepts compressible batches larger than the wire limit" {
     var mock: Mock = .{};
-    var conn = try zigrock.Connection(Mock).init(std.testing.allocator, &mock, .server, .{ .protocol = .{ .max_batch_bytes = 128, .max_decompressed_batch_bytes = 1024 } });
+    var conn = try bedwire.Connection(Mock).init(std.testing.allocator, &mock, .server, .{ .protocol = .{ .max_batch_bytes = 128, .max_decompressed_batch_bytes = 1024 } });
     defer conn.deinit();
     conn.state = .in_game;
     conn.compression = .{ .enabled = true, .algorithm = .snappy, .threshold = 0 };
@@ -162,7 +162,7 @@ test "Snappy accepts compressible batches larger than the wire limit" {
 
 test "connection negotiates plaintext settings then uses compression framing" {
     var mock: Mock = .{};
-    var conn = try zigrock.Connection(Mock).init(std.testing.allocator, &mock, .server, limits);
+    var conn = try bedwire.Connection(Mock).init(std.testing.allocator, &mock, .server, limits);
     defer conn.deinit();
     var packets = try conn.receive();
     try std.testing.expectEqualSlices(u8, &.{ 0xc1, 1, 0, 0, 0, 1 }, (try packets.next()).?);
@@ -179,7 +179,7 @@ test "connection negotiates plaintext settings then uses compression framing" {
 
 fn allocationCase(allocator: std.mem.Allocator) !void {
     var mock: Mock = .{};
-    var conn = try zigrock.Connection(Mock).init(allocator, &mock, .server, limits);
+    var conn = try bedwire.Connection(Mock).init(allocator, &mock, .server, limits);
     defer conn.deinit();
 }
 

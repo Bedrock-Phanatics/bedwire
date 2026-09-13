@@ -1,5 +1,5 @@
 const std = @import("std");
-const zigrock = @import("zigrock");
+const bedwire = @import("bedwire");
 const Transport = struct {
     pub fn receive(_: *@This()) !struct { data: []const u8, reliability: enum { reliable, unreliable } } {
         return .{ .data = &.{0xfe}, .reliability = .reliable };
@@ -9,7 +9,7 @@ const Transport = struct {
 };
 test "NetherNet carrier forwards reliable data" {
     var transport: Transport = .{};
-    var carrier: zigrock.carrier.NetherNet(Transport) = .{ .connection = &transport };
+    var carrier: bedwire.carrier.NetherNet(Transport) = .{ .connection = &transport };
     try std.testing.expectEqualSlices(u8, &.{0xfe}, try carrier.receive());
     try carrier.send(&.{0xfe});
     carrier.close();

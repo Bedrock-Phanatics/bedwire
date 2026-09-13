@@ -1,7 +1,7 @@
 .{
-    .name = .zigrock,
+    .name = .bedwire,
     .version = "0.1.0",
-    .fingerprint = 0xc790c16a76d12277,
+    .fingerprint = 0x24f12bffadd8faea,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{ .bedrock_protocol = .{ .path = "../zig-protocol" } },
     .paths = .{ "build.zig", "build.zig.zon", "src", "tests", "tools", "README.md" },

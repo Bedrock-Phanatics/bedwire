@@ -1,13 +1,13 @@
 const std = @import("std");
-const zigrock = @import("zigrock");
+const bedwire = @import("bedwire");
 
 test "CTR matches stdlib across every block remainder and packet length" {
     const key = [_]u8{0x37} ** 32;
     for (0..16) |remainder| {
         for (0..65) |len| {
-            var sender = zigrock.SessionCrypto.init(key);
+            var sender = bedwire.SessionCrypto.init(key);
             defer sender.deinit();
-            var receiver = zigrock.SessionCrypto.init(key);
+            var receiver = bedwire.SessionCrypto.init(key);
             defer receiver.deinit();
             var plain: [96]u8 = undefined;
             var wire: [96]u8 = undefined;
@@ -39,9 +39,9 @@ test "CTR matches stdlib across every block remainder and packet length" {
 
 test "continuous CTR matches stdlib with independent LE checksum counters" {
     const key = [_]u8{0x42} ** 32;
-    var sender = zigrock.SessionCrypto.init(key);
+    var sender = bedwire.SessionCrypto.init(key);
     defer sender.deinit();
-    var receiver = zigrock.SessionCrypto.init(key);
+    var receiver = bedwire.SessionCrypto.init(key);
     defer receiver.deinit();
     var plain: [64]u8 = undefined;
     var wire: [64]u8 = undefined;
@@ -72,8 +72,8 @@ test "continuous CTR matches stdlib with independent LE checksum counters" {
 
 test "every ciphertext bit corruption fails closed without modifying buffer" {
     for (0..88) |bit| {
-        var sender = zigrock.SessionCrypto.init(@splat(1));
-        var receiver = zigrock.SessionCrypto.init(@splat(1));
+        var sender = bedwire.SessionCrypto.init(@splat(1));
+        var receiver = bedwire.SessionCrypto.init(@splat(1));
         var bytes = [_]u8{ 1, 2, 3 } ++ ([_]u8{0} ** 8);
         _ = try sender.seal(&bytes, 3);
         bytes[bit / 8] ^= @as(u8, 1) << @intCast(bit % 8);
@@ -85,7 +85,7 @@ test "every ciphertext bit corruption fails closed without modifying buffer" {
 }
 
 test "counter exhaustion, short destination and truncated checksum are bounded" {
-    var crypto = zigrock.SessionCrypto.init(@splat(1));
+    var crypto = bedwire.SessionCrypto.init(@splat(1));
     var bytes = [_]u8{0xaa} ** 16;
     try std.testing.expectError(error.NoSpaceLeft, crypto.seal(bytes[0..7], 0));
     try std.testing.expectEqual(@as(u64, 0), crypto.send_counter);

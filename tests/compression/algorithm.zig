@@ -1,13 +1,13 @@
 const std = @import("std");
-const zigrock = @import("zigrock");
+const bedwire = @import("bedwire");
 
 test "compression headers and threshold boundaries" {
-    const settings: zigrock.compression.Settings = .{ .enabled = true, .threshold = 4 };
+    const settings: bedwire.compression.Settings = .{ .enabled = true, .threshold = 4 };
     try std.testing.expectEqual(.none, settings.selected(3));
     try std.testing.expectEqual(.deflate, settings.selected(4));
     try std.testing.expectEqual(.deflate, settings.selected(5));
-    try std.testing.expectEqual(.deflate, (zigrock.compression.Settings{ .enabled = true, .threshold = 0 }).selected(0));
-    const workspace = try zigrock.FlateWorkspace.create(std.testing.allocator, 64);
+    try std.testing.expectEqual(.deflate, (bedwire.compression.Settings{ .enabled = true, .threshold = 0 }).selected(0));
+    const workspace = try bedwire.FlateWorkspace.create(std.testing.allocator, 64);
     defer workspace.destroy();
     try std.testing.expectEqualSlices(u8, &.{ 1, 1 }, try settings.decode(&.{ 0xff, 1, 1 }, workspace, .{}));
     try std.testing.expectError(error.UnsupportedCompression, settings.decode(&.{2}, workspace, .{}));

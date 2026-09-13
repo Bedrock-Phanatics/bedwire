@@ -1,8 +1,8 @@
-# zigrock
+# bedwire
 
 Minecraft: Bedrock Edition session networking for Zig 0.16.0.
 
-`zigrock` bridges transport carriers (such as RakNet or NetherNet) and packet codecs (`bedrock_protocol`). It handles batch framing, compression, ECDH key exchange, AES-256-CTR session encryption, Mojang/OIDC authentication, and session state enforcement.
+`bedwire` bridges transport carriers (such as RakNet or NetherNet) and packet codecs (`bedrock_protocol`). It handles batch framing, compression, ECDH key exchange, AES-256-CTR session encryption, Mojang/OIDC authentication, and session state enforcement.
 
 ## Features
 
@@ -21,12 +21,12 @@ Minecraft: Bedrock Edition session networking for Zig 0.16.0.
 
 ## Installation
 
-Add `zigrock` to `build.zig.zon`:
+Add `bedwire` to `build.zig.zon`:
 
 ```zig
 .dependencies = .{
-    .zigrock = .{
-        .url = "https://github.com/Bedrock-Phanatics/zigrock/archive/<commit>.tar.gz",
+    .bedwire = .{
+        .url = "https://github.com/Bedrock-Phanatics/bedwire/archive/<commit>.tar.gz",
         .hash = "...",
     },
 },
@@ -35,18 +35,18 @@ Add `zigrock` to `build.zig.zon`:
 Add the module dependency in `build.zig`:
 
 ```zig
-const zigrock = b.dependency("zigrock", .{
+const bedwire = b.dependency("bedwire", .{
     .target = target,
     .optimize = optimize,
 });
-exe.root_module.addImport("zigrock", zigrock.module("zigrock"));
+exe.root_module.addImport("bedwire", bedwire.module("bedwire"));
 ```
 
 ## Quick Start
 
 ```zig
 const std = @import("std");
-const zigrock = @import("zigrock");
+const bedwire = @import("bedwire");
 
 // 1. Define or adapt a carrier providing receive, send, and close
 const Carrier = struct {
@@ -56,7 +56,7 @@ const Carrier = struct {
 };
 
 // 2. Initialize a Connection (allocates internal buffers once)
-var conn = try zigrock.Connection(Carrier).init(
+var conn = try bedwire.Connection(Carrier).init(
     allocator,
     &carrier,
     .server,
@@ -78,7 +78,7 @@ try conn.send(&.{ packet_one, packet_two });
 For NetherNet connections, a built-in carrier adapter is provided:
 
 ```zig
-var carrier = zigrock.carrier.NetherNet(nethernet.Connection){
+var carrier = bedwire.carrier.NetherNet(nethernet.Connection){
     .connection = &nethernet_connection,
 };
 ```
@@ -119,7 +119,7 @@ All core buffers (ingress, outgoing, batch scratch, and compression workspaces) 
 Decode bounds are enforced by `DecodeLimits`:
 
 ```zig
-var limits: zigrock.DecodeLimits = .{};
+var limits: bedwire.DecodeLimits = .{};
 limits.protocol.max_batch_bytes = 4 * 1024 * 1024;
 limits.protocol.max_decompressed_batch_bytes = 16 * 1024 * 1024;
 limits.max_jwt_header_bytes = 8 * 1024;
