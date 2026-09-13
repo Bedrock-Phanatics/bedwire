@@ -1,7 +1,7 @@
 const std = @import("std");
-const n = @import("network");
+const zigrock = @import("zigrock");
 
-pub fn sign(allocator: std.mem.Allocator, key: n.spki.Ecdsa.KeyPair, header: []const u8, payload: []const u8) ![]u8 {
+pub fn sign(allocator: std.mem.Allocator, key: zigrock.spki.Ecdsa.KeyPair, header: []const u8, payload: []const u8) ![]u8 {
     const encoder = std.base64.url_safe_no_pad.Encoder;
     const h = encoder.calcSize(header.len);
     const p = encoder.calcSize(payload.len);
@@ -17,31 +17,31 @@ pub fn sign(allocator: std.mem.Allocator, key: n.spki.Ecdsa.KeyPair, header: []c
     return bytes;
 }
 
-pub fn public(key: n.spki.Ecdsa.PublicKey) [160]u8 {
+pub fn public(key: zigrock.spki.Ecdsa.PublicKey) [160]u8 {
     var bytes: [160]u8 = undefined;
-    _ = std.base64.standard.Encoder.encode(&bytes, &n.spki.encode(key));
+    _ = std.base64.standard.Encoder.encode(&bytes, &zigrock.spki.encode(key));
     return bytes;
 }
 
 test "JWT signature, time, malformed syntax, duplicate fields, and limits" {
     const a = std.testing.allocator;
-    const key = try n.spki.Ecdsa.KeyPair.generateDeterministic(@splat(1));
-    const other = try n.spki.Ecdsa.KeyPair.generateDeterministic(@splat(2));
+    const key = try zigrock.spki.Ecdsa.KeyPair.generateDeterministic(@splat(1));
+    const other = try zigrock.spki.Ecdsa.KeyPair.generateDeterministic(@splat(2));
     const encoded = try sign(a, key, "{\"alg\":\"ES384\"}", "{\"exp\":200,\"nbf\":100}");
     defer a.free(encoded);
-    var token = try n.jwt.Token.parse(a, encoded, .{});
+    var token = try zigrock.jwt.Token.parse(a, encoded, .{});
     defer token.deinit();
     try token.verify(key.public_key);
     try std.testing.expectError(error.InvalidSignature, token.verify(other.public_key));
     try token.validateTime(100, true);
     try std.testing.expectError(error.ExpiredToken, token.validateTime(200, true));
     try std.testing.expectError(error.TokenNotYetValid, token.validateTime(99, true));
-    try std.testing.expectError(error.LimitExceeded, n.jwt.Token.parse(a, encoded, .{ .max_jwt_header_bytes = 1 }));
-    try std.testing.expectError(error.InvalidJwt, n.jwt.Token.parse(a, "a.b.c.d", .{}));
-    try std.testing.expectError(error.DuplicateField, n.jwt.parseJson(a, "{\"a\":1,\"a\":2}", .{}));
-    try std.testing.expectError(error.LimitExceeded, n.jwt.parseJson(a, "{\"a\":[[[]]]}", .{ .protocol = .{ .max_nesting_depth = 2 } }));
+    try std.testing.expectError(error.LimitExceeded, zigrock.jwt.Token.parse(a, encoded, .{ .max_jwt_header_bytes = 1 }));
+    try std.testing.expectError(error.InvalidJwt, zigrock.jwt.Token.parse(a, "a.b.c.d", .{}));
+    try std.testing.expectError(error.DuplicateField, zigrock.jwt.parseJson(a, "{\"a\":1,\"a\":2}", .{}));
+    try std.testing.expectError(error.LimitExceeded, zigrock.jwt.parseJson(a, "{\"a\":[[[]]]}", .{ .protocol = .{ .max_nesting_depth = 2 } }));
     for (0..encoded.len) |end| {
-        if (n.jwt.Token.parse(a, encoded[0..end], .{})) |result| {
+        if (zigrock.jwt.Token.parse(a, encoded[0..end], .{})) |result| {
             var owned = result;
             owned.deinit();
             return error.AcceptedTruncation;

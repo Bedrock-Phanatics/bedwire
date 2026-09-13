@@ -1,36 +1,62 @@
-# network-zig
+# zigrock
 
-Bedrock networking for Zig 0.16.0.
+Minecraft: Bedrock Edition session networking for Zig 0.16.0.
 
-It handles the layer between packet serialization (`zig-protocol`) and underlying transports (`raknet-zig` or `nethernet-zig`): batch framing, compression, session encryption, authentication, and state tracking.
+`zigrock` bridges transport carriers (such as RakNet or NetherNet) and packet codecs (`bedrock_protocol`). It handles batch framing, compression, ECDH key exchange, AES-256-CTR session encryption, Mojang/OIDC authentication, and session state enforcement.
 
 ## Features
 
-- Bounded batch framing (`0xFE` prefix and VarInt lengths)
+- Bounded batch framing (`0xFE` prefix with VarInt packet lengths)
 - Raw DEFLATE and Snappy compression
-- P-384 ECDH key exchange and continuous AES-256-CTR session crypto
-- Mojang chain and OIDC JWT authentication
-- Connection state enforcement from handshake to in-game
-- Resource pack negotiation and streaming chunk verification
-- Zero heap allocations during steady-state packet processing
+- P-384 ECDH key exchange and continuous AES-256-CTR session encryption
+- Mojang certificate chain (ES384 JWT) and Xbox Live / OIDC identity validation
+- State machine gating packet types from handshake to in-game
+- Resource pack manifest negotiation and chunk transfer verification
+- Zero heap allocations during steady-state packet I/O
 
 ## Requirements
 
 - Zig 0.16.0
 - `bedrock_protocol`
 
-## Usage
+## Installation
 
-`Connection` wraps any reliable, ordered carrier:
+Add `zigrock` to `build.zig.zon`:
+
+```zig
+.dependencies = .{
+    .zigrock = .{
+        .url = "https://github.com/Bedrock-Phanatics/zigrock/archive/<commit>.tar.gz",
+        .hash = "...",
+    },
+},
+```
+
+Add the module dependency in `build.zig`:
+
+```zig
+const zigrock = b.dependency("zigrock", .{
+    .target = target,
+    .optimize = optimize,
+});
+exe.root_module.addImport("zigrock", zigrock.module("zigrock"));
+```
+
+## Quick Start
 
 ```zig
 const std = @import("std");
-const network = @import("network");
+const zigrock = @import("zigrock");
 
-// carrier requires receive() ![]const u8, send([]const u8) !void, close() void
-var carrier: MyCarrier = ...;
+// 1. Define or adapt a carrier providing receive, send, and close
+const Carrier = struct {
+    pub fn receive(self: *@This()) ![]const u8 { ... }
+    pub fn send(self: *@This(), bytes: []const u8) !void { ... }
+    pub fn close(self: *@This()) void { ... }
+};
 
-var conn = try network.Connection(MyCarrier).init(
+// 2. Initialize a Connection (allocates internal buffers once)
+var conn = try zigrock.Connection(Carrier).init(
     allocator,
     &carrier,
     .server,
@@ -38,52 +64,72 @@ var conn = try network.Connection(MyCarrier).init(
 );
 defer conn.deinit();
 
-// receive packets from a batch
-var packets = try conn.receive();
-while (try packets.next()) |packet| {
-    // packet slices are borrowed from internal buffers
-    _ = packet;
+// 3. Receive packets from a batch frame
+var batch = try conn.receive();
+while (try batch.next()) |packet_bytes| {
+    // packet_bytes borrows memory from conn.ingress until the next receive()
+    _ = packet_bytes;
 }
 
-// Send packets batched and framed
-try conn.send(&.{packet_one, packet_two});
+// 4. Send packets (framed, compressed, and encrypted as state requires)
+try conn.send(&.{ packet_one, packet_two });
 ```
 
-For NetherNet connections, an adapter is included:
+For NetherNet connections, a built-in carrier adapter is provided:
 
 ```zig
-var carrier = network.carrier.NetherNet(nethernet.Connection){
-    .connection = &nethernet_conn,
+var carrier = zigrock.carrier.NetherNet(nethernet.Connection){
+    .connection = &nethernet_connection,
 };
-var conn = try network.Connection(@TypeOf(carrier)).init(allocator, &carrier, .server, .{});
 ```
 
-## Session lifecycle
+## Authentication and Encryption
 
-`Connection` tracks protocol progression and rejects out-of-order packets:
-
-1. **Handshake**: client requests network settings, server responds. Call `enableCompression(algorithm, threshold)` once negotiated.
-2. **Authentication**: receive login packet and verify identity with `authenticateLegacy` (Mojang chain) or `authenticateOidc`.
-3. **Crypto**: server generates handshake JWT and derives session key with `installServerCrypto`. Client verifies with `acceptServerHandshake`.
-4. **Resource packs**: call `advance(.resource_packs)` to negotiate packs and stream chunks.
-5. **In-game**: advance through `.waiting_for_start_game`, `.spawn_ready`, and `.in_game`.
-
-## Memory and limits
-
-All core buffers (ingress, outgoing, batch scratch, and compression workspaces) are allocated once during `Connection.init`. Steady-state send and receive operations make no allocator calls.
-
-Packet slices returned by `receive()` borrow memory from the internal ingress buffer and expire on the next `receive()` call.
-
-Limits can be configured with `DecodeLimits`:
+Once the client sends its settings request and the server replies with `NetworkSettings`, negotiate compression and verify identity:
 
 ```zig
-var limits: network.DecodeLimits = .{};
-limits.protocol.max_batch_bytes = 1024 * 1024;
-limits.protocol.max_decompressed_batch_bytes = 4 * 1024 * 1024;
-limits.max_chain_length = 4;
+// Enable negotiated compression
+try conn.enableCompression(.snappy, 512);
+
+// Verify Mojang identity chain
+var auth_data = try conn.authenticateLegacy(allocator, chain_json, client_data, policy);
+defer auth_data.deinit();
+
+// Derive session keys and enable encryption
+try conn.send(&.{server_handshake_packet});
+try conn.installServerCrypto(server_key.secret_key, salt);
+
+// Transition state as handshake steps complete
+try conn.advance(.resource_packs);
+try conn.advance(.waiting_for_start_game);
+try conn.advance(.spawn_ready);
+try conn.advance(.in_game);
 ```
 
-## Commands
+For clients connecting to a server:
+
+```zig
+try conn.acceptServerHandshake(allocator, handshake_jwt, client_key.secret_key);
+```
+
+## Memory and Limits
+
+All core buffers (ingress, outgoing, batch scratch, and compression workspaces) are allocated once in `Connection.init`. Steady-state `send` and `receive` perform no heap allocations. Packet slices returned by `receive` borrow memory from the internal ingress buffer and expire upon the next `receive` call.
+
+Decode bounds are enforced by `DecodeLimits`:
+
+```zig
+var limits: zigrock.DecodeLimits = .{};
+limits.protocol.max_batch_bytes = 4 * 1024 * 1024;
+limits.protocol.max_decompressed_batch_bytes = 16 * 1024 * 1024;
+limits.max_jwt_header_bytes = 8 * 1024;
+limits.max_jwt_payload_bytes = 1024 * 1024;
+limits.max_chain_length = 8;
+limits.max_resource_pack_bytes = 512 * 1024 * 1024;
+limits.max_resource_packs = 128;
+```
+
+## Testing
 
 ```sh
 zig build test

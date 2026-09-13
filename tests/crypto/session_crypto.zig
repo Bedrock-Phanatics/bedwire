@@ -1,11 +1,11 @@
 const std = @import("std");
-const n = @import("network");
+const zigrock = @import("zigrock");
 
 test "continuous CTR matches stdlib with independent LE checksum counters" {
     const key = [_]u8{0x42} ** 32;
-    var sender = n.SessionCrypto.init(key);
+    var sender = zigrock.SessionCrypto.init(key);
     defer sender.deinit();
-    var receiver = n.SessionCrypto.init(key);
+    var receiver = zigrock.SessionCrypto.init(key);
     defer receiver.deinit();
     var plain: [64]u8 = undefined;
     var wire: [64]u8 = undefined;
@@ -36,8 +36,8 @@ test "continuous CTR matches stdlib with independent LE checksum counters" {
 
 test "every ciphertext bit corruption fails closed without modifying buffer" {
     for (0..88) |bit| {
-        var sender = n.SessionCrypto.init(@splat(1));
-        var receiver = n.SessionCrypto.init(@splat(1));
+        var sender = zigrock.SessionCrypto.init(@splat(1));
+        var receiver = zigrock.SessionCrypto.init(@splat(1));
         var bytes = [_]u8{ 1, 2, 3 } ++ ([_]u8{0} ** 8);
         _ = try sender.seal(&bytes, 3);
         bytes[bit / 8] ^= @as(u8, 1) << @intCast(bit % 8);
@@ -49,7 +49,7 @@ test "every ciphertext bit corruption fails closed without modifying buffer" {
 }
 
 test "counter exhaustion, short destination and truncated checksum are bounded" {
-    var crypto = n.SessionCrypto.init(@splat(1));
+    var crypto = zigrock.SessionCrypto.init(@splat(1));
     var bytes = [_]u8{0xaa} ** 16;
     try std.testing.expectError(error.NoSpaceLeft, crypto.seal(bytes[0..7], 0));
     try std.testing.expectEqual(@as(u64, 0), crypto.send_counter);
