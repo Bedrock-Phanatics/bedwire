@@ -93,7 +93,8 @@ const Stream = struct {
     }
 
     fn xor(self: *Stream, bytes: []u8) void {
-        for (bytes) |*byte| {
+        var cursor: usize = 0;
+        while (cursor < bytes.len) {
             if (self.position == 16) {
                 var iv: [16]u8 = undefined;
                 @memcpy(iv[0..12], &self.nonce);
@@ -102,8 +103,12 @@ const Stream = struct {
                 self.counter += 1;
                 self.position = 0;
             }
-            byte.* ^= self.block[self.position];
-            self.position += 1;
+            const count = @min(bytes.len - cursor, self.block.len - self.position);
+            for (bytes[cursor..][0..count], self.block[self.position..][0..count]) |*byte, key_byte| {
+                byte.* ^= key_byte;
+            }
+            self.position += count;
+            cursor += count;
         }
     }
 };

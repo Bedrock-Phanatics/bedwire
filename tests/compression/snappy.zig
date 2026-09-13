@@ -1,6 +1,28 @@
 const std = @import("std");
 const zigrock = @import("zigrock");
 
+test "tiny Snappy blocks round trip before and after table reuse" {
+    const workspace = try zigrock.FlateWorkspace.create(std.testing.allocator, 128);
+    defer workspace.destroy();
+    var output: [16]u8 = undefined;
+    for ([_][]const u8{ "", "a", "ab", "abc", "abcdabcd", "abc", "", "abcdabcd" }) |input| {
+        const encoded = try zigrock.snappy.compress(input, workspace.output, &workspace.snappy_table);
+        try std.testing.expectEqualSlices(u8, input, try zigrock.snappy.decompress(encoded, &output, .{}));
+    }
+}
+
+test "Snappy copy forms accept adjacent and separated source ranges" {
+    var output: [16]u8 = undefined;
+    for ([_][]const u8{
+        &.{ 8, 12, 'a', 'b', 'c', 'd', 1, 4 },
+        &.{ 8, 12, 'a', 'b', 'c', 'd', 14, 4, 0 },
+        &.{ 8, 12, 'a', 'b', 'c', 'd', 15, 4, 0, 0, 0 },
+    }) |encoded| {
+        try std.testing.expectEqualStrings("abcdabcd", try zigrock.snappy.decompress(encoded, &output, .{}));
+    }
+    try std.testing.expectEqualStrings("abcdab", try zigrock.snappy.decompress(&.{ 6, 12, 'a', 'b', 'c', 'd', 6, 4, 0 }, &output, .{}));
+}
+
 test "raw Snappy compresses repetitive bytes and round trips arbitrary data" {
     const workspace = try zigrock.FlateWorkspace.create(std.testing.allocator, 8192);
     defer workspace.destroy();

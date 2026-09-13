@@ -14,7 +14,7 @@ pub fn maxEncodedLen(len: usize) !usize {
 pub fn compress(input: []const u8, output: []u8, table: *Table) ![]u8 {
     if (try maxEncodedLen(input.len) > output.len) return error.NoSpaceLeft;
 
-    @memset(table, std.math.maxInt(u32));
+    if (input.len >= 4) @memset(table, std.math.maxInt(u32));
     var writer = protocol.Writer.init(output);
     writer.writeVarU32(@intCast(input.len)) catch unreachable;
 
@@ -128,9 +128,13 @@ fn decode(comptime emit: bool, input: []const u8, output: []u8, limits: protocol
         if (kind != 0) {
             const valid = offset > 0 and offset <= cursor and len <= expected - cursor;
             if (!valid) return error.InvalidCompressedData;
-            if (emit) for (0..len) |i| {
-                output[cursor + i] = output[cursor + i - offset];
-            };
+            if (emit) {
+                if (offset >= len) {
+                    @memcpy(output[cursor..][0..len], output[cursor - offset ..][0..len]);
+                } else {
+                    for (0..len) |i| output[cursor + i] = output[cursor + i - offset];
+                }
+            }
         }
 
         cursor += len;

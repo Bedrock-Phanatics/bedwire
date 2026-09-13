@@ -19,6 +19,19 @@ const Mock = struct {
 };
 const limits: zigrock.DecodeLimits = .{ .protocol = .{ .max_batch_bytes = 4096, .max_decompressed_batch_bytes = 4096 } };
 
+test "send records only the last successfully sent packet and preserves it for empty batches" {
+    var mock: Mock = .{};
+    var conn = try zigrock.Connection(Mock).init(std.testing.allocator, &mock, .server, limits);
+    defer conn.deinit();
+    conn.state = .in_game;
+    try conn.send(&.{ &.{9}, &.{10} });
+    try std.testing.expectEqual(@as(?u10, 10), conn.last_sent_id);
+    try conn.send(&.{});
+    try std.testing.expectEqual(@as(?u10, 10), conn.last_sent_id);
+    try std.testing.expectError(error.InvalidState, conn.send(&.{ &.{11}, &.{1} }));
+    try std.testing.expectEqual(@as(?u10, 10), conn.last_sent_id);
+}
+
 test "both compression algorithms carry authenticated encrypted sessions end to end" {
     const a = std.testing.allocator;
     const keys = [3]zigrock.spki.Ecdsa.KeyPair{ try .generateDeterministic(@splat(1)), try .generateDeterministic(@splat(2)), try .generateDeterministic(@splat(3)) };

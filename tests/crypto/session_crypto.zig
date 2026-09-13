@@ -1,6 +1,42 @@
 const std = @import("std");
 const zigrock = @import("zigrock");
 
+test "CTR matches stdlib across every block remainder and packet length" {
+    const key = [_]u8{0x37} ** 32;
+    for (0..16) |remainder| {
+        for (0..65) |len| {
+            var sender = zigrock.SessionCrypto.init(key);
+            defer sender.deinit();
+            var receiver = zigrock.SessionCrypto.init(key);
+            defer receiver.deinit();
+            var plain: [96]u8 = undefined;
+            var wire: [96]u8 = undefined;
+            var total: usize = 0;
+            for ([_]usize{ remainder, len }, 0..) |payload_len, counter| {
+                var packet: [80]u8 = @splat(0x5a);
+                @memcpy(plain[total..][0..payload_len], packet[0..payload_len]);
+                var hash = std.crypto.hash.sha2.Sha256.init(.{});
+                var encoded: [8]u8 = undefined;
+                std.mem.writeInt(u64, &encoded, counter, .little);
+                hash.update(&encoded);
+                hash.update(packet[0..payload_len]);
+                hash.update(&key);
+                @memcpy(plain[total + payload_len ..][0..8], hash.finalResult()[0..8]);
+                const sealed = try sender.seal(&packet, payload_len);
+                @memcpy(wire[total..][0..sealed.len], sealed);
+                try std.testing.expectEqualSlices(u8, plain[total..][0..payload_len], try receiver.open(sealed));
+                total += sealed.len;
+            }
+            var iv: [16]u8 = undefined;
+            @memcpy(iv[0..12], key[0..12]);
+            std.mem.writeInt(u32, iv[12..16], 2, .big);
+            var expected: [96]u8 = undefined;
+            std.crypto.core.modes.ctr(std.crypto.core.aes.AesEncryptCtx(std.crypto.core.aes.Aes256), std.crypto.core.aes.Aes256.initEnc(key), expected[0..total], plain[0..total], iv, .big);
+            try std.testing.expectEqualSlices(u8, expected[0..total], wire[0..total]);
+        }
+    }
+}
+
 test "continuous CTR matches stdlib with independent LE checksum counters" {
     const key = [_]u8{0x42} ** 32;
     var sender = zigrock.SessionCrypto.init(key);

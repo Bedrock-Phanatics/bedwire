@@ -133,11 +133,13 @@ pub fn Connection(comptime Carrier: type) type {
         pub fn send(self: *Self, packets: []const []const u8) !void {
             if (self.state == .disconnected) return error.ConnectionClosed;
 
+            var last_id = self.last_sent_id;
             for (packets) |packet| {
                 const envelope = try protocol.packet.decode(packet, self.limits.protocol);
                 if (!self.state.permits(self.role, envelope.header.packet_id)) return error.InvalidState;
 
                 try self.validateControl(envelope);
+                last_id = envelope.header.packet_id;
             }
 
             const raw = try batch.encode(packets, self.batch_buffer, self.limits.protocol);
@@ -165,10 +167,7 @@ pub fn Connection(comptime Carrier: type) type {
                 return err;
             };
 
-            if (packets.len != 0) {
-                const last_packet = try protocol.packet.decode(packets[packets.len - 1], self.limits.protocol);
-                self.last_sent_id = last_packet.header.packet_id;
-            }
+            self.last_sent_id = last_id;
         }
 
         /// Call only after the uncompressed NetworkSettings response is sent/decoded.
