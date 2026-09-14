@@ -129,9 +129,31 @@ limits.max_resource_pack_bytes = 512 * 1024 * 1024;
 limits.max_resource_packs = 128;
 ```
 
-## Testing
+## Testing and Validation
+
+Run the test suite in Debug and ReleaseSafe modes:
 
 ```sh
 zig build test
 zig build test -Doptimize=ReleaseSafe
 ```
+
+Verify formatting across sources and tests:
+
+```sh
+zig fmt --check build.zig build.zig.zon src tests tools/interop/export.zig
+```
+
+### Cross-Language Interoperability
+
+The `tools/interop` suite provides standalone bidirectional verification against Go S2 (pinned via `tools/interop/go.mod`):
+
+1. Cross-decodes Zig Snappy frames using Go S2.
+2. Refreshes deterministic test fixtures (`tests/compression/interop.json`) for raw DEFLATE, Snappy, continuous AES-256-CTR, and P-384 ECDH.
+
+Running the interoperability check requires Python 3 and Go 1.25+:
+
+```sh
+python tools/interop/check.py
+```
+

@@ -1,13 +1,11 @@
-"""Validate Zig Snappy with Gophertunnel's pinned Go S2 and refresh public fixtures."""
+"""Validate Zig Snappy with pinned Go S2 and refresh public fixtures."""
 import json
 import pathlib
 import subprocess
 import tempfile
 
 root = pathlib.Path(__file__).resolve().parents[2]
-reference = root / "references/gophertunnel"
-if not reference.is_dir():
-    reference = root.parent / "docs/references/gophertunnel"
+interop_dir = root / "tools/interop"
 command = [
     "zig", "run", "-OReleaseSafe", "--dep", "bedwire",
     "-Mroot=tools/interop/export.zig", "-OReleaseSafe", "--dep", "bedrock_protocol",
@@ -18,8 +16,8 @@ with tempfile.TemporaryDirectory(prefix="bedwire-interop-") as temporary:
     packet = pathlib.Path(temporary) / "snappy.bin"
     packet.write_bytes(bytes.fromhex(encoded.decode()))
     result = subprocess.run(
-        ["go", "run", str(root / "tools/interop/main.go"), str(packet)],
-        cwd=reference, capture_output=True, check=True,
+        ["go", "run", str(interop_dir / "main.go"), str(packet)],
+        cwd=interop_dir, capture_output=True, check=True,
     )
     data = json.loads(result.stdout)
     fixture = root / "tests/compression/interop.json"

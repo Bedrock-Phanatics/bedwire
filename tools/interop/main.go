@@ -15,7 +15,7 @@ import (
     "github.com/klauspost/compress/s2"
 )
 
-// Run from references/gophertunnel to use its pinned compression dependency.
+// pinned s2 compression dependency via local go.mod
 // All keys below are public, deterministic test fixtures, never production secrets.
 func main() {
     plain := bytes.Repeat([]byte("Bedrock Snappy interoperability. "), 100)
