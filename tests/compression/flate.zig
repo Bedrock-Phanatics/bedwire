@@ -1,6 +1,16 @@
 const std = @import("std");
 const bedwire = @import("bedwire");
 
+test "direct DEFLATE decoding enforces compressed input limit before work" {
+    const workspace = try bedwire.FlateWorkspace.create(std.testing.allocator, 16);
+    defer workspace.destroy();
+    const empty = [_]u8{ 1, 0, 0, 0xff, 0xff };
+    try std.testing.expectEqual(@as(usize, 0), (try workspace.decompress(&empty, .{ .max_batch_bytes = empty.len })).len);
+    @memset(workspace.output, 0xaa);
+    try std.testing.expectError(error.LimitExceeded, workspace.decompress(&empty, .{ .max_batch_bytes = empty.len - 1 }));
+    for (workspace.output) |byte| try std.testing.expectEqual(@as(u8, 0xaa), byte);
+}
+
 test "raw DEFLATE round trip, truncation, bomb, and allocator cleanup" {
     const encoder = try bedwire.FlateWorkspace.create(std.testing.allocator, 4096);
     defer encoder.destroy();

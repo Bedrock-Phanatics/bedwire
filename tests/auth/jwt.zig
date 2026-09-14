@@ -1,6 +1,15 @@
 const std = @import("std");
 const bedwire = @import("bedwire");
 
+test "direct JSON parsing bounds total bytes before allocating" {
+    var allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const limits: bedwire.DecodeLimits = .{ .max_jwt_header_bytes = 2, .max_jwt_payload_bytes = 2 };
+    try std.testing.expectError(error.LimitExceeded, bedwire.jwt.parseJson(allocator.allocator(), "{} ", limits));
+    try std.testing.expect(!allocator.has_induced_failure);
+    var parsed = try bedwire.jwt.parseJson(std.testing.allocator, "{}", limits);
+    defer parsed.deinit();
+}
+
 pub fn sign(allocator: std.mem.Allocator, key: bedwire.spki.Ecdsa.KeyPair, header: []const u8, payload: []const u8) ![]u8 {
     const encoder = std.base64.url_safe_no_pad.Encoder;
     const h = encoder.calcSize(header.len);

@@ -4,6 +4,7 @@ const Limits = @import("../framing/limits.zig").DecodeLimits;
 const spki = @import("../crypto/spki.zig");
 
 /// Owns decoded JSON. Header and payload remain untrusted until verify succeeds.
+/// signed borrows the compact input; keep it alive and unchanged until deinit.
 pub const Token = struct {
     allocator: std.mem.Allocator,
     header_bytes: []u8,
@@ -79,6 +80,7 @@ pub const Token = struct {
 
 /// Bounds nesting before the JSON DOM parser allocates. Duplicate keys are rejected.
 pub fn parseJson(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) !std.json.Parsed(std.json.Value) {
+    if (bytes.len > @max(limits.max_jwt_header_bytes, limits.max_jwt_payload_bytes)) return error.LimitExceeded;
     if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUtf8;
 
     var depth: usize = 0;

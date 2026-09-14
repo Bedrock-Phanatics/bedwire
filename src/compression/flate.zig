@@ -37,6 +37,8 @@ pub const Workspace = struct {
     }
 
     pub fn decompress(self: *Workspace, input: []const u8, limits: protocol.DecodeLimits) ![]const u8 {
+        if (input.len > limits.max_batch_bytes) return error.LimitExceeded;
+
         const output = self.output[0..@min(self.output.len, limits.max_decompressed_batch_bytes)];
         return protocol.batch.decompressDeflate(input, output, &self.history, limits);
     }

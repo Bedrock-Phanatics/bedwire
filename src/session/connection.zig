@@ -253,11 +253,17 @@ pub fn Connection(comptime Carrier: type) type {
             try token.verify(peer);
 
             const encoded_salt = try jwt.string(token.payload.value, "salt");
-            const decoder = std.base64.standard.Decoder;
-            if (try decoder.calcSizeForSlice(encoded_salt) != 16) return error.InvalidSalt;
+            const decoder = if (encoded_salt.len == 22)
+                std.base64.standard_no_pad.Decoder
+            else if (encoded_salt.len == 24)
+                std.base64.standard.Decoder
+            else
+                return error.InvalidSalt;
+            const salt_len = decoder.calcSizeForSlice(encoded_salt) catch return error.InvalidSalt;
+            if (salt_len != 16) return error.InvalidSalt;
 
             var salt: [16]u8 = undefined;
-            try decoder.decode(&salt, encoded_salt);
+            decoder.decode(&salt, encoded_salt) catch return error.InvalidSalt;
 
             var key = try ecdh.derive(secret, peer, salt);
             defer std.crypto.secureZero(u8, &key);
@@ -277,6 +283,7 @@ pub fn Connection(comptime Carrier: type) type {
                 },
                 4 => {},
                 2 => _ = try reader.readI32Be(),
+                129 => _ = try reader.readBool(),
                 else => return,
             }
 

@@ -19,6 +19,57 @@ const Mock = struct {
 };
 const limits: bedwire.DecodeLimits = .{ .protocol = .{ .max_batch_bytes = 4096, .max_decompressed_batch_bytes = 4096 } };
 
+test "resource negotiation accepts client cache status and rejects malformed payloads" {
+    for ([_][]const u8{ &.{ 0xfe, 3, 0x81, 1, 0 }, &.{ 0xfe, 3, 0x81, 1, 1 }, &.{ 0xfe, 3, 0x81, 1, 2 }, &.{ 0xfe, 2, 0x81, 1 }, &.{ 0xfe, 4, 0x81, 1, 1, 0 } }, 0..) |frame, i| {
+        var mock: Mock = .{ .input = frame };
+        var conn = try bedwire.Connection(Mock).init(std.testing.allocator, &mock, .server, limits);
+        defer conn.deinit();
+        conn.state = .resource_packs;
+        if (i < 2) {
+            var packets = try conn.receive();
+            try std.testing.expectEqualSlices(u8, frame[2..], (try packets.next()).?);
+        } else {
+            const expected = switch (i) {
+                2 => error.InvalidBoolean,
+                3 => error.EndOfStream,
+                else => error.TrailingData,
+            };
+            try std.testing.expectError(expected, conn.receive());
+            try std.testing.expectEqual(.disconnected, conn.state);
+        }
+    }
+    try std.testing.expect(!bedwire.session.State.resource_packs.permits(.server, 129));
+    try std.testing.expect(!bedwire.session.State.authenticating.permits(.client, 129));
+}
+
+test "client accepts signed padded and unpadded handshake salts and rejects malformed salts" {
+    const a = std.testing.allocator;
+    const server_key = try bedwire.spki.Ecdsa.KeyPair.generateDeterministic(@splat(4));
+    const client_key = try bedwire.spki.Ecdsa.KeyPair.generateDeterministic(@splat(5));
+    const header = try std.fmt.allocPrint(a, "{{\"alg\":\"ES384\",\"x5u\":\"{s}\"}}", .{@import("../auth/jwt.zig").public(server_key.public_key)});
+    defer a.free(header);
+    for ([_][]const u8{ "CQkJCQkJCQkJCQkJCQkJCQ", "CQkJCQkJCQkJCQkJCQkJCQ==", "CQkJCQkJCQkJCQkJCQkJCQ=", "CQkJCQkJCQkJCQkJCQkJC!", "CQkJ" }, 0..) |salt, i| {
+        const payload = try std.fmt.allocPrint(a, "{{\"salt\":\"{s}\"}}", .{salt});
+        defer a.free(payload);
+        const token = try bedwire.login.sign(a, server_key, header, payload, .{});
+        defer a.free(token);
+        var mock: Mock = .{};
+        var conn = try bedwire.Connection(Mock).init(a, &mock, .client, limits);
+        defer conn.deinit();
+        conn.state = .authenticating;
+        conn.pending_id = 3;
+        if (i < 2) {
+            try conn.acceptServerHandshake(a, token, client_key.secret_key);
+            try std.testing.expectEqual(.encrypted_handshake, conn.state);
+            try std.testing.expectEqualSlices(u8, &(try bedwire.ecdh.derive(client_key.secret_key, server_key.public_key, @splat(9))), &conn.crypto.?.key);
+        } else {
+            try std.testing.expectError(error.InvalidSalt, conn.acceptServerHandshake(a, token, client_key.secret_key));
+            try std.testing.expectEqual(.disconnected, conn.state);
+            try std.testing.expectEqual(null, conn.crypto);
+        }
+    }
+}
+
 test "send records only the last successfully sent packet and preserves it for empty batches" {
     var mock: Mock = .{};
     var conn = try bedwire.Connection(Mock).init(std.testing.allocator, &mock, .server, limits);

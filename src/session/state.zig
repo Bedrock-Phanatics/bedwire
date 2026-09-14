@@ -16,7 +16,7 @@ pub const State = enum {
             .handshake => if (sender == .client) id == 193 else id == 143,
             .authenticating => if (sender == .client) id == 1 else id == 3 or id == 2,
             .encrypted_handshake => if (sender == .client) id == 4 else id == 2,
-            .resource_packs => if (sender == .client) id == 8 or id == 84 else id == 6 or id == 7 or id == 82 or id == 83 or id == 2,
+            .resource_packs => if (sender == .client) id == 8 or id == 84 or id == 129 else id == 6 or id == 7 or id == 82 or id == 83 or id == 2,
             .waiting_for_start_game => sender == .server and (id == 11 or id == 162 or id == 122),
             .spawn_ready => if (sender == .client) id == 69 or id == 23 or id == 113 else id == 70 or id == 58 or id == 2 or id == 162 or id == 122,
             .in_game => switch (id) {
