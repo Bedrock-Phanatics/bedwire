@@ -1,6 +1,9 @@
 # bedwire
 
 Minecraft: Bedrock Edition session networking for Zig 0.16.0.
+<p align="center">
+    Join our <a href="https://discord.gg/Yv9qPRQNc3">Discord</a>!
+</p>
 
 `bedwire` bridges transport carriers (such as RakNet or NetherNet) and packet codecs (`bedrock_protocol`). It handles batch framing, compression, ECDH key exchange, AES-256-CTR session encryption, Mojang/OIDC authentication, and session state enforcement.
 
