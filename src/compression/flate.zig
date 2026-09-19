@@ -1,45 +1,40 @@
 const std = @import("std");
-const protocol = @import("bedrock_protocol");
 
-const snappy = @import("snappy.zig");
+const Limits = @import("../limits.zig").Limits;
 
-/// Connection-owned scratch. Results borrow storage until the next operation,
-/// including failed operations. Not thread-safe. Allocate once with create().
-pub const Workspace = struct {
-    allocator: std.mem.Allocator,
-    output: []u8,
-    history: [std.compress.flate.max_window_len]u8 = undefined,
-    compressor: std.compress.flate.Compress = undefined,
-    snappy_table: snappy.Table = undefined,
+// bedrock uses raw deflate with no zlib wrapper
+pub const history_len = std.compress.flate.max_window_len;
 
-    pub fn create(allocator: std.mem.Allocator, capacity: usize) !*Workspace {
-        const self = try allocator.create(Workspace);
-        errdefer allocator.destroy(self);
+pub const minimum_output_bytes = 64;
 
-        self.* = .{ .allocator = allocator, .output = try allocator.alloc(u8, @max(capacity, 16)) };
+/// raw deflate compression using the 32k history window
+pub fn compress(input: []const u8, output: []u8, history: *[history_len]u8) ![]u8 {
+    // zig stdlib flate panics if output is smaller than 64 bytes instead of returning an error
+    if (output.len < minimum_output_bytes) return error.NoSpaceLeft;
 
-        return self;
-    }
+    var writer: std.Io.Writer = .fixed(output);
+    var compressor: std.compress.flate.Compress = try .init(&writer, history, .raw, .default);
 
-    pub fn destroy(self: *Workspace) void {
-        const allocator = self.allocator;
-        allocator.free(self.output);
-        allocator.destroy(self);
-    }
+    compressor.writer.writeAll(input) catch return error.NoSpaceLeft;
+    compressor.finish() catch return error.NoSpaceLeft;
 
-    pub fn compress(self: *Workspace, input: []const u8) ![]const u8 {
-        var writer: std.Io.Writer = .fixed(self.output);
-        self.compressor = try .init(&writer, &self.history, .raw, .default);
-        self.compressor.writer.writeAll(input) catch return error.LimitExceeded;
-        self.compressor.finish() catch return error.LimitExceeded;
+    return output[0..writer.end];
+}
 
-        return self.output[0..writer.end];
-    }
+/// raw deflate decompression bounded by limits.max_batch_bytes
+pub fn decompress(input: []const u8, output: []u8, history: *[history_len]u8, limits: Limits) ![]u8 {
+    if (input.len > limits.max_frame_bytes) return error.LimitExceeded;
 
-    pub fn decompress(self: *Workspace, input: []const u8, limits: protocol.DecodeLimits) ![]const u8 {
-        if (input.len > limits.max_batch_bytes) return error.LimitExceeded;
+    const bounded = output[0..@min(output.len, limits.max_batch_bytes)];
+    var reader: std.Io.Reader = .fixed(input);
+    var decompressor: std.compress.flate.Decompress = .init(&reader, .raw, history);
+    var writer: std.Io.Writer = .fixed(bounded);
 
-        const output = self.output[0..@min(self.output.len, limits.max_decompressed_batch_bytes)];
-        return protocol.batch.decompressDeflate(input, output, &self.history, limits);
-    }
-};
+    const len = decompressor.reader.streamRemaining(&writer) catch {
+        if (decompressor.err != null) return error.MalformedCompressedData;
+        return error.LimitExceeded;
+    };
+    if (reader.seek != reader.end) return error.MalformedCompressedData;
+
+    return bounded[0..len];
+}

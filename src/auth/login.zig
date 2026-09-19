@@ -1,37 +1,10 @@
 const std = @import("std");
-const protocol = @import("bedrock_protocol");
 
-const Limits = @import("../framing/limits.zig").DecodeLimits;
+const Limits = @import("../limits.zig").Limits;
+const jwt = @import("jwt.zig");
 const spki = @import("../crypto/spki.zig");
 
-/// Slices borrow the Login packet payload, including the connection request JSON.
-pub const Login = struct {
-    protocol_version: i32,
-    identity_json: []const u8,
-    client_data: []const u8,
-
-    pub fn decode(payload: []const u8, limits: Limits) !Login {
-        var reader = try protocol.Reader.init(payload, limits.protocol);
-        const version = try reader.readI32Be();
-        const bytes = try reader.readByteArray();
-        try reader.finish();
-
-        var request = try protocol.Reader.init(bytes, limits.protocol);
-        const identity_len = try request.readI32();
-        if (identity_len <= 0) return error.InvalidLogin;
-        if (@as(u32, @intCast(identity_len)) > limits.max_jwt_payload_bytes) return error.LimitExceeded;
-        const identity_json = try request.take(@intCast(identity_len));
-
-        const client_len = try request.readI32();
-        if (client_len <= 0) return error.InvalidLogin;
-        const client_data = try request.take(@intCast(client_len));
-        try request.finish();
-
-        return .{ .protocol_version = version, .identity_json = identity_json, .client_data = client_data };
-    }
-};
-
-/// Owns returned compact ES384 JWT. JSON must already be validated by its producer.
+/// signs header.payload with p384 ecdsa and returns compact jwt
 pub fn sign(allocator: std.mem.Allocator, key: spki.Ecdsa.KeyPair, header: []const u8, payload: []const u8, limits: Limits) ![]u8 {
     if (header.len > limits.max_jwt_header_bytes or payload.len > limits.max_jwt_payload_bytes) return error.LimitExceeded;
 
@@ -55,19 +28,54 @@ pub fn sign(allocator: std.mem.Allocator, key: spki.Ecdsa.KeyPair, header: []con
     return bytes;
 }
 
-/// Caller supplies a fresh ephemeral key and cryptographically random 16-byte salt.
-pub fn serverHandshake(allocator: std.mem.Allocator, key: spki.Ecdsa.KeyPair, salt: [16]u8, limits: Limits) ![]u8 {
-    var public_key: [160]u8 = undefined;
-    _ = std.base64.standard.Encoder.encode(&public_key, &spki.encode(key.public_key));
+// base64 spki encoding for jwt x5u header
+pub fn encodedPublicKey(key: spki.Ecdsa.PublicKey) [160]u8 {
+    var encoded: [160]u8 = undefined;
+    _ = std.base64.standard.Encoder.encode(&encoded, &spki.encode(key));
+    return encoded;
+}
 
+/// builds and signs the ServerToClientHandshake jwt with server pubkey and salt
+pub fn serverHandshake(allocator: std.mem.Allocator, key: spki.Ecdsa.KeyPair, salt: [16]u8, limits: Limits) ![]u8 {
     var salt_text: [24]u8 = undefined;
     _ = std.base64.standard.Encoder.encode(&salt_text, &salt);
 
     var header_storage: [200]u8 = undefined;
-    const header = try std.fmt.bufPrint(&header_storage, "{{\"alg\":\"ES384\",\"x5u\":\"{s}\"}}", .{public_key});
+    const header = try std.fmt.bufPrint(&header_storage, "{{\"alg\":\"{s}\",\"x5u\":\"{s}\"}}", .{ jwt.algorithm, encodedPublicKey(key.public_key) });
 
     var payload_storage: [40]u8 = undefined;
     const payload = try std.fmt.bufPrint(&payload_storage, "{{\"salt\":\"{s}\"}}", .{salt_text});
 
     return sign(allocator, key, header, payload, limits);
+}
+
+/// verified ServerToClientHandshake token
+pub const Handshake = struct {
+    peer_key: spki.Ecdsa.PublicKey,
+    salt: [16]u8,
+
+    pub fn verify(allocator: std.mem.Allocator, encoded: []const u8, limits: Limits) !Handshake {
+        var token = try jwt.Token.parse(allocator, encoded, limits);
+        defer token.deinit();
+
+        const peer_key = try spki.fromBase64(try jwt.string(token.header.value, "x5u"));
+        try token.verify(peer_key);
+
+        return .{ .peer_key = peer_key, .salt = try decodeSalt(try jwt.string(token.payload.value, "salt")) };
+    }
+};
+
+/// Vanilla emits padded standard base64; some implementations drop the padding.
+fn decodeSalt(encoded: []const u8) ![16]u8 {
+    const decoder = switch (encoded.len) {
+        22 => std.base64.standard_no_pad.Decoder,
+        24 => std.base64.standard.Decoder,
+        else => return error.InvalidSalt,
+    };
+    if ((decoder.calcSizeForSlice(encoded) catch return error.InvalidSalt) != 16) return error.InvalidSalt;
+
+    var salt: [16]u8 = undefined;
+    decoder.decode(&salt, encoded) catch return error.InvalidSalt;
+
+    return salt;
 }

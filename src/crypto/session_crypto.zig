@@ -1,7 +1,11 @@
 const std = @import("std");
 const Aes = std.crypto.core.aes.Aes256;
 
-/// Exclusive caller access is required. Never log this struct or copy live sessions.
+/// continuous aes-256-ctr stream cipher with 8-byte sha256 mac trailer
+///
+/// keystream is continuous across packet batches for the lifetime of the session.
+/// mac is first 8 bytes of sha256(le_u64(counter) ++ payload ++ key).
+/// counter increments after every batch sealed or opened.
 pub const SessionCrypto = struct {
     key: [32]u8,
     inbound: Stream,
@@ -19,10 +23,10 @@ pub const SessionCrypto = struct {
         self.closed = true;
     }
 
-    /// Encrypts payload plus checksum; caller must exclude the 0xFE frame prefix.
-    /// Storage and counters are unchanged on failure.
+    /// encrypts storage[0..payload_len] in place and appends the 8-byte mac
+    /// caller must slice past the 0xfe header byte before passing storage here
     pub fn seal(self: *SessionCrypto, storage: []u8, payload_len: usize) ![]u8 {
-        if (self.closed) return error.ConnectionClosed;
+        if (self.closed) return error.SessionClosed;
         if (payload_len > storage.len or storage.len - payload_len < 8) return error.NoSpaceLeft;
         if (self.send_counter == std.math.maxInt(u64)) return error.CounterExhausted;
 
@@ -36,11 +40,12 @@ pub const SessionCrypto = struct {
         return bytes;
     }
 
-    /// Excludes 0xFE. On failure restores ciphertext and permanently closes the session.
+    /// decrypts in place and checks the 8-byte mac trailer
+    /// if the mac doesn't match we roll back ciphertext and kill the crypto context
     pub fn open(self: *SessionCrypto, bytes: []u8) ![]u8 {
-        if (self.closed) return error.ConnectionClosed;
+        if (self.closed) return error.SessionClosed;
         errdefer self.closed = true;
-        if (bytes.len < 8) return error.EndOfStream;
+        if (bytes.len < 8) return error.MalformedBatch;
         if (self.recv_counter == std.math.maxInt(u64)) return error.CounterExhausted;
         try self.inbound.check(bytes.len);
 

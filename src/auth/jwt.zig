@@ -1,10 +1,12 @@
 const std = @import("std");
 
-const Limits = @import("../framing/limits.zig").DecodeLimits;
+const Limits = @import("../limits.zig").Limits;
 const spki = @import("../crypto/spki.zig");
 
-/// Owns decoded JSON. Header and payload remain untrusted until verify succeeds.
-/// signed borrows the compact input; keep it alive and unchanged until deinit.
+// bedrock uses es384 for all tokens
+pub const algorithm = "ES384";
+
+/// parsed compact jwt (header.payload.signature)
 pub const Token = struct {
     allocator: std.mem.Allocator,
     header_bytes: []u8,
@@ -21,15 +23,15 @@ pub const Token = struct {
         if (input.len > max_size) return error.LimitExceeded;
 
         var parts = std.mem.splitScalar(u8, input, '.');
-        const encoded_header = parts.next() orelse return error.InvalidJwt;
-        const encoded_payload = parts.next() orelse return error.InvalidJwt;
-        const encoded_signature = parts.next() orelse return error.InvalidJwt;
-        if (parts.next() != null or encoded_signature.len != 128) return error.InvalidJwt;
+        const encoded_header = parts.next() orelse return error.InvalidToken;
+        const encoded_payload = parts.next() orelse return error.InvalidToken;
+        const encoded_signature = parts.next() orelse return error.InvalidToken;
+        if (parts.next() != null or encoded_signature.len != 128) return error.InvalidToken;
 
-        const header_bytes = try decode(allocator, encoded_header, limits.max_jwt_header_bytes);
+        const header_bytes = try decodeSegment(allocator, encoded_header, limits.max_jwt_header_bytes);
         errdefer allocator.free(header_bytes);
 
-        const payload_bytes = try decode(allocator, encoded_payload, limits.max_jwt_payload_bytes);
+        const payload_bytes = try decodeSegment(allocator, encoded_payload, limits.max_jwt_payload_bytes);
         errdefer allocator.free(payload_bytes);
 
         const header = try parseJson(allocator, header_bytes, limits);
@@ -38,11 +40,11 @@ pub const Token = struct {
         const payload = try parseJson(allocator, payload_bytes, limits);
         errdefer payload.deinit();
 
-        if (!std.mem.eql(u8, try string(header.value, "alg"), "ES384")) return error.UnsupportedAlgorithm;
+        if (!std.mem.eql(u8, try string(header.value, "alg"), algorithm)) return error.UnsupportedAlgorithm;
         if (header.value.object.contains("crit") or header.value.object.contains("b64")) return error.UnsupportedAlgorithm;
 
         var signature: [96]u8 = undefined;
-        std.base64.url_safe_no_pad.Decoder.decode(&signature, encoded_signature) catch return error.InvalidJwt;
+        std.base64.url_safe_no_pad.Decoder.decode(&signature, encoded_signature) catch return error.InvalidToken;
 
         return .{
             .allocator = allocator,
@@ -67,6 +69,7 @@ pub const Token = struct {
         spki.Ecdsa.Signature.fromBytes(self.signature).verify(self.signed, key) catch return error.InvalidSignature;
     }
 
+    /// check exp and nbf timestamps
     pub fn validateTime(self: *const Token, now: i64, required: bool) !void {
         if (self.payload.value.object.get("exp")) |exp| {
             if (exp != .integer or exp.integer <= now) return error.ExpiredToken;
@@ -78,7 +81,7 @@ pub const Token = struct {
     }
 };
 
-/// Bounds nesting before the JSON DOM parser allocates. Duplicate keys are rejected.
+/// checks json nesting depth before parsing so malicious tokens don't blow the stack
 pub fn parseJson(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) !std.json.Parsed(std.json.Value) {
     if (bytes.len > @max(limits.max_jwt_header_bytes, limits.max_jwt_payload_bytes)) return error.LimitExceeded;
     if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUtf8;
@@ -105,7 +108,7 @@ pub fn parseJson(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits
             '"' => quoted = true,
             '{', '[' => {
                 depth += 1;
-                if (depth > limits.protocol.max_nesting_depth) return error.LimitExceeded;
+                if (depth > limits.max_json_nesting) return error.LimitExceeded;
             },
             '}', ']' => {
                 if (depth == 0) return error.InvalidJson;
@@ -115,7 +118,10 @@ pub fn parseJson(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits
         }
     }
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .max_value_len = limits.max_jwt_payload_bytes });
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .max_value_len = limits.max_jwt_payload_bytes }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidJson,
+    };
     errdefer parsed.deinit();
     if (parsed.value != .object) return error.InvalidJson;
 
@@ -129,15 +135,15 @@ pub fn string(value: std.json.Value, name: []const u8) ![]const u8 {
     return field.string;
 }
 
-fn decode(allocator: std.mem.Allocator, input: []const u8, limit: usize) ![]u8 {
+fn decodeSegment(allocator: std.mem.Allocator, input: []const u8, limit: usize) ![]u8 {
     const decoder = std.base64.url_safe_no_pad.Decoder;
-    const len = decoder.calcSizeForSlice(input) catch return error.InvalidJwt;
-    if (len == 0) return error.InvalidJwt;
+    const len = decoder.calcSizeForSlice(input) catch return error.InvalidToken;
+    if (len == 0) return error.InvalidToken;
     if (len > limit) return error.LimitExceeded;
 
     const bytes = try allocator.alloc(u8, len);
     errdefer allocator.free(bytes);
-    decoder.decode(bytes, input) catch return error.InvalidJwt;
+    decoder.decode(bytes, input) catch return error.InvalidToken;
 
     return bytes;
 }
