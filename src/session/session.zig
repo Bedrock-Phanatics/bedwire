@@ -41,15 +41,49 @@ pub const Packets = struct {
     reader: batch.Reader,
     descriptor: *const Descriptor,
     len: usize,
+    session: *Session,
+    generation: u64,
+    deinitialized: bool = false,
+
+    fn releaseLease(self: *Packets) void {
+        if (self.session.active_generation == self.generation) {
+            self.session.active_generation = null;
+        }
+    }
 
     pub fn next(self: *Packets) ?Packet {
-        const bytes = (self.reader.next() catch unreachable) orelse return null;
-        const header = parseHeader(bytes) catch unreachable;
+        if (self.deinitialized) return null;
+        if (self.session.active_generation != self.generation) return null;
+
+        const bytes = (self.reader.next() catch {
+            self.releaseLease();
+            return null;
+        }) orelse {
+            self.releaseLease();
+            return null;
+        };
+        const header = parseHeader(bytes) catch {
+            self.releaseLease();
+            return null;
+        };
         return .{ .kind = self.descriptor.kindOf(header.packet_id), .id = header.packet_id, .bytes = bytes };
     }
 
     pub fn reset(self: *Packets) void {
+        if (self.deinitialized) return;
+        if (self.session.state == .disconnected) return;
+        if (self.session.generation != self.generation) return;
+        if (self.session.active_generation) |active| {
+            if (active != self.generation) return;
+        }
+        self.session.active_generation = self.generation;
         self.reader.reset();
+    }
+
+    pub fn deinit(self: *Packets) void {
+        if (self.deinitialized) return;
+        self.deinitialized = true;
+        self.releaseLease();
     }
 };
 
@@ -72,6 +106,8 @@ pub const Session = struct {
     peer_key: ?spki.Ecdsa.PublicKey = null,
     sent: std.EnumSet(PacketKind) = .initEmpty(),
     received: std.EnumSet(PacketKind) = .initEmpty(),
+    generation: u64 = 0,
+    active_generation: ?u64 = null,
 
     // inbound frames decrypt in place here
     ingress: []u8,
@@ -130,6 +166,7 @@ pub const Session = struct {
         if (self.state == .disconnected) return;
 
         self.state = .disconnected;
+        self.active_generation = null;
         if (self.crypto) |*crypto| crypto.deinit();
         self.crypto = null;
     }
@@ -164,6 +201,7 @@ pub const Session = struct {
     /// returns an iterator over the parsed packets. closes session on any error.
     pub fn ingest(self: *Session, payload: []const u8) !Packets {
         if (self.state == .disconnected) return error.TransportClosed;
+        if (self.active_generation != null) return error.InvalidState;
         errdefer self.close();
 
         const body = try batch.strip(payload, self.limits);
@@ -177,10 +215,16 @@ pub const Session = struct {
 
         self.observe(observed.kinds, self.role.peer());
 
+        const reader = try batch.Reader.init(raw, self.limits);
+        self.generation +%= 1;
+        self.active_generation = self.generation;
+
         return .{
-            .reader = try batch.Reader.init(raw, self.limits),
+            .reader = reader,
             .descriptor = self.descriptor,
             .len = observed.count,
+            .session = self,
+            .generation = self.generation,
         };
     }
 
@@ -316,7 +360,7 @@ pub const Session = struct {
         const allowed = switch (next) {
             .resource_packs => switch (self.state) {
                 .encrypted_handshake => self.crypto != null and self.exchanged(.client_to_server_handshake, .client),
-                .authenticating => self.descriptor.features.encryption == .optional and self.didReceive(.login),
+                .authenticating => self.descriptor.features.encryption == .optional and self.exchanged(.login, .client),
                 else => false,
             },
             .waiting_for_start_game => self.state == .resource_packs,
@@ -392,8 +436,7 @@ pub const Session = struct {
     fn check(self: *const Session, kind: PacketKind, header: protocol.packet.Header, sender: Role) !void {
         if (!self.state.permits(self.descriptor.features, sender, kind)) return error.InvalidState;
 
-        const split_screen = header.sender_subclient != 0 or header.target_subclient != 0;
-        if (split_screen and self.state != .in_game) return error.InvalidState;
+        if (header.sender_subclient != 0 or header.target_subclient != 0) return error.InvalidState;
     }
 };
 
@@ -401,4 +444,3 @@ fn parseHeader(packet: []const u8) !protocol.packet.Header {
     const decoded = varint.readU32(packet) catch return error.MalformedBatch;
     return protocol.packet.Header.fromWire(decoded.value) catch error.MalformedBatch;
 }
-

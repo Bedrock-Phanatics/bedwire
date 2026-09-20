@@ -99,6 +99,16 @@ pub const Pair = struct {
     pub fn serverToClient(self: *Pair, packets: []const []const u8) !bedwire.Packets {
         return self.relayFrom(&self.server, &self.client, packets);
     }
+
+    pub fn clientToServerDiscard(self: *Pair, packets: []const []const u8) !void {
+        var iter = try self.clientToServer(packets);
+        iter.deinit();
+    }
+
+    pub fn serverToClientDiscard(self: *Pair, packets: []const []const u8) !void {
+        var iter = try self.serverToClient(packets);
+        iter.deinit();
+    }
 };
 
 pub fn deterministicKey(seed: u8) !Ecdsa.KeyPair {

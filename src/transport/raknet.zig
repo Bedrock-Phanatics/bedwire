@@ -28,6 +28,7 @@ pub fn RakNet(comptime Peer: type, comptime Handler: type) type {
         /// feeds a payload from raknet into the session and dispatches each decoded packet to handler
         pub fn deliver(self: *Self, payload: []const u8) !void {
             var packets = try self.session.ingest(payload);
+            defer packets.deinit();
             while (packets.next()) |packet| try self.handler.onPacket(self.session, packet);
         }
 
@@ -169,4 +170,42 @@ test "hostile payload closes the session inside the callback" {
     try testing.expectError(error.MalformedBatch, adapter.deliver(&.{ 0xfe, 4, 1 }));
     try testing.expectEqual(session_mod.State.disconnected, server.state);
     try testing.expectEqual(@as(usize, 0), collector.kinds.items.len);
+}
+
+test "reentrant deliver or ingest is rejected with InvalidState" {
+    const allocator = testing.allocator;
+    const version = comptime registry.describe(800) catch unreachable;
+
+    var server = try Session.init(allocator, .server, &version, .{ .limits = limits });
+    defer server.deinit();
+    server.state = .in_game;
+
+    var client = try Session.init(allocator, .client, &version, .{ .limits = limits });
+    defer client.deinit();
+    client.state = .in_game;
+
+    var peer: FakePeer = .{ .allocator = allocator };
+    defer peer.deinit();
+
+    const ReentrantHandler = struct {
+        reentrant_err: ?anyerror = null,
+
+        pub fn onPacket(self: *@This(), s: *Session, packet: Packet) !void {
+            _ = packet;
+            if (s.ingest(&.{ 0xfe, 2, 9, 1 })) |_| {
+                self.reentrant_err = null;
+            } else |err| {
+                self.reentrant_err = err;
+            }
+        }
+    };
+
+    var handler: ReentrantHandler = .{};
+    var adapter = RakNet(FakePeer, ReentrantHandler){ .session = &client, .peer = &peer, .handler = &handler };
+
+    const frame = try allocator.dupe(u8, try server.encode(&.{&.{ 9, 1 }}));
+    defer allocator.free(frame);
+
+    try adapter.deliver(frame);
+    try testing.expectEqual(@as(?anyerror, error.InvalidState), handler.reentrant_err);
 }

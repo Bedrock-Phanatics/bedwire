@@ -105,7 +105,11 @@ pub const State = enum {
                 .server => kind == .chunk_radius_updated or kind == .play_status or kind == .other,
             },
 
-            .in_game => !kind.isHandshake(),
+            .in_game => !kind.isHandshake() and switch (kind.direction()) {
+                .client_to_server => sender == .client,
+                .server_to_client => sender == .server,
+                .bidirectional => true,
+            },
 
             .closing, .disconnected => false,
         };
@@ -168,7 +172,17 @@ test "gameplay stages refuse every handshake kind" {
     }
 
     try testing.expect(State.in_game.permits(modern, .client, .other));
+    try testing.expect(State.in_game.permits(modern, .server, .other));
     try testing.expect(State.in_game.permits(modern, .server, .play_status));
+    try testing.expect(!State.in_game.permits(modern, .client, .play_status));
+    try testing.expect(State.in_game.permits(modern, .client, .request_chunk_radius));
+    try testing.expect(!State.in_game.permits(modern, .server, .request_chunk_radius));
+    try testing.expect(State.in_game.permits(modern, .server, .chunk_radius_updated));
+    try testing.expect(!State.in_game.permits(modern, .client, .chunk_radius_updated));
+    try testing.expect(State.in_game.permits(modern, .client, .client_cache_status));
+    try testing.expect(!State.in_game.permits(modern, .server, .client_cache_status));
+    try testing.expect(State.in_game.permits(modern, .client, .set_local_player_as_initialised));
+    try testing.expect(!State.in_game.permits(modern, .server, .set_local_player_as_initialised));
     try testing.expect(State.waiting_for_start_game.permits(modern, .server, .start_game));
     try testing.expect(!State.waiting_for_start_game.permits(modern, .client, .other));
     try testing.expect(State.spawn_ready.permits(modern, .client, .set_local_player_as_initialised));

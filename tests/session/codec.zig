@@ -29,6 +29,7 @@ test "a full handshake runs on packets encoded and decoded by protocol-zig" {
         const bytes = try encodePacket(&storage, .{ .request_network_settings = .{ .client_protocol = 818 } }, id);
 
         var packets = try pair.clientToServer(&.{bytes});
+        defer packets.deinit();
         const received = packets.next().?;
         try testing.expectEqual(bedwire.PacketKind.request_network_settings, received.kind);
 
@@ -49,6 +50,7 @@ test "a full handshake runs on packets encoded and decoded by protocol-zig" {
         const bytes = try encodePacket(&storage, .{ .network_settings = settings }, id);
 
         var packets = try pair.serverToClient(&.{bytes});
+        defer packets.deinit();
         const received = packets.next().?;
         try testing.expectEqual(bedwire.PacketKind.network_settings, received.kind);
 
@@ -70,6 +72,7 @@ test "a full handshake runs on packets encoded and decoded by protocol-zig" {
         const bytes = try encodePacket(&storage, .{ .login = .{ .client_protocol = 818, .connection_request = "blob" } }, id);
 
         var packets = try pair.clientToServer(&.{bytes});
+        defer packets.deinit();
         const received = packets.next().?;
         try testing.expectEqual(bedwire.PacketKind.login, received.kind);
 
@@ -88,6 +91,7 @@ test "a full handshake runs on packets encoded and decoded by protocol-zig" {
         const bytes = try encodePacket(&big, .{ .server_to_client_handshake = .{ .jwt = token } }, id);
 
         var packets = try pair.serverToClient(&.{bytes});
+        defer packets.deinit();
         const received = packets.next().?;
         try testing.expectEqual(bedwire.PacketKind.server_to_client_handshake, received.kind);
 
@@ -104,6 +108,7 @@ test "a full handshake runs on packets encoded and decoded by protocol-zig" {
         const bytes = try encodePacket(&storage, .{ .client_to_server_handshake = .{} }, id);
 
         var packets = try pair.clientToServer(&.{bytes});
+        defer packets.deinit();
         try testing.expectEqual(bedwire.PacketKind.client_to_server_handshake, packets.next().?.kind);
     }
 
@@ -128,6 +133,7 @@ test "a disconnect decoded by protocol-zig still closes the session" {
     } }, id);
 
     var packets = try pair.serverToClient(&.{bytes});
+    defer packets.deinit();
     const received = packets.next().?;
 
     const envelope = try protocol.typed.decode(received.bytes, .{});
@@ -146,6 +152,7 @@ test "Bedwire carries packets it has no semantic name for" {
     const bytes = try encodePacket(&storage, .{ .set_time = .{ .time = 1234 } }, id);
 
     var packets = try pair.serverToClient(&.{bytes});
+    defer packets.deinit();
     const received = packets.next().?;
 
     try testing.expectEqual(bedwire.PacketKind.other, received.kind);

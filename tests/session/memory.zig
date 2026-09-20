@@ -32,6 +32,7 @@ test "steady-state ingest and encode make no allocator calls" {
 
         for (0..128) |_| {
             var packets = try pair.clientToServer(&.{packet});
+            defer packets.deinit();
             try testing.expectEqualSlices(u8, packet, packets.next().?.bytes);
         }
 
@@ -97,6 +98,7 @@ test "ingested packets survive an encode on the same session" {
     const packet = support.packet(&storage, 60, &([_]u8{'r'} ** 256));
 
     var packets = try pair.clientToServer(&.{packet});
+    defer packets.deinit();
     const received = packets.next().?;
 
     var reply: [64]u8 = undefined;

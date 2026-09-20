@@ -303,7 +303,7 @@ pub fn main(init: std.process.Init) !void {
     var gameplay_storage: [16][256]u8 = undefined;
     var gameplay_packets: [16][]const u8 = undefined;
     for (&gameplay_packets, 0..) |*slot, i| {
-        slot.* = makePacket(&gameplay_storage[i], 60 + @as(u16, @intCast(i)), 96 + i * 8);
+        slot.* = makePacket(&gameplay_storage[i], 150 + @as(u16, @intCast(i)), 96 + i * 8);
     }
     const gameplay: []const []const u8 = &gameplay_packets;
 

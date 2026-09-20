@@ -28,13 +28,20 @@ pub fn NetherNet(comptime Connection: type, comptime Handler: type) type {
         /// process a packet received from the datachannel
         pub fn deliver(self: *Self, payload: []const u8) !void {
             var packets = try self.session.ingest(payload);
+            defer packets.deinit();
             while (packets.next()) |packet| try self.handler.onPacket(self.session, packet);
         }
 
         /// pull the next reliable message from NetherNet
         pub fn pump(self: *Self) !void {
-            const message = try self.connection.receive();
-            if (message.reliability != .reliable) return error.TransportClosed;
+            const message = self.connection.receive() catch |err| {
+                if (err == error.TransportClosed) self.session.close();
+                return err;
+            };
+            if (message.reliability != .reliable) {
+                self.session.close();
+                return error.TransportClosed;
+            }
 
             return self.deliver(message.data);
         }
@@ -124,6 +131,23 @@ test "pump accepts reliable messages and refuses unreliable ones" {
 
     channel.inbound_reliability = .unreliable;
     try testing.expectError(error.TransportClosed, adapter.pump());
+    try testing.expectEqual(session_mod.State.disconnected, local.state);
+}
+
+test "terminal connection failure in pump disconnects the session" {
+    const allocator = testing.allocator;
+    const version = comptime registry.describe(800) catch unreachable;
+
+    var local = try Session.init(allocator, .client, &version, .{ .limits = limits });
+    defer local.deinit();
+    local.state = .in_game;
+
+    var channel: Channel = .{ .inbound = &.{} };
+    var counter: Counter = .{};
+    var adapter = NetherNet(Channel, Counter){ .session = &local, .connection = &channel, .handler = &counter };
+
+    try testing.expectError(error.TransportClosed, adapter.pump());
+    try testing.expectEqual(session_mod.State.disconnected, local.state);
 }
 
 test "adapter sends reliable frames and stops once closed" {

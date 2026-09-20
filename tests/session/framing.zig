@@ -162,4 +162,197 @@ test "packet iteration can be replayed and reports semantic identity" {
 
     packets.reset();
     try testing.expectEqual(bedwire.PacketKind.other, packets.next().?.kind);
+    packets.deinit();
+}
+
+test "exhaust -> deinit -> new ingest" {
+    var session = try gameSession(testing.allocator, .server);
+    defer session.deinit();
+
+    var storage1: [16]u8 = undefined;
+    var storage2: [16]u8 = undefined;
+
+    var client = try gameSession(testing.allocator, .client);
+    defer client.deinit();
+    const frame1 = try client.encode(&.{support.packet(&storage1, 60, "p1")});
+
+    var iter1 = try session.ingest(frame1);
+    try testing.expect(session.active_generation != null);
+    try testing.expectEqual(bedwire.PacketKind.other, iter1.next().?.kind);
+    try testing.expectEqual(@as(?bedwire.Packet, null), iter1.next());
+    // exhausting the iterator drops the lease
+    try testing.expectEqual(@as(?u64, null), session.active_generation);
+
+    // safe to deinit after draining
+    iter1.deinit();
+    try testing.expectEqual(@as(?u64, null), session.active_generation);
+
+    const frame2 = try client.encode(&.{support.packet(&storage2, 60, "p2")});
+    var iter2 = try session.ingest(frame2);
+    defer iter2.deinit();
+    try testing.expect(session.active_generation != null);
+    try testing.expectEqual(bedwire.PacketKind.other, iter2.next().?.kind);
+    try testing.expectEqual(@as(?bedwire.Packet, null), iter2.next());
+}
+
+test "double deinit" {
+    var session = try gameSession(testing.allocator, .server);
+    defer session.deinit();
+
+    var client = try gameSession(testing.allocator, .client);
+    defer client.deinit();
+
+    var storage: [16]u8 = undefined;
+    const frame1 = try client.encode(&.{support.packet(&storage, 60, "p1")});
+
+    var iter1 = try session.ingest(frame1);
+    try testing.expect(session.active_generation != null);
+
+    iter1.deinit();
+    try testing.expectEqual(@as(?u64, null), session.active_generation);
+
+    // second deinit shouldn't explode
+    iter1.deinit();
+    try testing.expectEqual(@as(?u64, null), session.active_generation);
+
+    const frame2 = try client.encode(&.{support.packet(&storage, 60, "p2")});
+    var iter2 = try session.ingest(frame2);
+    defer iter2.deinit();
+    const active_gen = session.active_generation.?;
+
+    // stale deinit must not touch the newer iterator's lease
+    iter1.deinit();
+    try testing.expectEqual(active_gen, session.active_generation.?);
+
+    try testing.expectEqual(bedwire.PacketKind.other, iter2.next().?.kind);
+}
+
+test "old iterator vs newer ingest" {
+    var session = try gameSession(testing.allocator, .server);
+    defer session.deinit();
+
+    var client = try gameSession(testing.allocator, .client);
+    defer client.deinit();
+
+    var storage1: [16]u8 = undefined;
+    var storage2: [16]u8 = undefined;
+
+    const frame1 = try client.encode(&.{support.packet(&storage1, 60, "first_batch")});
+    var iter1 = try session.ingest(frame1);
+
+    // Packets is a copyable struct in Zig
+    var copy1 = iter1;
+
+    iter1.deinit();
+    try testing.expectEqual(@as(?u64, null), session.active_generation);
+
+    // buffer reused by next batch
+    const frame2 = try client.encode(&.{support.packet(&storage2, 60, "second_batch")});
+    var iter2 = try session.ingest(frame2);
+    defer iter2.deinit();
+    const gen2 = session.active_generation.?;
+
+    // old copy shouldn't be able to read the reused buffer
+    try testing.expectEqual(@as(?bedwire.Packet, null), copy1.next());
+
+    // stale deinit shouldn't clear the new lease
+    copy1.deinit();
+    try testing.expectEqual(gen2, session.active_generation.?);
+
+    // stale reset shouldn't reacquire either
+    copy1.reset();
+    try testing.expectEqual(gen2, session.active_generation.?);
+    try testing.expectEqual(@as(?bedwire.Packet, null), copy1.next());
+
+    // new iterator still works fine
+    const p = iter2.next().?;
+    try testing.expectEqual(bedwire.PacketKind.other, p.kind);
+    try testing.expectEqualSlices(u8, support.packet(&storage2, 60, "second_batch"), p.bytes);
+}
+
+test "reset semantics" {
+    var session = try gameSession(testing.allocator, .server);
+    defer session.deinit();
+
+    var client = try gameSession(testing.allocator, .client);
+    defer client.deinit();
+
+    var storage1: [16]u8 = undefined;
+    var storage2: [16]u8 = undefined;
+
+    const frame1 = try client.encode(&.{
+        support.packet(&storage1, 60, "a"),
+        support.packet(&storage2, 61, "b"),
+    });
+
+    var iter = try session.ingest(frame1);
+
+    // reset while active rewinds to start
+    try testing.expectEqual(bedwire.PacketKind.other, iter.next().?.kind);
+    iter.reset();
+    try testing.expectEqual(bedwire.PacketKind.other, iter.next().?.kind);
+    try testing.expectEqual(bedwire.PacketKind.other, iter.next().?.kind);
+    try testing.expectEqual(@as(?bedwire.Packet, null), iter.next());
+    try testing.expectEqual(@as(?u64, null), session.active_generation);
+
+    // reset after exhaustion reacquires the lease if buffer wasn't reused
+    iter.reset();
+    try testing.expect(session.active_generation != null);
+    try testing.expectError(error.InvalidState, session.ingest(frame1));
+    try testing.expectEqual(bedwire.PacketKind.other, iter.next().?.kind);
+    try testing.expectEqual(bedwire.PacketKind.other, iter.next().?.kind);
+    try testing.expectEqual(@as(?bedwire.Packet, null), iter.next());
+    try testing.expectEqual(@as(?u64, null), session.active_generation);
+
+    // once buffer gets reused, old iterator can't reset
+    var storage3: [16]u8 = undefined;
+    const frame2 = try client.encode(&.{support.packet(&storage3, 60, "c")});
+    var iter2 = try session.ingest(frame2);
+    defer iter2.deinit();
+
+    iter.reset();
+    try testing.expectEqual(@as(?bedwire.Packet, null), iter.next());
+
+    // explicit deinit also kills reset
+    var iter2_copy = iter2;
+    iter2_copy.deinit();
+    iter2_copy.reset();
+    try testing.expectEqual(@as(?bedwire.Packet, null), iter2_copy.next());
+}
+
+test "nested ingest rejection without disconnect" {
+    var session = try gameSession(testing.allocator, .server);
+    defer session.deinit();
+
+    var client = try gameSession(testing.allocator, .client);
+    defer client.deinit();
+
+    var storage1: [16]u8 = undefined;
+    var storage2: [16]u8 = undefined;
+
+    const frame1 = try client.encode(&.{
+        support.packet(&storage1, 60, "p1"),
+        support.packet(&storage2, 61, "p2"),
+    });
+
+    var outer = try session.ingest(frame1);
+    defer outer.deinit();
+
+    const p1 = outer.next().?;
+    try testing.expectEqual(bedwire.PacketKind.other, p1.kind);
+
+    // nested ingest rejected while outer iterator still has the lease
+    var storage3: [16]u8 = undefined;
+    const frame2 = try client.encode(&.{support.packet(&storage3, 60, "nested")});
+    try testing.expectError(error.InvalidState, session.ingest(frame2));
+
+    // rejection shouldn't tear down the session
+    try testing.expectEqual(bedwire.State.in_game, session.state);
+    try testing.expect(session.active_generation != null);
+
+    // outer iterator should still work
+    const p2 = outer.next().?;
+    try testing.expectEqual(bedwire.PacketKind.other, p2.kind);
+    try testing.expectEqual(@as(u10, 61), p2.id);
+    try testing.expectEqual(@as(?bedwire.Packet, null), outer.next());
 }

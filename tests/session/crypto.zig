@@ -30,6 +30,7 @@ test "an encrypted session stays in step over many batches" {
         const packet = support.packet(&storage, 60, &[_]u8{@intCast(i % 251)});
 
         var packets = try pair.clientToServer(&.{packet});
+        defer packets.deinit();
         try testing.expectEqualSlices(u8, packet, packets.next().?.bytes);
     }
 
