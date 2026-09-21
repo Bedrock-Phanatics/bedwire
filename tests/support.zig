@@ -246,4 +246,3 @@ pub fn rsaKey1() std.crypto.Certificate.rsa.PublicKey {
 pub fn rsaKey2() std.crypto.Certificate.rsa.PublicKey {
     return std.crypto.Certificate.rsa.PublicKey.fromBytes(&rsa_key2_e, &rsa_key2_n) catch unreachable;
 }
-

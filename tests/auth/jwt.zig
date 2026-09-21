@@ -290,4 +290,3 @@ test "ES384 token rejects parse when parsed as RS256 and rejects verifyRsa" {
     defer token.deinit();
     try testing.expectError(error.UnsupportedAlgorithm, token.verifyRsa(support.rsaKey1()));
 }
-
