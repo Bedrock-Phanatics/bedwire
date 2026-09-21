@@ -21,6 +21,11 @@ pub const Limits = struct {
     max_resource_pack_chunk_bytes: usize = 1024 * 1024,
     max_pack_id_bytes: usize = 256,
 
+    max_jwks_bytes: usize = 64 * 1024,
+    max_jwks_keys: usize = 16,
+    max_connection_request_bytes: usize = 2 * 1024 * 1024,
+    max_kid_bytes: usize = 64,
+
     pub const max_supported_json_nesting: usize = 128;
 
     pub fn validate(self: Limits) !void {
@@ -37,7 +42,11 @@ pub const Limits = struct {
             self.max_resource_pack_bytes > 0 and
             self.max_resource_packs > 0 and
             self.max_resource_pack_chunk_bytes > 0 and
-            self.max_pack_id_bytes > 0;
+            self.max_pack_id_bytes > 0 and
+            self.max_jwks_bytes > 0 and
+            self.max_jwks_keys > 0 and
+            self.max_connection_request_bytes > 0 and
+            self.max_kid_bytes > 0;
         if (!positive) return error.InvalidLimits;
 
         if (self.max_json_nesting > max_supported_json_nesting) return error.InvalidLimits;
@@ -55,4 +64,8 @@ test "limits reject impossible configurations" {
     try std.testing.expectError(error.InvalidLimits, (Limits{ .max_json_nesting = 1000 }).validate());
     try std.testing.expectError(error.InvalidLimits, (Limits{ .max_packet_bytes = 32, .max_batch_bytes = 16 }).validate());
     try std.testing.expectError(error.InvalidLimits, (Limits{ .max_batch_bytes = std.math.maxInt(usize) }).validate());
+    try std.testing.expectError(error.InvalidLimits, (Limits{ .max_jwks_bytes = 0 }).validate());
+    try std.testing.expectError(error.InvalidLimits, (Limits{ .max_jwks_keys = 0 }).validate());
+    try std.testing.expectError(error.InvalidLimits, (Limits{ .max_connection_request_bytes = 0 }).validate());
+    try std.testing.expectError(error.InvalidLimits, (Limits{ .max_kid_bytes = 0 }).validate());
 }

@@ -253,3 +253,41 @@ test "SPKI decoding refuses anything but a canonical uncompressed key" {
     mutated[23] = 3;
     try testing.expectError(error.InvalidPublicKey, bedwire.crypto.spki.decode(&mutated));
 }
+
+test "RS256 token parses and verifies with valid RSA key" {
+    const allocator = testing.allocator;
+
+    var token = try jwt.Token.parseWithAlgorithm(allocator, support.rsa_valid_jwt, support.limits, .RS256);
+    defer token.deinit();
+
+    try testing.expectEqualStrings("test-rsa-key-1", token.kid().?);
+    try token.verifyRsa(support.rsaKey1());
+    try testing.expectError(error.InvalidSignature, token.verifyRsa(support.rsaKey2()));
+
+    const ec_key = try support.deterministicKey(1);
+    try testing.expectError(error.UnsupportedAlgorithm, token.verifyEcdsa(ec_key.public_key));
+
+    try token.validateTime(1500000000, true);
+    try testing.expectError(error.TokenNotYetValid, token.validateTime(500000000, true));
+    try testing.expectError(error.ExpiredToken, token.validateTime(2500000000, true));
+}
+
+test "RS256 token rejects parse when parsed as ES384" {
+    const allocator = testing.allocator;
+    try testing.expectError(error.UnsupportedAlgorithm, jwt.Token.parse(allocator, support.rsa_valid_jwt, support.limits));
+}
+
+test "ES384 token rejects parse when parsed as RS256 and rejects verifyRsa" {
+    const allocator = testing.allocator;
+    const key = try support.deterministicKey(1);
+
+    const encoded = try support.signToken(allocator, key, "{\"alg\":\"ES384\"}", "{\"exp\":200}");
+    defer allocator.free(encoded);
+
+    try testing.expectError(error.UnsupportedAlgorithm, jwt.Token.parseWithAlgorithm(allocator, encoded, support.limits, .RS256));
+
+    var token = try jwt.Token.parse(allocator, encoded, support.limits);
+    defer token.deinit();
+    try testing.expectError(error.UnsupportedAlgorithm, token.verifyRsa(support.rsaKey1()));
+}
+

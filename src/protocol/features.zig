@@ -23,6 +23,11 @@ pub const CompressionMode = enum {
     marked,
 };
 
+pub const ConnectionRequestFormat = enum {
+    legacy_chain,
+    envelope,
+};
+
 pub const LoginFlow = enum {
     certificate_chain,
     oidc,
@@ -43,6 +48,7 @@ pub const SessionFeatures = struct {
     supports_deflate: bool = true,
     // default algorithm before negotiation
     initial_algorithm: Algorithm = .none,
+    connection_request_format: ConnectionRequestFormat = .legacy_chain,
     login_flow: LoginFlow = .certificate_chain,
     resource_pack_flow: ResourcePackFlow = .with_validation,
     encryption: EncryptionPolicy = .required,
@@ -66,6 +72,32 @@ pub const SessionFeatures = struct {
 
 /// returns session flags for a given bedrock protocol version
 pub fn forVersion(version: u32) SessionFeatures {
+    // 1.21.130 (898)+ activated OIDC login flow with cpk binding
+    if (version >= 898) {
+        return .{
+            .uses_request_network_settings = true,
+            .compression_mode = .marked,
+            .supports_snappy = true,
+            .initial_algorithm = .none,
+            .connection_request_format = .envelope,
+            .login_flow = .oidc,
+            .resource_pack_flow = .with_validation,
+        };
+    }
+
+    // 1.21.90 (818)+ added ResourcePacksReadyForValidation and envelope framing (legacy cert in Certificate)
+    if (version >= 818) {
+        return .{
+            .uses_request_network_settings = true,
+            .compression_mode = .marked,
+            .supports_snappy = true,
+            .initial_algorithm = .none,
+            .connection_request_format = .envelope,
+            .login_flow = .certificate_chain,
+            .resource_pack_flow = .with_validation,
+        };
+    }
+
     // 1.19.30 (554)+ added RequestNetworkSettings, snappy and compression markers
     if (version >= 554) {
         return .{
@@ -73,8 +105,9 @@ pub fn forVersion(version: u32) SessionFeatures {
             .compression_mode = .marked,
             .supports_snappy = true,
             .initial_algorithm = .none,
-            // 1.21.90 (818)+ added ResourcePacksReadyForValidation
-            .resource_pack_flow = if (version >= 818) .with_validation else .classic,
+            .connection_request_format = .legacy_chain,
+            .login_flow = .certificate_chain,
+            .resource_pack_flow = .classic,
         };
     }
 
@@ -85,6 +118,8 @@ pub fn forVersion(version: u32) SessionFeatures {
             .compression_mode = .implicit,
             .supports_snappy = false,
             .initial_algorithm = .deflate,
+            .connection_request_format = .legacy_chain,
+            .login_flow = .certificate_chain,
             .resource_pack_flow = .classic,
         };
     }
@@ -94,6 +129,8 @@ pub fn forVersion(version: u32) SessionFeatures {
         .compression_mode = .implicit,
         .supports_snappy = false,
         .initial_algorithm = .deflate,
+        .connection_request_format = .legacy_chain,
+        .login_flow = .certificate_chain,
         .resource_pack_flow = .classic,
     };
 }
@@ -107,6 +144,24 @@ test "version profiles stay internally consistent" {
     try std.testing.expectEqual(CompressionMode.implicit, forVersion(500).compression_mode);
     try std.testing.expectEqual(ResourcePackFlow.classic, forVersion(600).resource_pack_flow);
     try std.testing.expectEqual(ResourcePackFlow.with_validation, forVersion(818).resource_pack_flow);
+}
+
+test "version profiles correctly map connection_request format and login flow" {
+    const v440 = forVersion(440);
+    try std.testing.expectEqual(ConnectionRequestFormat.legacy_chain, v440.connection_request_format);
+    try std.testing.expectEqual(LoginFlow.certificate_chain, v440.login_flow);
+
+    const v818 = forVersion(818);
+    try std.testing.expectEqual(ConnectionRequestFormat.envelope, v818.connection_request_format);
+    try std.testing.expectEqual(LoginFlow.certificate_chain, v818.login_flow);
+
+    const v898 = forVersion(898);
+    try std.testing.expectEqual(ConnectionRequestFormat.envelope, v898.connection_request_format);
+    try std.testing.expectEqual(LoginFlow.oidc, v898.login_flow);
+
+    const v944 = forVersion(944);
+    try std.testing.expectEqual(ConnectionRequestFormat.envelope, v944.connection_request_format);
+    try std.testing.expectEqual(LoginFlow.oidc, v944.login_flow);
 }
 
 test "feature validation rejects contradictory profiles" {

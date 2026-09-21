@@ -18,6 +18,7 @@ pub const protocol = struct {
     pub const SessionFeatures = @import("protocol/features.zig").SessionFeatures;
     pub const Algorithm = @import("protocol/features.zig").Algorithm;
     pub const CompressionMode = @import("protocol/features.zig").CompressionMode;
+    pub const ConnectionRequestFormat = @import("protocol/features.zig").ConnectionRequestFormat;
     pub const LoginFlow = @import("protocol/features.zig").LoginFlow;
     pub const ResourcePackFlow = @import("protocol/features.zig").ResourcePackFlow;
     pub const EncryptionPolicy = @import("protocol/features.zig").EncryptionPolicy;
@@ -59,7 +60,9 @@ pub const crypto = struct {
 };
 
 pub const auth = struct {
+    pub const wire = @import("auth/wire.zig");
     pub const jwt = @import("auth/jwt.zig");
+    pub const jwks = @import("auth/jwks.zig");
     pub const login = @import("auth/login.zig");
     pub const Identity = @import("auth/chain.zig").Identity;
     pub const ChainPolicy = @import("auth/chain.zig").ChainPolicy;
@@ -102,6 +105,8 @@ test {
     _ = @import("session/state.zig");
     _ = @import("session/pool.zig");
     _ = @import("session/session.zig");
+    _ = @import("auth/wire.zig");
+    _ = @import("auth/jwks.zig");
     _ = @import("transport/raknet.zig");
     _ = @import("transport/nethernet.zig");
 }

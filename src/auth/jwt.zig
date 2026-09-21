@@ -3,8 +3,25 @@ const std = @import("std");
 const Limits = @import("../limits.zig").Limits;
 const spki = @import("../crypto/spki.zig");
 
-// bedrock uses es384 for all tokens
+// bedrock uses es384 for legacy chains and client data, rs256 for modern oidc
 pub const algorithm = "ES384";
+
+pub const Algorithm = enum {
+    ES384,
+    RS256,
+
+    pub fn name(self: Algorithm) []const u8 {
+        return switch (self) {
+            .ES384 => "ES384",
+            .RS256 => "RS256",
+        };
+    }
+};
+
+pub const Signature = union(Algorithm) {
+    ES384: [96]u8,
+    RS256: [256]u8,
+};
 
 /// parsed compact jwt (header.payload.signature)
 pub const Token = struct {
@@ -14,19 +31,29 @@ pub const Token = struct {
     header: std.json.Parsed(std.json.Value),
     payload: std.json.Parsed(std.json.Value),
     signed: []const u8,
-    signature: [96]u8,
+    signature: Signature,
 
     pub fn parse(allocator: std.mem.Allocator, input: []const u8, limits: Limits) !Token {
+        return parseWithAlgorithm(allocator, input, limits, .ES384);
+    }
+
+    pub fn parseWithAlgorithm(
+        allocator: std.mem.Allocator,
+        input: []const u8,
+        limits: Limits,
+        expected_alg: Algorithm,
+    ) !Token {
         const json_limit = try std.math.add(usize, limits.max_jwt_header_bytes, limits.max_jwt_payload_bytes);
         const encoded_limit = try std.math.mul(usize, json_limit, 2);
-        const max_size = try std.math.add(usize, encoded_limit, 130);
+        const max_size = try std.math.add(usize, encoded_limit, 350);
         if (input.len > max_size) return error.LimitExceeded;
 
         var parts = std.mem.splitScalar(u8, input, '.');
         const encoded_header = parts.next() orelse return error.InvalidToken;
         const encoded_payload = parts.next() orelse return error.InvalidToken;
         const encoded_signature = parts.next() orelse return error.InvalidToken;
-        if (parts.next() != null or encoded_signature.len != 128) return error.InvalidToken;
+
+        if (parts.next() != null) return error.InvalidToken;
 
         const header_bytes = try decodeSegment(allocator, encoded_header, limits.max_jwt_header_bytes);
         errdefer allocator.free(header_bytes);
@@ -40,11 +67,28 @@ pub const Token = struct {
         const payload = try parseJson(allocator, payload_bytes, limits);
         errdefer payload.deinit();
 
-        if (!std.mem.eql(u8, try string(header.value, "alg"), algorithm)) return error.UnsupportedAlgorithm;
+        if (!std.mem.eql(u8, try string(header.value, "alg"), expected_alg.name())) return error.UnsupportedAlgorithm;
         if (header.value.object.contains("crit") or header.value.object.contains("b64")) return error.UnsupportedAlgorithm;
 
-        var signature: [96]u8 = undefined;
-        std.base64.url_safe_no_pad.Decoder.decode(&signature, encoded_signature) catch return error.InvalidToken;
+        const expected_sig_len: usize = switch (expected_alg) {
+            .ES384 => 128,
+            .RS256 => 342,
+        };
+        if (encoded_signature.len != expected_sig_len) return error.InvalidToken;
+
+        var signature: Signature = undefined;
+        switch (expected_alg) {
+            .ES384 => {
+                var sig_bytes: [96]u8 = undefined;
+                std.base64.url_safe_no_pad.Decoder.decode(&sig_bytes, encoded_signature) catch return error.InvalidToken;
+                signature = .{ .ES384 = sig_bytes };
+            },
+            .RS256 => {
+                var sig_bytes: [256]u8 = undefined;
+                std.base64.url_safe_no_pad.Decoder.decode(&sig_bytes, encoded_signature) catch return error.InvalidToken;
+                signature = .{ .RS256 = sig_bytes };
+            },
+        }
 
         return .{
             .allocator = allocator,
@@ -57,6 +101,12 @@ pub const Token = struct {
         };
     }
 
+    pub fn kid(self: *const Token) ?[]const u8 {
+        const val = self.header.value.object.get("kid") orelse return null;
+        if (val != .string) return null;
+        return val.string;
+    }
+
     pub fn deinit(self: *Token) void {
         self.header.deinit();
         self.payload.deinit();
@@ -66,7 +116,31 @@ pub const Token = struct {
     }
 
     pub fn verify(self: *const Token, key: spki.Ecdsa.PublicKey) !void {
-        spki.Ecdsa.Signature.fromBytes(self.signature).verify(self.signed, key) catch return error.InvalidSignature;
+        return self.verifyEcdsa(key);
+    }
+
+    pub fn verifyEcdsa(self: *const Token, key: spki.Ecdsa.PublicKey) !void {
+        switch (self.signature) {
+            .ES384 => |sig| {
+                spki.Ecdsa.Signature.fromBytes(sig).verify(self.signed, key) catch return error.InvalidSignature;
+            },
+            else => return error.UnsupportedAlgorithm,
+        }
+    }
+
+    pub fn verifyRsa(self: *const Token, key: std.crypto.Certificate.rsa.PublicKey) !void {
+        switch (self.signature) {
+            .RS256 => |sig| {
+                std.crypto.Certificate.rsa.PKCS1v1_5Signature.verify(
+                    256,
+                    sig,
+                    self.signed,
+                    key,
+                    std.crypto.hash.sha2.Sha256,
+                ) catch return error.InvalidSignature;
+            },
+            else => return error.UnsupportedAlgorithm,
+        }
     }
 
     /// check exp and nbf timestamps
