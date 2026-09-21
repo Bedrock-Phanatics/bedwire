@@ -31,6 +31,9 @@ pub const Session = @import("session/session.zig").Session;
 pub const Packet = @import("session/session.zig").Packet;
 pub const Packets = @import("session/session.zig").Packets;
 pub const SessionOptions = @import("session/session.zig").Options;
+pub const Frame = @import("session/session.zig").Frame;
+pub const BufferPool = @import("session/session.zig").BufferPool;
+pub const PoolConfig = @import("session/session.zig").PoolConfig;
 pub const Role = @import("session/state.zig").Role;
 pub const State = @import("session/state.zig").State;
 pub const PacketKind = protocol.PacketKind;
@@ -97,6 +100,8 @@ test {
     _ = @import("framing/varint.zig");
     _ = @import("framing/batch.zig");
     _ = @import("session/state.zig");
+    _ = @import("session/pool.zig");
+    _ = @import("session/session.zig");
     _ = @import("transport/raknet.zig");
     _ = @import("transport/nethernet.zig");
 }

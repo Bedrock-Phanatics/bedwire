@@ -48,7 +48,8 @@ pub fn NetherNet(comptime Connection: type, comptime Handler: type) type {
 
         pub fn send(self: *Self, packets: []const []const u8) !void {
             const frame = try self.session.encode(packets);
-            self.connection.send(frame, .reliable) catch |err| {
+            defer frame.release();
+            self.connection.send(frame.bytes, .reliable) catch |err| {
                 self.session.close();
                 return err;
             };
@@ -111,15 +112,20 @@ test "pump accepts reliable messages and refuses unreliable ones" {
     const allocator = testing.allocator;
     const version = comptime registry.describe(800) catch unreachable;
 
-    var peer_session = try Session.init(allocator, .server, &version, .{ .limits = limits });
+    var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var peer_session = try Session.init(allocator, .server, &version, .{ .limits = limits, .pool = &pool });
     defer peer_session.deinit();
     peer_session.state = .in_game;
 
-    var local = try Session.init(allocator, .client, &version, .{ .limits = limits });
+    var local = try Session.init(allocator, .client, &version, .{ .limits = limits, .pool = &pool });
     defer local.deinit();
     local.state = .in_game;
 
-    const frame = try allocator.dupe(u8, try peer_session.encode(&.{ &.{ 9, 1 }, &.{ 10, 2 } }));
+    const encoded = try peer_session.encode(&.{ &.{ 9, 1 }, &.{ 10, 2 } });
+    defer encoded.release();
+    const frame = try allocator.dupe(u8, encoded.bytes);
     defer allocator.free(frame);
 
     var channel: Channel = .{ .inbound = frame };
@@ -138,7 +144,10 @@ test "terminal connection failure in pump disconnects the session" {
     const allocator = testing.allocator;
     const version = comptime registry.describe(800) catch unreachable;
 
-    var local = try Session.init(allocator, .client, &version, .{ .limits = limits });
+    var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var local = try Session.init(allocator, .client, &version, .{ .limits = limits, .pool = &pool });
     defer local.deinit();
     local.state = .in_game;
 
@@ -154,7 +163,10 @@ test "adapter sends reliable frames and stops once closed" {
     const allocator = testing.allocator;
     const version = comptime registry.describe(800) catch unreachable;
 
-    var local = try Session.init(allocator, .client, &version, .{ .limits = limits });
+    var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var local = try Session.init(allocator, .client, &version, .{ .limits = limits, .pool = &pool });
     defer local.deinit();
     local.state = .in_game;
 

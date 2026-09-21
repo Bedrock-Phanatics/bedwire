@@ -35,8 +35,8 @@ pub fn RakNet(comptime Peer: type, comptime Handler: type) type {
         /// encodes packets into a 0xfe batch and sends reliable ordered
         pub fn send(self: *Self, packets: []const []const u8) !void {
             const frame = try self.session.encode(packets);
-            self.peer.send(frame, .reliable_ordered, self.channel) catch |err| {
-                // kill session immediately on send error to avoid cipher desync
+            defer frame.release();
+            self.peer.send(frame.bytes, .reliable_ordered, self.channel) catch |err| {
                 self.session.close();
                 return err;
             };
@@ -107,11 +107,14 @@ test "adapter drives ingest and reliable ordered send" {
     const allocator = testing.allocator;
     const version = comptime registry.describe(800) catch unreachable;
 
-    var server = try Session.init(allocator, .server, &version, .{ .limits = limits });
+    var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var server = try Session.init(allocator, .server, &version, .{ .limits = limits, .pool = &pool });
     defer server.deinit();
     server.state = .in_game;
 
-    var client = try Session.init(allocator, .client, &version, .{ .limits = limits });
+    var client = try Session.init(allocator, .client, &version, .{ .limits = limits, .pool = &pool });
     defer client.deinit();
     client.state = .in_game;
 
@@ -125,7 +128,9 @@ test "adapter drives ingest and reliable ordered send" {
     try adapter.sendOne(&.{ 9, 1, 2 });
     try testing.expectEqual(@as(usize, 1), peer.frames.items.len);
 
-    const frame = try allocator.dupe(u8, server.encode(&.{ &.{ 10, 7 }, &.{ 12, 8 } }) catch unreachable);
+    const encoded = try server.encode(&.{ &.{ 10, 7 }, &.{ 12, 8 } });
+    defer encoded.release();
+    const frame = try allocator.dupe(u8, encoded.bytes);
     defer allocator.free(frame);
 
     try adapter.deliver(frame);
@@ -137,7 +142,10 @@ test "transport failure closes the session" {
     const allocator = testing.allocator;
     const version = comptime registry.describe(800) catch unreachable;
 
-    var client = try Session.init(allocator, .client, &version, .{ .limits = limits });
+    var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var client = try Session.init(allocator, .client, &version, .{ .limits = limits, .pool = &pool });
     defer client.deinit();
     client.state = .in_game;
 
@@ -157,7 +165,10 @@ test "hostile payload closes the session inside the callback" {
     const allocator = testing.allocator;
     const version = comptime registry.describe(800) catch unreachable;
 
-    var server = try Session.init(allocator, .server, &version, .{ .limits = limits });
+    var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var server = try Session.init(allocator, .server, &version, .{ .limits = limits, .pool = &pool });
     defer server.deinit();
 
     var peer: FakePeer = .{ .allocator = allocator };
@@ -176,11 +187,14 @@ test "reentrant deliver or ingest is rejected with InvalidState" {
     const allocator = testing.allocator;
     const version = comptime registry.describe(800) catch unreachable;
 
-    var server = try Session.init(allocator, .server, &version, .{ .limits = limits });
+    var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var server = try Session.init(allocator, .server, &version, .{ .limits = limits, .pool = &pool });
     defer server.deinit();
     server.state = .in_game;
 
-    var client = try Session.init(allocator, .client, &version, .{ .limits = limits });
+    var client = try Session.init(allocator, .client, &version, .{ .limits = limits, .pool = &pool });
     defer client.deinit();
     client.state = .in_game;
 
@@ -203,7 +217,9 @@ test "reentrant deliver or ingest is rejected with InvalidState" {
     var handler: ReentrantHandler = .{};
     var adapter = RakNet(FakePeer, ReentrantHandler){ .session = &client, .peer = &peer, .handler = &handler };
 
-    const frame = try allocator.dupe(u8, try server.encode(&.{&.{ 9, 1 }}));
+    const encoded = try server.encode(&.{&.{ 9, 1 }});
+    defer encoded.release();
+    const frame = try allocator.dupe(u8, encoded.bytes);
     defer allocator.free(frame);
 
     try adapter.deliver(frame);

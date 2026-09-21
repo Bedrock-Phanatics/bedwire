@@ -58,19 +58,26 @@ pub const Builder = struct {
 /// a frame survives the encode that produced it.
 pub const Pair = struct {
     allocator: std.mem.Allocator,
+    pool: *bedwire.BufferPool,
     server: Session,
     client: Session,
     relay: []u8,
 
     pub fn init(allocator: std.mem.Allocator, descriptor: *const bedwire.Descriptor) !Pair {
-        var server = try Session.init(allocator, .server, descriptor, .{ .limits = limits });
+        const pool = try allocator.create(bedwire.BufferPool);
+        errdefer allocator.destroy(pool);
+        pool.* = try bedwire.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
+        errdefer pool.deinit();
+
+        var server = try Session.init(allocator, .server, descriptor, .{ .limits = limits, .pool = pool });
         errdefer server.deinit();
 
-        var client = try Session.init(allocator, .client, descriptor, .{ .limits = limits });
+        var client = try Session.init(allocator, .client, descriptor, .{ .limits = limits, .pool = pool });
         errdefer client.deinit();
 
         return .{
             .allocator = allocator,
+            .pool = pool,
             .server = server,
             .client = client,
             .relay = try allocator.alloc(u8, limits.max_frame_bytes),
@@ -80,6 +87,8 @@ pub const Pair = struct {
     pub fn deinit(self: *Pair) void {
         self.server.deinit();
         self.client.deinit();
+        self.pool.deinit();
+        self.allocator.destroy(self.pool);
         self.allocator.free(self.relay);
         self.* = undefined;
     }
@@ -87,9 +96,10 @@ pub const Pair = struct {
     /// Encodes on `from`, copies the frame, and ingests it on `to`.
     pub fn relayFrom(self: *Pair, from: *Session, to: *Session, packets: []const []const u8) !bedwire.Packets {
         const frame = try from.encode(packets);
-        @memcpy(self.relay[0..frame.len], frame);
+        defer frame.release();
+        @memcpy(self.relay[0..frame.bytes.len], frame.bytes);
 
-        return to.ingest(self.relay[0..frame.len]);
+        return to.ingest(self.relay[0..frame.bytes.len]);
     }
 
     pub fn clientToServer(self: *Pair, packets: []const []const u8) !bedwire.Packets {

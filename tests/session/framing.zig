@@ -4,20 +4,23 @@ const support = @import("../support.zig");
 
 const testing = std.testing;
 
-fn gameSession(allocator: std.mem.Allocator, role: bedwire.Role) !bedwire.Session {
-    var session = try bedwire.Session.init(allocator, role, &support.modern, .{ .limits = support.limits });
+fn gameSession(allocator: std.mem.Allocator, pool: *bedwire.BufferPool, role: bedwire.Role) !bedwire.Session {
+    var session = try bedwire.Session.init(allocator, role, &support.modern, .{ .pool = pool, .limits = support.limits });
     session.state = .in_game;
     return session;
 }
 
 test "frames must carry the session header" {
-    var session = try gameSession(testing.allocator, .server);
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try gameSession(testing.allocator, &pool, .server);
     defer session.deinit();
 
     try testing.expectError(error.MalformedBatch, session.ingest(&.{}));
     try testing.expectEqual(bedwire.State.disconnected, session.state);
 
-    var other = try gameSession(testing.allocator, .server);
+    var other = try gameSession(testing.allocator, &pool, .server);
     defer other.deinit();
     try testing.expectError(error.MalformedBatch, other.ingest(&.{ 0xfd, 2, 60, 0 }));
 }
@@ -42,8 +45,11 @@ test "malformed and truncated length prefixes are rejected" {
         &.{ 0xfe, 2, 60, 1, 5 }, // trailing prefix with no payload
     };
 
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
     for (cases) |frame| {
-        var session = try gameSession(testing.allocator, .server);
+        var session = try gameSession(testing.allocator, &pool, .server);
         defer session.deinit();
 
         try testing.expectError(error.MalformedBatch, session.ingest(frame));
@@ -61,15 +67,15 @@ test "a batch that smuggles one illegal packet delivers none of them" {
     var illegal: [16]u8 = undefined;
     const login_id = support.idOf(&support.modern, .login);
 
-    // Encode a mixed batch while the state machine still permits both, then
-    // deliver it to a session that does not.
+    // encode a mixed batch while the state machine permits both
     pair.client.state = .spawn_ready;
     const frame = try pair.client.encode(&.{
         support.packet(&legal, 60, "ok"),
         support.packet(&illegal, 61, "ok"),
     });
-    @memcpy(pair.relay[0..frame.len], frame);
-    const captured = pair.relay[0..frame.len];
+    defer frame.release();
+    @memcpy(pair.relay[0..frame.bytes.len], frame.bytes);
+    const captured = pair.relay[0..frame.bytes.len];
 
     pair.server.state = .resource_packs;
     try testing.expectError(error.InvalidState, pair.server.ingest(captured));
@@ -85,7 +91,10 @@ test "packet count and packet size limits bound one batch" {
         .max_packets_per_batch = 3,
     };
 
-    var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .limits = tight });
+    var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 
@@ -93,7 +102,8 @@ test "packet count and packet size limits bound one batch" {
     var packets: [4][]const u8 = undefined;
     for (&packets, 0..) |*slot, i| slot.* = support.packet(&storage[i], 60 + @as(u16, @intCast(i)), "x");
 
-    _ = try session.encode(packets[0..3]);
+    const ok_frame = try session.encode(packets[0..3]);
+    ok_frame.release();
     try testing.expectError(error.LimitExceeded, session.encode(&packets));
 
     var oversized: [64]u8 = undefined;
@@ -103,7 +113,10 @@ test "packet count and packet size limits bound one batch" {
 test "an oversized frame is refused before it is copied" {
     const tight: bedwire.Limits = .{ .max_frame_bytes = 32, .max_batch_bytes = 64, .max_packet_bytes = 32 };
 
-    var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .limits = tight });
+    var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 
@@ -117,7 +130,10 @@ test "an oversized frame is refused before it is copied" {
 test "output that cannot fit a frame fails instead of truncating" {
     const tight: bedwire.Limits = .{ .max_frame_bytes = 48, .max_batch_bytes = 4096, .max_packet_bytes = 4096 };
 
-    var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .limits = tight });
+    var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 
@@ -134,7 +150,7 @@ test "invalid packet headers are refused on both paths" {
     pair.client.state = .in_game;
     pair.server.state = .in_game;
 
-    // 0x4000 and above does not fit the 14-bit header.
+    // 0x4000 and above does not fit the 14-bit header
     try testing.expectError(error.MalformedBatch, pair.client.encodeOne(&.{ 0x80, 0x80, 0x02 }));
     try testing.expectError(error.MalformedBatch, pair.server.ingest(&.{ 0xfe, 3, 0x80, 0x80, 0x02 }));
 }
@@ -153,42 +169,53 @@ test "packet iteration can be replayed and reports semantic identity" {
         support.packet(&first, 60, "a"),
         support.packet(&second, disconnect_id, "b"),
     });
+    defer packets.deinit();
 
     try testing.expectEqual(bedwire.PacketKind.other, packets.next().?.kind);
     const disconnect = packets.next().?;
     try testing.expectEqual(bedwire.PacketKind.disconnect, disconnect.kind);
     try testing.expectEqual(disconnect_id, disconnect.id);
-    try testing.expectEqual(@as(?bedwire.Packet, null), packets.next());
 
+    // reset while active rewinds to beginning
     packets.reset();
     try testing.expectEqual(bedwire.PacketKind.other, packets.next().?.kind);
-    packets.deinit();
 }
 
 test "exhaust -> deinit -> new ingest" {
-    var session = try gameSession(testing.allocator, .server);
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try gameSession(testing.allocator, &pool, .server);
     defer session.deinit();
 
     var storage1: [16]u8 = undefined;
     var storage2: [16]u8 = undefined;
 
-    var client = try gameSession(testing.allocator, .client);
+    var client = try gameSession(testing.allocator, &pool, .client);
     defer client.deinit();
     const frame1 = try client.encode(&.{support.packet(&storage1, 60, "p1")});
+    defer frame1.release();
 
-    var iter1 = try session.ingest(frame1);
+    var iter1 = try session.ingest(frame1.bytes);
     try testing.expect(session.active_generation != null);
-    try testing.expectEqual(bedwire.PacketKind.other, iter1.next().?.kind);
+    const p1 = iter1.next().?;
+    try testing.expectEqual(bedwire.PacketKind.other, p1.kind);
     try testing.expectEqual(@as(?bedwire.Packet, null), iter1.next());
-    // exhausting the iterator drops the lease
-    try testing.expectEqual(@as(?u64, null), session.active_generation);
 
-    // safe to deinit after draining
+    // EOF preserves RX storage and active ownership until deinit
+    try testing.expect(session.active_generation != null);
+    try testing.expectEqualStrings("p1", p1.bytes[p1.bytes.len - 2 ..]);
+
+    // new ingest rejected while EOF iterator still active
+    const frame2 = try client.encode(&.{support.packet(&storage2, 60, "p2")});
+    defer frame2.release();
+    try testing.expectError(error.InvalidState, session.ingest(frame2.bytes));
+
+    // deinit releases the RX lease
     iter1.deinit();
     try testing.expectEqual(@as(?u64, null), session.active_generation);
 
-    const frame2 = try client.encode(&.{support.packet(&storage2, 60, "p2")});
-    var iter2 = try session.ingest(frame2);
+    var iter2 = try session.ingest(frame2.bytes);
     defer iter2.deinit();
     try testing.expect(session.active_generation != null);
     try testing.expectEqual(bedwire.PacketKind.other, iter2.next().?.kind);
@@ -196,31 +223,36 @@ test "exhaust -> deinit -> new ingest" {
 }
 
 test "double deinit" {
-    var session = try gameSession(testing.allocator, .server);
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try gameSession(testing.allocator, &pool, .server);
     defer session.deinit();
 
-    var client = try gameSession(testing.allocator, .client);
+    var client = try gameSession(testing.allocator, &pool, .client);
     defer client.deinit();
 
     var storage: [16]u8 = undefined;
     const frame1 = try client.encode(&.{support.packet(&storage, 60, "p1")});
+    defer frame1.release();
 
-    var iter1 = try session.ingest(frame1);
+    var iter1 = try session.ingest(frame1.bytes);
     try testing.expect(session.active_generation != null);
 
     iter1.deinit();
     try testing.expectEqual(@as(?u64, null), session.active_generation);
 
-    // second deinit shouldn't explode
+    // second deinit is safe no-op
     iter1.deinit();
     try testing.expectEqual(@as(?u64, null), session.active_generation);
 
     const frame2 = try client.encode(&.{support.packet(&storage, 60, "p2")});
-    var iter2 = try session.ingest(frame2);
+    defer frame2.release();
+    var iter2 = try session.ingest(frame2.bytes);
     defer iter2.deinit();
     const active_gen = session.active_generation.?;
 
-    // stale deinit must not touch the newer iterator's lease
+    // stale deinit must not touch newer iterator lease
     iter1.deinit();
     try testing.expectEqual(active_gen, session.active_generation.?);
 
@@ -228,53 +260,58 @@ test "double deinit" {
 }
 
 test "old iterator vs newer ingest" {
-    var session = try gameSession(testing.allocator, .server);
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try gameSession(testing.allocator, &pool, .server);
     defer session.deinit();
 
-    var client = try gameSession(testing.allocator, .client);
+    var client = try gameSession(testing.allocator, &pool, .client);
     defer client.deinit();
 
     var storage1: [16]u8 = undefined;
     var storage2: [16]u8 = undefined;
 
     const frame1 = try client.encode(&.{support.packet(&storage1, 60, "first_batch")});
-    var iter1 = try session.ingest(frame1);
+    defer frame1.release();
+    var iter1 = try session.ingest(frame1.bytes);
 
-    // Packets is a copyable struct in Zig
     var copy1 = iter1;
 
     iter1.deinit();
     try testing.expectEqual(@as(?u64, null), session.active_generation);
 
-    // buffer reused by next batch
     const frame2 = try client.encode(&.{support.packet(&storage2, 60, "second_batch")});
-    var iter2 = try session.ingest(frame2);
+    defer frame2.release();
+    var iter2 = try session.ingest(frame2.bytes);
     defer iter2.deinit();
     const gen2 = session.active_generation.?;
 
-    // old copy shouldn't be able to read the reused buffer
+    // old copy cannot read reused buffer
     try testing.expectEqual(@as(?bedwire.Packet, null), copy1.next());
 
-    // stale deinit shouldn't clear the new lease
+    // stale deinit cannot clear new lease
     copy1.deinit();
     try testing.expectEqual(gen2, session.active_generation.?);
 
-    // stale reset shouldn't reacquire either
+    // stale reset cannot reacquire either
     copy1.reset();
     try testing.expectEqual(gen2, session.active_generation.?);
     try testing.expectEqual(@as(?bedwire.Packet, null), copy1.next());
 
-    // new iterator still works fine
     const p = iter2.next().?;
     try testing.expectEqual(bedwire.PacketKind.other, p.kind);
     try testing.expectEqualSlices(u8, support.packet(&storage2, 60, "second_batch"), p.bytes);
 }
 
 test "reset semantics" {
-    var session = try gameSession(testing.allocator, .server);
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try gameSession(testing.allocator, &pool, .server);
     defer session.deinit();
 
-    var client = try gameSession(testing.allocator, .client);
+    var client = try gameSession(testing.allocator, &pool, .client);
     defer client.deinit();
 
     var storage1: [16]u8 = undefined;
@@ -284,8 +321,10 @@ test "reset semantics" {
         support.packet(&storage1, 60, "a"),
         support.packet(&storage2, 61, "b"),
     });
+    defer frame1.release();
 
-    var iter = try session.ingest(frame1);
+    var iter = try session.ingest(frame1.bytes);
+    defer iter.deinit();
 
     // reset while active rewinds to start
     try testing.expectEqual(bedwire.PacketKind.other, iter.next().?.kind);
@@ -293,38 +332,20 @@ test "reset semantics" {
     try testing.expectEqual(bedwire.PacketKind.other, iter.next().?.kind);
     try testing.expectEqual(bedwire.PacketKind.other, iter.next().?.kind);
     try testing.expectEqual(@as(?bedwire.Packet, null), iter.next());
-    try testing.expectEqual(@as(?u64, null), session.active_generation);
 
-    // reset after exhaustion reacquires the lease if buffer wasn't reused
-    iter.reset();
-    try testing.expect(session.active_generation != null);
-    try testing.expectError(error.InvalidState, session.ingest(frame1));
-    try testing.expectEqual(bedwire.PacketKind.other, iter.next().?.kind);
-    try testing.expectEqual(bedwire.PacketKind.other, iter.next().?.kind);
-    try testing.expectEqual(@as(?bedwire.Packet, null), iter.next());
-    try testing.expectEqual(@as(?u64, null), session.active_generation);
-
-    // once buffer gets reused, old iterator can't reset
-    var storage3: [16]u8 = undefined;
-    const frame2 = try client.encode(&.{support.packet(&storage3, 60, "c")});
-    var iter2 = try session.ingest(frame2);
-    defer iter2.deinit();
-
+    // reset after EOF is permanently disabled
     iter.reset();
     try testing.expectEqual(@as(?bedwire.Packet, null), iter.next());
-
-    // explicit deinit also kills reset
-    var iter2_copy = iter2;
-    iter2_copy.deinit();
-    iter2_copy.reset();
-    try testing.expectEqual(@as(?bedwire.Packet, null), iter2_copy.next());
 }
 
 test "nested ingest rejection without disconnect" {
-    var session = try gameSession(testing.allocator, .server);
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try gameSession(testing.allocator, &pool, .server);
     defer session.deinit();
 
-    var client = try gameSession(testing.allocator, .client);
+    var client = try gameSession(testing.allocator, &pool, .client);
     defer client.deinit();
 
     var storage1: [16]u8 = undefined;
@@ -334,8 +355,9 @@ test "nested ingest rejection without disconnect" {
         support.packet(&storage1, 60, "p1"),
         support.packet(&storage2, 61, "p2"),
     });
+    defer frame1.release();
 
-    var outer = try session.ingest(frame1);
+    var outer = try session.ingest(frame1.bytes);
     defer outer.deinit();
 
     const p1 = outer.next().?;
@@ -344,15 +366,266 @@ test "nested ingest rejection without disconnect" {
     // nested ingest rejected while outer iterator still has the lease
     var storage3: [16]u8 = undefined;
     const frame2 = try client.encode(&.{support.packet(&storage3, 60, "nested")});
-    try testing.expectError(error.InvalidState, session.ingest(frame2));
+    defer frame2.release();
+    try testing.expectError(error.InvalidState, session.ingest(frame2.bytes));
 
-    // rejection shouldn't tear down the session
+    // rejection does not tear down the session
     try testing.expectEqual(bedwire.State.in_game, session.state);
     try testing.expect(session.active_generation != null);
 
-    // outer iterator should still work
+    // outer iterator still works
     const p2 = outer.next().?;
     try testing.expectEqual(bedwire.PacketKind.other, p2.kind);
     try testing.expectEqual(@as(u10, 61), p2.id);
     try testing.expectEqual(@as(?bedwire.Packet, null), outer.next());
+}
+
+test "close with active Packets stops reads without prematurely freeing RX slot" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try gameSession(testing.allocator, &pool, .server);
+    defer session.deinit();
+
+    var client = try gameSession(testing.allocator, &pool, .client);
+    defer client.deinit();
+
+    var storage1: [16]u8 = undefined;
+    var storage2: [16]u8 = undefined;
+
+    const frame = try client.encode(&.{
+        support.packet(&storage1, 60, "a"),
+        support.packet(&storage2, 61, "b"),
+    });
+    defer frame.release();
+
+    var packets = try session.ingest(frame.bytes);
+    const p1 = packets.next().?;
+    try testing.expectEqualStrings("a", p1.bytes[p1.bytes.len - 1 ..]);
+
+    // close marks disconnected but retains RX lease
+    session.close();
+    try testing.expectEqual(bedwire.State.disconnected, session.state);
+    try testing.expect(session.active_generation != null);
+    try testing.expect(session.rx_slot != null);
+
+    // reads stopped after close
+    try testing.expectEqual(@as(?bedwire.Packet, null), packets.next());
+
+    // reset disabled after close
+    packets.reset();
+    try testing.expectEqual(@as(?bedwire.Packet, null), packets.next());
+
+    packets.deinit();
+    try testing.expectEqual(@as(?u64, null), session.active_generation);
+    try testing.expect(session.rx_slot == null);
+}
+
+test "fatal framing error consumes no pool slot and closes session" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try gameSession(testing.allocator, &pool, .server);
+    defer session.deinit();
+
+    // acquire one RX slot so only 1 remains free
+    const token = try pool.acquireRx();
+    defer pool.releaseRx(token);
+
+    // invalid frame rejected before pool acquisition
+    try testing.expectError(error.MalformedBatch, session.ingest(&.{}));
+    try testing.expectEqual(bedwire.State.disconnected, session.state);
+
+    // remaining slot still available
+    const other_token = try pool.acquireRx();
+    pool.releaseRx(other_token);
+}
+
+test "PoolExhausted is non-fatal and leaves session state intact" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
+    defer pool.deinit();
+
+    var session = try gameSession(testing.allocator, &pool, .server);
+    defer session.deinit();
+
+    var client = try gameSession(testing.allocator, &pool, .client);
+    defer client.deinit();
+
+    // exhaust RX pool
+    const rx_token = try pool.acquireRx();
+    defer pool.releaseRx(rx_token);
+
+    var storage: [16]u8 = undefined;
+    const frame = try client.encode(&.{support.packet(&storage, 60, "x")});
+
+    try testing.expectError(error.PoolExhausted, session.ingest(frame.bytes));
+    frame.release();
+    // session remains alive and connected
+    try testing.expectEqual(bedwire.State.in_game, session.state);
+
+    // exhaust TX pool
+    const tx_token = try pool.acquireTx();
+    defer pool.releaseTx(tx_token);
+
+    try testing.expectError(error.PoolExhausted, session.encode(&.{support.packet(&storage, 60, "x")}));
+    try testing.expectEqual(bedwire.State.in_game, session.state);
+}
+
+test "stale Frame release does not release reused TX slot" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 1 });
+    defer pool.deinit();
+
+    var session = try gameSession(testing.allocator, &pool, .server);
+    defer session.deinit();
+
+    var storage: [16]u8 = undefined;
+    const p = support.packet(&storage, 60, "data");
+
+    const frame1 = try session.encode(&.{p});
+    // frame1 now holds token 1
+
+    const frame2 = try session.encode(&.{p});
+    defer frame2.release();
+
+    frame1.release();
+
+    try testing.expect(session.tx_slot != null);
+}
+
+test "encode failure releases TX slot and invalidates prior frames" {
+    const tight: bedwire.Limits = .{ .max_frame_bytes = 48, .max_batch_bytes = 4096, .max_packet_bytes = 4096 };
+    var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 1, .tx_slots = 1 });
+    defer pool.deinit();
+
+    var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = &pool, .limits = tight });
+    defer session.deinit();
+    session.state = .in_game;
+
+    var storage1: [16]u8 = undefined;
+    const frame1 = try session.encode(&.{support.packet(&storage1, 60, "ok")});
+
+    var storage2: [256]u8 = undefined;
+    const oversized = [_]u8{0xa5} ** 200;
+    try testing.expectError(error.NoSpaceLeft, session.encodeOne(support.packet(&storage2, 60, &oversized)));
+
+    try testing.expect(session.tx_slot == null);
+
+    // frame1 release is safe no-op
+    frame1.release();
+}
+
+test "encode failure on fresh TX acquisition releases slot" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try gameSession(testing.allocator, &pool, .server);
+    defer session.deinit();
+
+    try testing.expect(pool.isIdle());
+    try testing.expectError(error.MalformedBatch, session.encode(&.{}));
+    try testing.expect(session.tx_slot == null);
+    try testing.expect(pool.isIdle());
+}
+
+test "encode while Packets is active preserves uncorrupted data" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var server = try gameSession(testing.allocator, &pool, .server);
+    defer server.deinit();
+
+    var client = try gameSession(testing.allocator, &pool, .client);
+    defer client.deinit();
+
+    var client_storage: [16]u8 = undefined;
+    const client_packet = support.packet(&client_storage, 60, "client_msg");
+    const client_frame = try client.encode(&.{client_packet});
+    defer client_frame.release();
+
+    var packets = try server.ingest(client_frame.bytes);
+    defer packets.deinit();
+
+    const p = packets.next().?;
+    try testing.expectEqualSlices(u8, client_packet, p.bytes);
+
+    var server_storage: [16]u8 = undefined;
+    const server_packet = support.packet(&server_storage, 61, "server_msg");
+    const server_frame = try server.encode(&.{server_packet});
+    defer server_frame.release();
+
+    // incoming packet bytes are uncorrupted
+    try testing.expectEqualSlices(u8, client_packet, p.bytes);
+}
+
+test "copied Packets EOF semantics: cursor-local traversal with generation-scoped storage" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try gameSession(testing.allocator, &pool, .server);
+    defer session.deinit();
+
+    var client = try gameSession(testing.allocator, &pool, .client);
+    defer client.deinit();
+
+    var storage1: [16]u8 = undefined;
+    var storage2: [16]u8 = undefined;
+    const p1_bytes = support.packet(&storage1, 60, "packet_one");
+    const p2_bytes = support.packet(&storage2, 61, "packet_two");
+
+    const frame = try client.encode(&.{ p1_bytes, p2_bytes });
+    defer frame.release();
+
+    var packets = try session.ingest(frame.bytes);
+    var copy = packets;
+
+    const first = packets.next().?;
+    try testing.expectEqualSlices(u8, p1_bytes, first.bytes);
+    const second = packets.next().?;
+    try testing.expectEqualSlices(u8, p2_bytes, second.bytes);
+    try testing.expectEqual(@as(?bedwire.Packet, null), packets.next());
+
+    try testing.expect(session.active_generation != null);
+    try testing.expect(session.rx_slot != null);
+
+    const copy_first = copy.next().?;
+    try testing.expectEqualSlices(u8, p1_bytes, copy_first.bytes);
+    const copy_second = copy.next().?;
+    try testing.expectEqualSlices(u8, p2_bytes, copy_second.bytes);
+    try testing.expectEqual(@as(?bedwire.Packet, null), copy.next());
+
+    packets.deinit();
+    try testing.expectEqual(@as(?u64, null), session.active_generation);
+    try testing.expect(session.rx_slot == null);
+
+    try testing.expectEqual(@as(?bedwire.Packet, null), copy.next());
+
+    var storage3: [16]u8 = undefined;
+    const frame2 = try client.encode(&.{support.packet(&storage3, 60, "gen2")});
+    defer frame2.release();
+    var packets2 = try session.ingest(frame2.bytes);
+    defer packets2.deinit();
+    const gen2 = session.active_generation.?;
+
+    copy.deinit();
+    try testing.expectEqual(gen2, session.active_generation.?);
+    try testing.expectEqual(@as(?bedwire.Packet, null), copy.next());
+    try testing.expect(packets2.next() != null);
+}
+
+test "post-acquisition ingest failure releases RX slot and disconnects session" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try gameSession(testing.allocator, &pool, .server);
+    defer session.deinit();
+    try session.compression.negotiate(.deflate, 0);
+
+    // valid framing header 0xfe + deflate marker + corrupt compressed body
+    // this passes batch.strip, acquires an rx slot, but fails in decompression
+    const malformed = [_]u8{ 0xfe, @intFromEnum(bedwire.compression.Algorithm.deflate), 0x78, 0x9c, 0xff, 0xff };
+    try testing.expectError(error.MalformedCompressedData, session.ingest(&malformed));
+
+    try testing.expectEqual(bedwire.State.disconnected, session.state);
+    // rx slot released by errdefer, no slot leak
+    try testing.expect(pool.isIdle());
 }

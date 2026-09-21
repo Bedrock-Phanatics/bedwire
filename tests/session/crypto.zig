@@ -46,8 +46,9 @@ test "tampering with any byte of an encrypted frame is detected" {
         defer pair.deinit();
 
         const frame = try pair.client.encode(&.{support.packet(&storage, 60, "tamper")});
-        @memcpy(pair.relay[0..frame.len], frame);
-        const captured = pair.relay[0..frame.len];
+        defer frame.release();
+        @memcpy(pair.relay[0..frame.bytes.len], frame.bytes);
+        const captured = pair.relay[0..frame.bytes.len];
         if (index >= captured.len) continue;
 
         captured[index] ^= 0x01;

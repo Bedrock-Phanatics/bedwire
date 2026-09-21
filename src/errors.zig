@@ -57,4 +57,6 @@ pub const SessionError = error{
     TransportClosed,
     InvalidLimits,
     OutOfMemory,
+    PoolExhausted,
+    IncompatibleLimits,
 } || FramingError || CompressionError || CryptoError;

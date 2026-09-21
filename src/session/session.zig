@@ -15,6 +15,8 @@ const features_mod = @import("../protocol/features.zig");
 const kind_mod = @import("../protocol/kind.zig");
 const state_mod = @import("state.zig");
 
+const pool_mod = @import("pool.zig");
+
 const Descriptor = descriptor_mod.Descriptor;
 const PacketId = descriptor_mod.PacketId;
 
@@ -23,78 +25,89 @@ pub const Role = state_mod.Role;
 pub const State = state_mod.State;
 pub const Algorithm = compression.Algorithm;
 
+pub const BufferPool = pool_mod.BufferPool;
+pub const PoolConfig = pool_mod.PoolConfig;
+pub const RxToken = BufferPool.RxToken;
+pub const TxToken = BufferPool.TxToken;
+pub const RxSlot = pool_mod.RxSlot;
+pub const TxSlot = pool_mod.TxSlot;
+
 pub const Options = struct {
-    limits: Limits = .{},
+    limits: ?Limits = null,
+    pool: *BufferPool,
 };
 
-/// decoded packet from an ingested batch
-/// bytes points into the session buffer, so it gets overwritten on the next ingest()
+/// Borrowed outbound wire frame slice valid until next encode or explicit release
+pub const Frame = struct {
+    bytes: []const u8,
+    session: *Session,
+    token: u64,
+
+    pub fn release(self: Frame) void {
+        self.session.releaseTxToken(self.token);
+    }
+};
+
+/// Decoded packet from an ingested batch
 pub const Packet = struct {
     kind: PacketKind,
     id: PacketId,
     bytes: []const u8,
 };
 
-/// iterator over parsed packets in a batch
-/// ingest() already verified these against state machine rules
+/// Iterator over parsed packets in an admitted batch
 pub const Packets = struct {
     reader: batch.Reader,
     descriptor: *const Descriptor,
     len: usize,
     session: *Session,
     generation: u64,
+    exhausted: bool = false,
     deinitialized: bool = false,
 
-    fn releaseLease(self: *Packets) void {
-        if (self.session.active_generation == self.generation) {
-            self.session.active_generation = null;
-        }
-    }
-
     pub fn next(self: *Packets) ?Packet {
-        if (self.deinitialized) return null;
+        if (self.deinitialized or self.exhausted) return null;
+        if (self.session.state == .disconnected) return null;
         if (self.session.active_generation != self.generation) return null;
 
         const bytes = (self.reader.next() catch {
-            self.releaseLease();
+            self.exhausted = true;
             return null;
         }) orelse {
-            self.releaseLease();
+            self.exhausted = true;
             return null;
         };
         const header = parseHeader(bytes) catch {
-            self.releaseLease();
+            self.exhausted = true;
             return null;
         };
         return .{ .kind = self.descriptor.kindOf(header.packet_id), .id = header.packet_id, .bytes = bytes };
     }
 
     pub fn reset(self: *Packets) void {
-        if (self.deinitialized) return;
+        if (self.deinitialized or self.exhausted) return;
         if (self.session.state == .disconnected) return;
-        if (self.session.generation != self.generation) return;
-        if (self.session.active_generation) |active| {
-            if (active != self.generation) return;
-        }
-        self.session.active_generation = self.generation;
+        if (self.session.active_generation != self.generation) return;
+
         self.reader.reset();
     }
 
     pub fn deinit(self: *Packets) void {
         if (self.deinitialized) return;
         self.deinitialized = true;
-        self.releaseLease();
+
+        const active = self.session.active_generation orelse return;
+        if (active != self.generation) return;
+
+        const token = self.session.rx_slot orelse return;
+        self.session.active_generation = null;
+        self.session.rx_slot = null;
+
+        self.session.pool.releaseRx(token);
     }
 };
 
-/// bedrock session state machine and framing engine
-///
-/// handles 0xFE encapsulation, batching, snappy/deflate compression,
-/// ecdh p-384 key exchange, aes-256-ctr encryption and the handshake sequence.
-///
-/// not thread safe, each connection should have its own session.
-/// all working buffers are allocated up front in init() so the hot path
-/// (ingest and encode) doesn't touch the heap.
+/// Bedrock session state machine and framing engine
 pub const Session = struct {
     allocator: std.mem.Allocator,
     descriptor: *const Descriptor,
@@ -106,17 +119,13 @@ pub const Session = struct {
     peer_key: ?spki.Ecdsa.PublicKey = null,
     sent: std.EnumSet(PacketKind) = .initEmpty(),
     received: std.EnumSet(PacketKind) = .initEmpty(),
+
+    pool: *BufferPool,
+    rx_slot: ?RxToken = null,
+    tx_slot: ?TxToken = null,
+    tx_token: u64 = 0,
     generation: u64 = 0,
     active_generation: ?u64 = null,
-
-    // inbound frames decrypt in place here
-    ingress: []u8,
-    // outbound wire frame buffer (0xfe + algo marker + payload + mac)
-    egress: []u8,
-    // staging buffer for uncompressed packets with varint lengths
-    assembly: []u8,
-    // scratchpad for deflate sliding window and snappy tables
-    workspace: *compression.Workspace,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -124,54 +133,52 @@ pub const Session = struct {
         descriptor: *const Descriptor,
         options: Options,
     ) !Session {
-        try options.limits.validate();
         try descriptor.features.validate();
 
-        const ingress = try allocator.alloc(u8, options.limits.max_frame_bytes);
-        errdefer allocator.free(ingress);
-
-        const egress = try allocator.alloc(u8, options.limits.max_frame_bytes);
-        errdefer allocator.free(egress);
-
-        const assembly = try allocator.alloc(u8, options.limits.max_batch_bytes);
-        errdefer allocator.free(assembly);
-
-        const workspace = try compression.Workspace.create(allocator, options.limits.max_batch_bytes);
+        const limits = if (options.limits) |l| blk: {
+            try l.validate();
+            if (l.max_frame_bytes > options.pool.limits.max_frame_bytes) return error.IncompatibleLimits;
+            if (l.max_batch_bytes > options.pool.limits.max_batch_bytes) return error.IncompatibleLimits;
+            break :blk l;
+        } else options.pool.limits;
 
         return .{
             .allocator = allocator,
             .descriptor = descriptor,
-            .limits = options.limits,
+            .limits = limits,
             .role = role,
             .state = State.initial(descriptor.features),
             .compression = .init(descriptor.features),
-            .ingress = ingress,
-            .egress = egress,
-            .assembly = assembly,
-            .workspace = workspace,
+            .pool = options.pool,
         };
     }
 
     pub fn deinit(self: *Session) void {
         self.close();
-        self.workspace.destroy();
-        self.allocator.free(self.ingress);
-        self.allocator.free(self.egress);
-        self.allocator.free(self.assembly);
+        if (self.rx_slot) |st| {
+            self.rx_slot = null;
+            self.active_generation = null;
+            self.pool.releaseRx(st);
+        }
         self.* = undefined;
     }
 
-    /// closes session and zeroes out crypto keys
+    /// Closes session and zeroes crypto keys without prematurely freeing active RX storage
     pub fn close(self: *Session) void {
         if (self.state == .disconnected) return;
 
         self.state = .disconnected;
-        self.active_generation = null;
         if (self.crypto) |*crypto| crypto.deinit();
         self.crypto = null;
+
+        if (self.tx_slot) |st| {
+            self.tx_slot = null;
+            self.tx_token +%= 1;
+            self.pool.releaseTx(st);
+        }
     }
 
-    /// set state to closing (only disconnect packet allowed now)
+    /// Set state to closing
     pub fn beginClose(self: *Session) void {
         if (self.state.active()) self.state = .closing;
     }
@@ -196,21 +203,34 @@ pub const Session = struct {
         return self.received.contains(kind);
     }
 
-    /// takes a raw datagram from carrier, strips 0xfe, decrypts, decompresses,
-    /// and validates packet order against state machine.
-    /// returns an iterator over the parsed packets. closes session on any error.
+    /// Ingests a raw datagram using pooled RX storage
     pub fn ingest(self: *Session, payload: []const u8) !Packets {
         if (self.state == .disconnected) return error.TransportClosed;
-        if (self.active_generation != null) return error.InvalidState;
+        if (self.active_generation != null or self.rx_slot != null) return error.InvalidState;
+
+        const body = batch.strip(payload, self.limits) catch |err| {
+            self.close();
+            return err;
+        };
+
+        const rx_token = try self.pool.acquireRx();
+        errdefer self.pool.releaseRx(rx_token);
+
         errdefer self.close();
 
-        const body = try batch.strip(payload, self.limits);
-        @memcpy(self.ingress[0..body.len], body);
+        const rx_slot = self.pool.getRx(rx_token) orelse return error.InvalidState;
+        if (body.len > rx_slot.frame.len or body.len > self.limits.max_frame_bytes) return error.LimitExceeded;
+        @memcpy(rx_slot.frame[0..body.len], body);
 
-        var session_payload: []const u8 = self.ingress[0..body.len];
-        if (self.crypto) |*crypto| session_payload = try crypto.open(self.ingress[0..body.len]);
+        var session_payload: []const u8 = rx_slot.frame[0..body.len];
+        if (self.crypto) |*crypto| session_payload = try crypto.open(rx_slot.frame[0..body.len]);
 
-        const raw = try self.compression.decode(session_payload, self.workspace, self.limits);
+        const raw = try self.compression.decodeWith(
+            session_payload,
+            rx_slot.batch,
+            &rx_slot.history,
+            self.limits,
+        );
         const observed = try self.admit(raw, self.role.peer());
 
         self.observe(observed.kinds, self.role.peer());
@@ -218,6 +238,7 @@ pub const Session = struct {
         const reader = try batch.Reader.init(raw, self.limits);
         self.generation +%= 1;
         self.active_generation = self.generation;
+        self.rx_slot = rx_token;
 
         return .{
             .reader = reader,
@@ -228,12 +249,27 @@ pub const Session = struct {
         };
     }
 
-    /// packs uncompressed packets into a 0xfe batch frame, compresses and encrypts if active.
-    /// returned slice borrows egress buffer, valid until next encode().
-    pub fn encode(self: *Session, packets: []const []const u8) ![]const u8 {
+    /// Encodes packets into a wire frame using pooled TX storage
+    pub fn encode(self: *Session, packets: []const []const u8) !Frame {
         if (self.state == .disconnected) return error.TransportClosed;
 
-        var writer = batch.Writer.init(self.assembly, self.limits);
+        const slot_token = self.tx_slot orelse try self.pool.acquireTx();
+        self.tx_slot = slot_token;
+
+        self.tx_token +%= 1;
+        const current_token = self.tx_token;
+
+        errdefer {
+            if (self.tx_slot) |st| {
+                self.tx_slot = null;
+                self.tx_token +%= 1;
+                self.pool.releaseTx(st);
+            }
+        }
+
+        const slot = self.pool.getTx(slot_token) orelse return error.InvalidState;
+
+        var writer = batch.Writer.init(slot.assembly, self.limits);
         var observed: std.EnumSet(PacketKind) = .initEmpty();
 
         for (packets) |packet| {
@@ -247,27 +283,47 @@ pub const Session = struct {
         if (writer.count == 0) return error.MalformedBatch;
         if (self.state.singlePacketBatch() and writer.count != 1) return error.InvalidState;
 
+        const max_egress = @min(slot.egress.len, self.limits.max_frame_bytes);
         const marker: usize = @intFromBool(self.compression.marks());
         const reserve = 1 + marker;
         const trailer: usize = if (self.crypto != null) 8 else 0;
-        if (reserve + trailer >= self.egress.len) return error.LimitExceeded;
+        if (reserve + trailer >= max_egress) return error.LimitExceeded;
 
-        const room = self.egress.len - reserve - trailer;
-        const framed = try self.compression.encode(writer.written(), self.egress[reserve..][0..room], self.workspace);
+        const room = max_egress - reserve - trailer;
+        const framed = try self.compression.encodeWith(
+            writer.written(),
+            slot.egress[reserve..][0..room],
+            &slot.history,
+            &slot.table,
+        );
 
-        self.egress[0] = batch.header;
-        if (marker != 0) self.egress[1] = @intFromEnum(framed.algorithm);
+        slot.egress[0] = batch.header;
+        if (marker != 0) slot.egress[1] = @intFromEnum(framed.algorithm);
 
         var len = reserve + framed.bytes.len;
-        if (self.crypto) |*crypto| len = 1 + (try crypto.seal(self.egress[1..], len - 1)).len;
+        if (self.crypto) |*crypto| len = 1 + (try crypto.seal(slot.egress[1..max_egress], len - 1)).len;
+        if (len > self.limits.max_frame_bytes) return error.LimitExceeded;
 
         self.observe(observed, self.role);
 
-        return self.egress[0..len];
+        return Frame{
+            .bytes = slot.egress[0..len],
+            .session = self,
+            .token = current_token,
+        };
     }
 
-    pub fn encodeOne(self: *Session, packet: []const u8) ![]const u8 {
+    pub fn encodeOne(self: *Session, packet: []const u8) !Frame {
         return self.encode(&.{packet});
+    }
+
+    pub fn releaseTxToken(self: *Session, token: u64) void {
+        if (self.tx_token != token) return;
+        if (self.tx_slot) |slot_token| {
+            self.tx_slot = null;
+            self.tx_token +%= 1;
+            self.pool.releaseTx(slot_token);
+        }
     }
 
     /// apply compression settings negotiated in NetworkSettings

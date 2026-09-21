@@ -41,7 +41,9 @@ test "steady-state ingest and encode make no allocator calls" {
 }
 
 fn initCase(allocator: std.mem.Allocator) !void {
-    var session = try bedwire.Session.init(allocator, .server, &support.modern, .{ .limits = support.limits });
+    var pool = try bedwire.BufferPool.init(allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 1 });
+    defer pool.deinit();
+    var session = try bedwire.Session.init(allocator, .server, &support.modern, .{ .pool = &pool });
     session.deinit();
 }
 
@@ -50,11 +52,24 @@ test "initialization unwinds every allocation failure" {
 }
 
 test "limits are validated before any buffer is reserved" {
-    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 1 });
+    defer pool.deinit();
 
     const invalid: bedwire.Limits = .{ .max_frame_bytes = 0 };
-    try testing.expectError(error.InvalidLimits, bedwire.Session.init(failing.allocator(), .server, &support.modern, .{ .limits = invalid }));
-    try testing.expect(!failing.has_induced_failure);
+    try testing.expectError(error.InvalidLimits, bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .limits = invalid, .pool = &pool }));
+}
+
+test "session limits exceeding pool limits are rejected" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 1 });
+    defer pool.deinit();
+
+    var excessive = support.limits;
+    excessive.max_frame_bytes += 1;
+
+    try testing.expectError(error.IncompatibleLimits, bedwire.Session.init(testing.allocator, .server, &support.modern, .{
+        .limits = excessive,
+        .pool = &pool,
+    }));
 }
 
 test "a contradictory descriptor is refused at session start" {
@@ -65,24 +80,26 @@ test "a contradictory descriptor is refused at session start" {
         break :blk descriptor;
     };
 
-    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
-    try testing.expectError(error.UnsupportedProtocol, bedwire.Session.init(failing.allocator(), .server, &broken, .{ .limits = support.limits }));
-    try testing.expect(!failing.has_induced_failure);
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 1 });
+    defer pool.deinit();
+
+    try testing.expectError(error.UnsupportedProtocol, bedwire.Session.init(testing.allocator, .server, &broken, .{ .limits = support.limits, .pool = &pool }));
 }
 
-test "per-session memory is fixed by the limits" {
+test "idle sessions allocate zero eager backing buffers" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 1 });
+    defer pool.deinit();
+
     var counting = std.testing.FailingAllocator.init(testing.allocator, .{});
 
-    var session = try bedwire.Session.init(counting.allocator(), .server, &support.modern, .{ .limits = support.limits });
-    defer session.deinit();
+    var sessions: [500]bedwire.Session = undefined;
+    for (&sessions) |*s| {
+        s.* = try bedwire.Session.init(counting.allocator(), .server, &support.modern, .{ .pool = &pool });
+    }
+    defer for (&sessions) |*s| s.deinit();
 
-    // Two frame buffers, one assembly buffer, one decompression buffer, plus
-    // the workspace struct holding the DEFLATE window and Snappy table.
-    const buffers = 2 * support.limits.max_frame_bytes + 2 * support.limits.max_batch_bytes;
-    const workspace = @sizeOf(bedwire.compression.Workspace);
-
-    try testing.expectEqual(buffers + workspace, counting.allocated_bytes);
-    try testing.expect(counting.allocations <= 5);
+    try testing.expectEqual(@as(usize, 0), counting.allocated_bytes);
+    try testing.expectEqual(@as(usize, 0), counting.allocations);
 }
 
 test "ingested packets survive an encode on the same session" {
@@ -102,8 +119,83 @@ test "ingested packets survive an encode on the same session" {
     const received = packets.next().?;
 
     var reply: [64]u8 = undefined;
-    _ = try pair.server.encodeOne(support.packet(&reply, 61, "reply"));
+    const reply_frame = try pair.server.encodeOne(support.packet(&reply, 61, "reply"));
+    defer reply_frame.release();
 
-    // Encoding writes to the outbound buffers only.
     try testing.expectEqualSlices(u8, packet, received.bytes);
+}
+
+test "session max_frame_bytes is enforced when pool limits are larger" {
+    var pool_limits = support.limits;
+    pool_limits.max_frame_bytes = 4096;
+    pool_limits.max_batch_bytes = 4096;
+    pool_limits.max_packet_bytes = 4096;
+
+    var pool = try bedwire.BufferPool.init(testing.allocator, pool_limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session_frame_limits = pool_limits;
+    session_frame_limits.max_frame_bytes = 256;
+
+    var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{
+        .pool = &pool,
+        .limits = session_frame_limits,
+    });
+    defer session.deinit();
+    session.state = .in_game;
+
+    var client = try bedwire.Session.init(testing.allocator, .client, &support.modern, .{
+        .pool = &pool,
+        .limits = pool_limits,
+    });
+    defer client.deinit();
+    client.state = .in_game;
+
+    // 1. TX frame limit: session frame > 256 and < 4096 fails on encode
+    var small_buf: [128]u8 = undefined;
+    const small_packet = support.packet(&small_buf, 60, &([_]u8{'s'} ** 50));
+    const small_frame = try session.encodeOne(small_packet);
+    try testing.expect(small_frame.bytes.len <= 256);
+    small_frame.release();
+
+    var large_buf: [512]u8 = undefined;
+    const large_packet = support.packet(&large_buf, 60, &([_]u8{'l'} ** 300));
+    try testing.expectError(error.NoSpaceLeft, session.encodeOne(large_packet));
+
+    // 2. RX frame limit: raw frame > 256 and < 4096 ingested by session fails and closes session
+    const client_frame = try client.encodeOne(large_packet);
+    defer client_frame.release();
+    try testing.expect(client_frame.bytes.len > 256 and client_frame.bytes.len < 4096);
+    try testing.expectError(error.LimitExceeded, session.ingest(client_frame.bytes));
+    try testing.expectEqual(bedwire.State.disconnected, session.state);
+
+    // 3. Batch limits remain Session-scoped rather than using pool capacity
+    var session_batch_limits = pool_limits;
+    session_batch_limits.max_batch_bytes = 256;
+    session_batch_limits.max_packet_bytes = 256;
+
+    var batch_session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{
+        .pool = &pool,
+        .limits = session_batch_limits,
+    });
+    defer batch_session.deinit();
+    batch_session.state = .in_game;
+
+    // TX batch limit: multi-packet batch > 256 and < 4096 fails encode
+    var p1_buf: [160]u8 = undefined;
+    var p2_buf: [160]u8 = undefined;
+    const p1 = support.packet(&p1_buf, 60, &([_]u8{'a'} ** 140));
+    const p2 = support.packet(&p2_buf, 61, &([_]u8{'b'} ** 140));
+    try testing.expectError(error.LimitExceeded, batch_session.encode(&.{ p1, p2 }));
+
+    // RX batch limit: compressed frame fits in 256 bytes, but decompressed batch exceeds 256
+    try client.compression.negotiate(.deflate, 0);
+    try batch_session.compression.negotiate(.deflate, 0);
+
+    var compressible_buf: [512]u8 = undefined;
+    const compressible = support.packet(&compressible_buf, 60, &([_]u8{'z'} ** 350));
+    const compressed_frame = try client.encodeOne(compressible);
+    defer compressed_frame.release();
+    try testing.expect(compressed_frame.bytes.len < 256);
+    try testing.expectError(error.LimitExceeded, batch_session.ingest(compressed_frame.bytes));
 }

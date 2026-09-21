@@ -92,13 +92,13 @@ fn completeHandshake(allocator: std.mem.Allocator, algorithm: bedwire.compressio
     }
 
     var packets = try pair.serverToClient(&gameplay);
-    defer packets.deinit();
     var seen: usize = 0;
     while (packets.next()) |packet| : (seen += 1) {
         try testing.expectEqual(bedwire.PacketKind.other, packet.kind);
         try testing.expectEqualSlices(u8, gameplay[seen], packet.bytes);
     }
     try testing.expectEqual(@as(usize, 3), seen);
+    packets.deinit();
 
     // Either side may disconnect at any time.
     try pair.serverToClientDiscard(&.{build.make(descriptor, .disconnect)});
@@ -124,6 +124,7 @@ test "legacy profile skips negotiation and starts authenticating" {
 
     // legacy mode compresses with deflate without marker bytes
     var packets = try pair.clientToServer(&.{build.make(descriptor, .login)});
+    defer packets.deinit();
     try testing.expectEqual(bedwire.PacketKind.login, packets.next().?.kind);
 
     // RequestNetworkSettings does not exist in this profile.
@@ -213,6 +214,7 @@ test "subclient IDs other than 0 are rejected" {
     // primary subclient (0) is fine
     var normal_storage: [16]u8 = undefined;
     var packets = try pair.clientToServer(&.{support.subclientPacket(&normal_storage, 60, 0, 0)});
+    defer packets.deinit();
     try testing.expectEqual(bedwire.PacketKind.other, packets.next().?.kind);
 
     // non-zero subclients not supported yet

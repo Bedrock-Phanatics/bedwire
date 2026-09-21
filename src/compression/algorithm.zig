@@ -87,23 +87,43 @@ pub const Compression = struct {
 
     /// compresses input into dest if above threshold, otherwise copies verbatim
     pub fn encode(self: Compression, input: []const u8, dest: []u8, workspace: *Workspace) !Framed {
+        return self.encodeWith(input, dest, &workspace.history, &workspace.table);
+    }
+
+    pub fn encodeWith(
+        self: Compression,
+        input: []const u8,
+        dest: []u8,
+        history: *[flate.history_len]u8,
+        table: *snappy.Table,
+    ) !Framed {
         const algorithm = self.selected(input.len);
         return .{ .algorithm = algorithm, .bytes = switch (algorithm) {
             .none => try copy(input, dest),
-            .deflate => try flate.compress(input, dest, &workspace.history),
-            .snappy => try snappy.compress(input, dest, &workspace.table),
+            .deflate => try flate.compress(input, dest, history),
+            .snappy => try snappy.compress(input, dest, table),
         } };
     }
 
     /// decompress decrypted payload into workspace buffer, or pass through as-is if uncompressed
     pub fn decode(self: Compression, input: []const u8, workspace: *Workspace, limits: Limits) ![]const u8 {
+        return self.decodeWith(input, workspace.output, &workspace.history, limits);
+    }
+
+    pub fn decodeWith(
+        self: Compression,
+        input: []const u8,
+        dest: []u8,
+        history: *[flate.history_len]u8,
+        limits: Limits,
+    ) ![]const u8 {
         if (input.len > limits.max_frame_bytes) return error.LimitExceeded;
 
         const framed = try self.split(input);
         return switch (framed.algorithm) {
             .none => if (framed.bytes.len > limits.max_batch_bytes) error.LimitExceeded else framed.bytes,
-            .deflate => flate.decompress(framed.bytes, workspace.output, &workspace.history, limits),
-            .snappy => snappy.decompress(framed.bytes, workspace.output, limits),
+            .deflate => flate.decompress(framed.bytes, dest, history, limits),
+            .snappy => snappy.decompress(framed.bytes, dest, limits),
         };
     }
 

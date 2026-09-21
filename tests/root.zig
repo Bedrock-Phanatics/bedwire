@@ -5,6 +5,8 @@ test {
     _ = @import("session/crypto.zig");
     _ = @import("session/memory.zig");
     _ = @import("session/codec.zig");
+    _ = @import("session/pool.zig");
+    _ = @import("session/concurrency.zig");
 
     _ = @import("auth/jwt.zig");
     _ = @import("auth/chain.zig");

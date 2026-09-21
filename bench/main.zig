@@ -75,7 +75,7 @@ const limits: bedwire.Limits = .{
 
 const descriptor: bedwire.Descriptor = bedwire.protocol.describe(818) catch unreachable;
 
-/// One packet of `len` bytes, header included.
+/// One packet of `len` bytes, header included
 fn makePacket(storage: []u8, id: u16, len: usize) []const u8 {
     const header = bedwire.framing.varint.writeU32(storage, id) catch unreachable;
     for (storage[header..len], 0..) |*byte, i| byte.* = @truncate(i *% 31 +% 7);
@@ -89,8 +89,8 @@ const Setup = struct {
     encrypt: bool,
 };
 
-fn open(allocator: std.mem.Allocator, role: bedwire.Role, setup: Setup) !Session {
-    var session = try Session.init(allocator, role, &descriptor, .{ .limits = limits });
+fn open(allocator: std.mem.Allocator, pool: *bedwire.BufferPool, role: bedwire.Role, setup: Setup) !Session {
+    var session = try Session.init(allocator, role, &descriptor, .{ .pool = pool, .limits = limits });
     errdefer session.deinit();
 
     try session.compression.negotiate(setup.algorithm orelse .deflate, 0);
@@ -119,9 +119,9 @@ const Timer = struct {
     }
 };
 
-fn benchSend(io: std.Io, allocator: std.mem.Allocator, name: []const u8, setup: Setup, packets: []const []const u8, iterations: usize) !Result {
+fn benchSend(io: std.Io, allocator: std.mem.Allocator, pool: *bedwire.BufferPool, name: []const u8, setup: Setup, packets: []const []const u8, iterations: usize) !Result {
     var counting: Counting = .{ .backing = allocator };
-    var session = try open(counting.allocator(), .server, setup);
+    var session = try open(counting.allocator(), pool, .server, setup);
     defer session.deinit();
 
     var payload: usize = 0;
@@ -133,7 +133,8 @@ fn benchSend(io: std.Io, allocator: std.mem.Allocator, name: []const u8, setup: 
     var timer = Timer.start(io);
     for (0..iterations) |_| {
         const frame = try session.encode(packets);
-        std.mem.doNotOptimizeAway(frame.ptr);
+        std.mem.doNotOptimizeAway(frame.bytes.ptr);
+        frame.release();
     }
     const elapsed = timer.read();
 
@@ -147,12 +148,12 @@ fn benchSend(io: std.Io, allocator: std.mem.Allocator, name: []const u8, setup: 
     };
 }
 
-fn benchIngest(io: std.Io, allocator: std.mem.Allocator, name: []const u8, setup: Setup, packets: []const []const u8, iterations: usize) !Result {
+fn benchIngest(io: std.Io, allocator: std.mem.Allocator, pool: *bedwire.BufferPool, name: []const u8, setup: Setup, packets: []const []const u8, iterations: usize) !Result {
     var counting: Counting = .{ .backing = allocator };
 
-    var sender = try open(counting.allocator(), .client, setup);
+    var sender = try open(counting.allocator(), pool, .client, setup);
     defer sender.deinit();
-    var receiver = try open(counting.allocator(), .server, setup);
+    var receiver = try open(counting.allocator(), pool, .server, setup);
     defer receiver.deinit();
 
     const frames = try allocator.alloc([]u8, iterations);
@@ -164,7 +165,10 @@ fn benchIngest(io: std.Io, allocator: std.mem.Allocator, name: []const u8, setup
     var payload: usize = 0;
     for (packets) |packet| payload += packet.len;
 
-    for (frames) |*frame| frame.* = try allocator.dupe(u8, try sender.encode(packets));
+    for (frames) |*frame| {
+        const f = try sender.encode(packets);
+        frame.* = try allocator.dupe(u8, f.bytes);
+    }
 
     const before = counting.allocations;
     const before_bytes = counting.bytes;
@@ -173,6 +177,7 @@ fn benchIngest(io: std.Io, allocator: std.mem.Allocator, name: []const u8, setup
     for (frames) |frame| {
         var iterator = try receiver.ingest(frame);
         while (iterator.next()) |packet| std.mem.doNotOptimizeAway(packet.bytes.ptr);
+        iterator.deinit();
     }
     const elapsed = timer.read();
 
@@ -275,16 +280,18 @@ fn benchOpen(io: std.Io, allocator: std.mem.Allocator, iterations: usize) !Resul
     };
 }
 
-fn reportFootprint(allocator: std.mem.Allocator, out: *std.Io.Writer) !void {
+fn reportFootprint(allocator: std.mem.Allocator, pool: *bedwire.BufferPool, pool_counting: Counting, out: *std.Io.Writer) !void {
     var counting: Counting = .{ .backing = allocator };
 
-    var session = try Session.init(counting.allocator(), .server, &descriptor, .{ .limits = limits });
+    var session = try Session.init(counting.allocator(), .server, &descriptor, .{ .pool = pool, .limits = limits });
     defer session.deinit();
 
     try out.print("\nper-session fixed memory\n", .{});
     try out.print("  limits: frame {d} KiB, batch {d} KiB\n", .{ limits.max_frame_bytes / 1024, limits.max_batch_bytes / 1024 });
-    try out.print("  heap:   {d} KiB across {d} allocations\n", .{ counting.bytes / 1024, counting.allocations });
-    try out.print("  struct: {d} B (Session), {d} KiB (Workspace)\n", .{ @sizeOf(Session), @sizeOf(bedwire.compression.Workspace) / 1024 });
+    try out.print("  heap:   {d} KiB across {d} allocations (0 B eager backing buffers)\n", .{ counting.bytes / 1024, counting.allocations });
+    try out.print("  pool logical:   {d} KiB ({d} B) backing storage\n", .{ pool.storageBytes() / 1024, pool.storageBytes() });
+    try out.print("  pool allocator: {d} KiB ({d} B) across {d} allocations ({d} RX, {d} TX slots)\n", .{ pool_counting.bytes / 1024, pool_counting.bytes, pool_counting.allocations, pool.config.rx_slots, pool.config.tx_slots });
+    try out.print("  struct: {d} B (Session), {d} B (BufferPool), {d} B (Packets), {d} B (Frame)\n", .{ @sizeOf(Session), @sizeOf(bedwire.BufferPool), @sizeOf(bedwire.Packets), @sizeOf(bedwire.Frame) });
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -292,11 +299,15 @@ pub fn main(init: std.process.Init) !void {
     defer arena_state.deinit();
     const allocator = arena_state.allocator();
 
+    var pool_counting: Counting = .{ .backing = allocator };
+    var pool = try bedwire.BufferPool.init(pool_counting.allocator(), limits, .{ .rx_slots = 4, .tx_slots = 4 });
+    defer pool.deinit();
+
     var buffer: [4096]u8 = undefined;
     var stdout = std.Io.File.stdout().writerStreaming(init.io, &buffer);
     const out = &stdout.interface;
 
-    // A single small packet, a typical gameplay batch, and a chunk-sized batch.
+    // a single small packet, a typical gameplay batch, and a chunk-sized batch
     var single_storage: [64]u8 = undefined;
     const single: []const []const u8 = &.{makePacket(&single_storage, 60, 32)};
 
@@ -331,7 +342,7 @@ pub fn main(init: std.process.Init) !void {
         for (workloads) |workload| {
             var name_storage: [64]u8 = undefined;
             const name = try std.fmt.bufPrint(&name_storage, "  encode {s} / {s}", .{ workload.name, case.name });
-            (try benchSend(init.io, allocator, name, case.setup, workload.packets, workload.iterations)).report(out) catch {};
+            (try benchSend(init.io, allocator, &pool, name, case.setup, workload.packets, workload.iterations)).report(out) catch {};
         }
     }
 
@@ -340,7 +351,7 @@ pub fn main(init: std.process.Init) !void {
         for (workloads) |workload| {
             var name_storage: [64]u8 = undefined;
             const name = try std.fmt.bufPrint(&name_storage, "  ingest {s} / {s}", .{ workload.name, case.name });
-            (try benchIngest(init.io, allocator, name, case.setup, workload.packets, workload.iterations)).report(out) catch {};
+            (try benchIngest(init.io, allocator, &pool, name, case.setup, workload.packets, workload.iterations)).report(out) catch {};
         }
     }
 
@@ -349,6 +360,6 @@ pub fn main(init: std.process.Init) !void {
     try (try benchSeal(init.io, 200_000)).report(out);
     try (try benchOpen(init.io, allocator, 200_000)).report(out);
 
-    try reportFootprint(allocator, out);
+    try reportFootprint(allocator, &pool, pool_counting, out);
     try out.flush();
 }
