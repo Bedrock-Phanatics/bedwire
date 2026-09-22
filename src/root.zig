@@ -30,6 +30,7 @@ pub const protocol = struct {
 
 pub const Session = @import("session/session.zig").Session;
 pub const TrustPolicy = @import("session/session.zig").TrustPolicy;
+pub const Identity = @import("auth/identity.zig").Identity;
 pub const Packet = @import("session/session.zig").Packet;
 pub const Packets = @import("session/session.zig").Packets;
 pub const SessionOptions = @import("session/session.zig").Options;
@@ -72,6 +73,12 @@ pub const auth = struct {
     pub const ChainPolicy = @import("auth/chain.zig").ChainPolicy;
     pub const OidcPolicy = @import("auth/oidc.zig").OidcPolicy;
     pub const TrustPolicy = @import("session/session.zig").TrustPolicy;
+    pub const KeySet = @import("auth/jwks.zig").KeySet;
+    pub const KeyEntry = @import("auth/jwks.zig").KeyEntry;
+    pub const ConnectionRequest = @import("auth/wire.zig").ConnectionRequest;
+    pub const AuthEnvelope = @import("auth/wire.zig").AuthEnvelope;
+    pub const decodeConnectionRequest = @import("auth/wire.zig").decodeConnectionRequest;
+    pub const parseChainEnvelope = @import("auth/wire.zig").parseChainEnvelope;
     pub const verifyChain = @import("auth/chain.zig").verifyChain;
     pub const verifyOidc = @import("auth/oidc.zig").verifyOidc;
     pub const moj_root = @import("auth/moj_root.zig");
@@ -113,6 +120,9 @@ test {
     _ = @import("auth/jwks.zig");
     _ = @import("auth/identity.zig");
     _ = @import("auth/oidc.zig");
+    _ = @import("auth/jwt.zig");
+    _ = @import("auth/chain.zig");
+    _ = @import("auth/login.zig");
     _ = @import("transport/raknet.zig");
     _ = @import("transport/nethernet.zig");
 }

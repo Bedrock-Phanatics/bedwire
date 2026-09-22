@@ -97,3 +97,14 @@ test "envelope parser handles offline AuthenticationType 2 and guest Authenticat
     defer guest_env.deinit(testing.allocator);
     try testing.expectEqual(@as(u8, 1), guest_env.authentication_type);
 }
+
+fn testParseChainEnvelopeAllocations(allocator: std.mem.Allocator) !void {
+    const envelope_json = "{\"AuthenticationType\":0,\"Certificate\":\"{\\\"chain\\\":[\\\"cert\\\"]}\",\"Token\":\"oidc_jwt\"}";
+    var env = try bedwire.auth.wire.parseChainEnvelope(allocator, envelope_json, .{});
+    defer env.deinit(allocator);
+    try testing.expectEqualStrings("oidc_jwt", env.token.?);
+}
+
+test "parseChainEnvelope cleans up cleanly under all allocation failure points" {
+    try std.testing.checkAllAllocationFailures(testing.allocator, testParseChainEnvelopeAllocations, .{});
+}

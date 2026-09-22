@@ -75,3 +75,13 @@ test "non-RSA or invalid key elements return InvalidJwks" {
     const bad_e = "{\"keys\": [{\"kty\": \"RSA\", \"kid\": \"even-e\", \"n\": \"" ++ support.rsa_key1_n_b64 ++ "\", \"e\": \"AQAC\"}]}";
     try testing.expectError(error.InvalidJwks, jwks.KeySet.parse(allocator, bad_e, support.limits));
 }
+
+fn testKeySetParseAllocations(allocator: std.mem.Allocator) !void {
+    var set = try jwks.KeySet.parse(allocator, support.test_jwks_json, support.limits);
+    defer set.deinit();
+    try testing.expectEqual(@as(usize, 2), set.entries().len);
+}
+
+test "KeySet.parse cleans up cleanly under all allocation failure points" {
+    try std.testing.checkAllAllocationFailures(testing.allocator, testKeySetParseAllocations, .{});
+}
