@@ -5,17 +5,26 @@ Minecraft: Bedrock Edition session networking for Zig 0.16.0.
     Join our <a href="https://discord.gg/Yv9qPRQNc3">Discord</a>!
 </p>
 
-`bedwire` bridges transport carriers (such as RakNet or NetherNet) and packet codecs (`bedrock_protocol`). It handles batch framing, compression, ECDH key exchange, AES-256-CTR session encryption, Mojang/OIDC authentication, and session state enforcement.
+`bedwire` bridges transport carriers (such as RakNet or NetherNet) and packet codecs (`bedrock_protocol`). It handles batch framing, compression, ECDH key exchange, continuous AES-256-CTR session encryption, modern OpenID Connect (OIDC / RS256 / JWKS) and legacy Mojang certificate chain (ES384) authentication, and protocol-gated session state enforcement.
 
 ## Features
 
-- Bounded batch framing (`0xFE` prefix with VarInt packet lengths)
-- Raw DEFLATE and Snappy compression
-- P-384 ECDH key exchange and continuous AES-256-CTR session encryption
-- Mojang certificate chain (ES384 JWT) and Xbox Live / OIDC identity validation
-- State machine gating packet types from handshake to in-game
-- Resource pack manifest negotiation and chunk transfer verification
-- Zero heap allocations during steady-state packet I/O
+- **Bounded Batch Framing**: `0xFE` prefix with VarInt packet length delimiters and exact consumption validation.
+- **Compression**: Raw DEFLATE and Snappy (S2 compatible) compression engines with reuse workspaces.
+- **Session Cryptography**: P-384 ECDH key exchange and continuous AES-256-CTR session encryption with native Zig standard library primitives.
+- **Modern Bedrock Authentication (Protocols $\ge$ 898 / Minecraft $\ge$ 1.21.130)**:
+  - RFC 7517 JWKS catalog parser (`bedwire.auth.KeySet`) for Microsoft's authentication keys.
+  - Strict RS256 verification of OpenID Connect ID tokens against trusted RSA-2048 public keys.
+  - Ephemeral client public key (`cpk`) claim binding to ES384 `ClientData` tokens.
+  - Canonical player `Identity` resolution: `displayName`, `XUID`, and UUIDv3 derivation (`pocket-auth-1-xuid:<xuid>`).
+- **Legacy Authentication (Protocols $<$ 898 / Minecraft $<$ 1.21.130)**:
+  - 3-link Mojang certificate chain verification against pinned Mojang root public key (`moj_root`).
+- **Strict Protocol Gating & Anti-Downgrade**:
+  - Wire framing (`legacy_chain` vs `envelope`) and login flow (`certificate_chain` vs `oidc`) are strictly gated by protocol version.
+  - Atomic failure rollback: any verification or decoding error zeroes cryptographic state and resets session to `.disconnected`.
+- **Zero-Allocation Steady State**:
+  - Fixed-capacity shared `BufferPool` with generational slot recycling and zero heap allocations during steady-state packet I/O.
+- **Zero Network I/O**: Pure in-memory cryptographic and protocol engine. The host application retains full ownership over HTTP fetching, caching, and network carriers.
 
 ## Requirements
 
@@ -47,98 +56,165 @@ exe.root_module.addImport("bedwire", bedwire.module("bedwire"));
 
 ## Quick Start
 
+### 1. Initialize Buffer Pool and Session
+
 ```zig
 const std = @import("std");
 const bedwire = @import("bedwire");
 
-// 1. Define or adapt a carrier providing receive, send, and close
-const Carrier = struct {
-    pub fn receive(self: *@This()) ![]const u8 { ... }
-    pub fn send(self: *@This(), bytes: []const u8) !void { ... }
-    pub fn close(self: *@This()) void { ... }
-};
+// Define session limits
+const limits = bedwire.Limits{};
+try limits.validate();
 
-// 2. Initialize a Connection (allocates internal buffers once)
-var conn = try bedwire.Connection(Carrier).init(
+// Initialize shared buffer pool across sessions
+var pool = try bedwire.BufferPool.init(allocator, limits, bedwire.PoolConfig.conservative());
+defer pool.deinit();
+
+// Select protocol descriptor for target Bedrock version (e.g. 944)
+const descriptor = try bedwire.protocol.describe(944);
+
+// Create session instance
+var session = try bedwire.Session.init(
     allocator,
-    &carrier,
     .server,
-    .{},
+    &descriptor,
+    .{ .pool = &pool, .limits = limits },
 );
-defer conn.deinit();
+defer session.deinit();
+```
 
-// 3. Receive packets from a batch frame
-var batch = try conn.receive();
-while (try batch.next()) |packet_bytes| {
-    // packet_bytes borrows memory from conn.ingress until the next receive()
-    _ = packet_bytes;
+### 2. Ingest and Process Packets
+
+```zig
+// Ingest incoming raw batch frame (0xfe prefixed wire buffer)
+var packets = try session.ingest(batch_bytes);
+defer packets.deinit();
+
+while (packets.next()) |packet| {
+    // packet.kind: PacketKind
+    // packet.id: PacketId
+    // packet.bytes: []const u8 (borrows from internal pool buffer)
 }
-
-// 4. Send packets (framed, compressed, and encrypted as state requires)
-try conn.send(&.{ packet_one, packet_two });
 ```
 
-For NetherNet connections, a built-in carrier adapter is provided:
+### 3. Send Framed Packets
 
 ```zig
-var carrier = bedwire.carrier.NetherNet(nethernet.Connection){
-    .connection = &nethernet_connection,
+// Encode packets into an outbound wire frame (compressed and encrypted if enabled)
+var frame = try session.encode(&.{ packet_one_bytes, packet_two_bytes });
+defer frame.release();
+
+// Send frame.bytes over carrier (e.g. RakNet or NetherNet)
+try carrier.send(frame.bytes);
+```
+
+## Authentication
+
+Bedwire provides a unified entry point `session.authenticateLogin(...)` that enforces strict protocol-version gating, wire format matching, and failure atomicity.
+
+### Modern OIDC Authentication (Protocols $\ge$ 898, e.g. 944)
+
+The host application fetches Microsoft's JWKS catalog (e.g., from `https://authorization.franchise.minecraft-services.net/.well-known/keys`), parses it once into a `KeySet`, and supplies an `OidcPolicy`:
+
+```zig
+// 1. Host application parses cached JWKS keys
+var key_set = try bedwire.auth.jwks.KeySet.parse(allocator, jwks_json, limits);
+defer key_set.deinit();
+
+// 2. Configure OIDC trust policy
+const now_unix_seconds: i64 = /* supplied by host */;
+const oidc_policy = bedwire.auth.OidcPolicy{
+    .now = now_unix_seconds,
+    .clock_skew = 60,
+    .keys = &key_set,
+    // .issuer defaults to "https://authorization.franchise.minecraft-services.net/"
+    // .audience defaults to "api://auth-minecraft-services/multiplayer"
 };
+
+// 3. Authenticate Login packet connection_request payload
+var identity = try session.authenticateLogin(
+    allocator,
+    connection_request_bytes,
+    .{ .oidc = oidc_policy },
+);
+defer identity.deinit();
+
+std.debug.print("Authenticated player: {s} (UUID: {s}, XUID: {s})\n", .{
+    identity.display_name,
+    identity.uuid,
+    identity.xuid,
+});
 ```
 
-## Authentication and Encryption
+### Legacy Certificate Chain (Protocols $<$ 898)
 
-Once the client sends its settings request and the server replies with `NetworkSettings`, negotiate compression and verify identity:
+For older Bedrock versions, configure a `ChainPolicy` to verify Mojang's 3-link certificate chain:
 
 ```zig
-// Enable negotiated compression
-try conn.enableCompression(.snappy, 512);
+const now_unix_seconds: i64 = /* supplied by host */;
+const chain_policy = bedwire.auth.ChainPolicy{
+    .now = now_unix_seconds,
+};
 
-// Verify Mojang identity chain
-var auth_data = try conn.authenticateLegacy(allocator, chain_json, client_data, policy);
-defer auth_data.deinit();
-
-// Derive session keys and enable encryption
-try conn.send(&.{server_handshake_packet});
-try conn.installServerCrypto(server_key.secret_key, salt);
-
-// Transition state as handshake steps complete
-try conn.advance(.resource_packs);
-try conn.advance(.waiting_for_start_game);
-try conn.advance(.spawn_ready);
-try conn.advance(.in_game);
+var identity = try session.authenticateLogin(
+    allocator,
+    connection_request_bytes,
+    .{ .certificate_chain = chain_policy },
+);
+defer identity.deinit();
 ```
 
-For clients connecting to a server:
+### Enabling Session Encryption
+
+Once identity is verified, the server sends the `ServerToClientHandshake` packet in the clear, and then derives the continuous AES-256-CTR encryption keys using the client's public key (stored in `session.peer_key`):
 
 ```zig
-try conn.acceptServerHandshake(allocator, handshake_jwt, client_key.secret_key);
+// 1. Send ServerToClientHandshake packet to client (sent in the clear)
+// var frame = try session.encodeOne(server_handshake_packet);
+// defer frame.release();
+// try carrier.send(frame.bytes);
+
+// 2. Derive shared secrets from session.peer_key.? and enable encryption
+try session.installServerCrypto(server_ecdh_key.secret_key, salt);
+
+// On client side:
+// try session.acceptServerHandshake(allocator, handshake_jwt, client_ecdh_key.secret_key);
 ```
 
 ## Memory and Limits
 
-All core buffers (ingress, outgoing, batch scratch, and compression workspaces) are allocated once in `Connection.init`. Steady-state `send` and `receive` perform no heap allocations. Packet slices returned by `receive` borrow memory from the internal ingress buffer and expire upon the next `receive` call.
-
-Decode bounds are enforced by `DecodeLimits`:
+Session limits and memory bounds are configured via `bedwire.Limits`:
 
 ```zig
-var limits: bedwire.DecodeLimits = .{};
-limits.protocol.max_batch_bytes = 4 * 1024 * 1024;
-limits.protocol.max_decompressed_batch_bytes = 16 * 1024 * 1024;
+var limits: bedwire.Limits = .{};
+limits.max_frame_bytes = 4 * 1024 * 1024;
+limits.max_batch_bytes = 16 * 1024 * 1024;
+limits.max_packet_bytes = 4 * 1024 * 1024;
+limits.max_packets_per_batch = 1024;
+
 limits.max_jwt_header_bytes = 8 * 1024;
 limits.max_jwt_payload_bytes = 1024 * 1024;
-limits.max_chain_length = 8;
-limits.max_resource_pack_bytes = 512 * 1024 * 1024;
-limits.max_resource_packs = 128;
+limits.max_jwks_bytes = 64 * 1024;
+limits.max_jwks_keys = 16;
+limits.max_connection_request_bytes = 2 * 1024 * 1024;
+limits.max_identity_bytes = 1024;
+
+try limits.validate();
 ```
 
 ## Testing and Validation
 
-Run the test suite in Debug and ReleaseSafe modes:
+Run the test suite across optimization modes:
 
 ```sh
+# Debug mode
 zig build test
+
+# ReleaseSafe mode
 zig build test -Doptimize=ReleaseSafe
+
+# ReleaseFast mode
+zig build test -Doptimize=ReleaseFast
 ```
 
 Verify formatting across sources and tests:
@@ -159,4 +235,3 @@ Running the interoperability check requires Python 3 and Go 1.25+:
 ```sh
 python tools/interop/check.py
 ```
-
