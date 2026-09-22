@@ -64,12 +64,14 @@ pub const auth = struct {
     pub const jwt = @import("auth/jwt.zig");
     pub const jwks = @import("auth/jwks.zig");
     pub const login = @import("auth/login.zig");
-    pub const Identity = @import("auth/chain.zig").Identity;
+    pub const identity = @import("auth/identity.zig");
+    pub const oidc = @import("auth/oidc.zig");
+    pub const chain = @import("auth/chain.zig");
+    pub const Identity = @import("auth/identity.zig").Identity;
     pub const ChainPolicy = @import("auth/chain.zig").ChainPolicy;
-    pub const OidcPolicy = @import("auth/chain.zig").OidcPolicy;
-    pub const OidcKey = @import("auth/chain.zig").OidcKey;
+    pub const OidcPolicy = @import("auth/oidc.zig").OidcPolicy;
     pub const verifyChain = @import("auth/chain.zig").verifyChain;
-    pub const verifyOidc = @import("auth/chain.zig").verifyOidc;
+    pub const verifyOidc = @import("auth/oidc.zig").verifyOidc;
     pub const moj_root = @import("auth/moj_root.zig");
 };
 
@@ -107,6 +109,8 @@ test {
     _ = @import("session/session.zig");
     _ = @import("auth/wire.zig");
     _ = @import("auth/jwks.zig");
+    _ = @import("auth/identity.zig");
+    _ = @import("auth/oidc.zig");
     _ = @import("transport/raknet.zig");
     _ = @import("transport/nethernet.zig");
 }

@@ -12,6 +12,7 @@ test {
     _ = @import("auth/chain.zig");
     _ = @import("auth/wire.zig");
     _ = @import("auth/jwks.zig");
+    _ = @import("auth/oidc.zig");
 
     _ = @import("compression/codecs.zig");
     _ = @import("compression/interop.zig");

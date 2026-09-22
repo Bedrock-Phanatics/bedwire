@@ -320,7 +320,12 @@ test "authentication is gated by stage, role and login flow" {
 
     const allocator = testing.allocator;
     const policy: bedwire.auth.ChainPolicy = .{ .now = 100 };
-    const oidc: bedwire.auth.OidcPolicy = .{ .now = 100, .issuer = "", .audience = "", .keys = &.{} };
+    const dummy_keys = bedwire.auth.jwks.KeySet{
+        .allocator = allocator,
+        .backing = &.{},
+        .count = 0,
+    };
+    const oidc: bedwire.auth.OidcPolicy = .{ .now = 100, .keys = &dummy_keys };
 
     try testing.expectError(error.InvalidState, pair.server.authenticateChain(allocator, "{}", "", policy));
     try testing.expectError(error.InvalidState, pair.client.authenticateChain(allocator, "{}", "", policy));

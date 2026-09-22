@@ -6,6 +6,7 @@ const batch = @import("../framing/batch.zig");
 const varint = @import("../framing/varint.zig");
 const compression = @import("../compression/algorithm.zig");
 const chain = @import("../auth/chain.zig");
+const oidc = @import("../auth/oidc.zig");
 const login = @import("../auth/login.zig");
 const ecdh = @import("../crypto/ecdh.zig");
 const spki = @import("../crypto/spki.zig");
@@ -358,12 +359,12 @@ pub const Session = struct {
         allocator: std.mem.Allocator,
         token: []const u8,
         client_data: []const u8,
-        policy: chain.OidcPolicy,
-    ) !chain.Identity {
+        policy: oidc.OidcPolicy,
+    ) !oidc.Identity {
         try self.readyToAuthenticate(.oidc);
         errdefer self.close();
 
-        const identity = try chain.verifyOidc(allocator, token, client_data, policy, self.limits);
+        const identity = try oidc.verifyOidc(allocator, token, client_data, policy, self.limits);
         self.peer_key = identity.public_key;
 
         return identity;
