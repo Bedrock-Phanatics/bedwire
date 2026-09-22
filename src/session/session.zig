@@ -7,6 +7,8 @@ const varint = @import("../framing/varint.zig");
 const compression = @import("../compression/algorithm.zig");
 const chain = @import("../auth/chain.zig");
 const oidc = @import("../auth/oidc.zig");
+const wire = @import("../auth/wire.zig");
+const identity_mod = @import("../auth/identity.zig");
 const login = @import("../auth/login.zig");
 const ecdh = @import("../crypto/ecdh.zig");
 const spki = @import("../crypto/spki.zig");
@@ -32,6 +34,11 @@ pub const RxToken = BufferPool.RxToken;
 pub const TxToken = BufferPool.TxToken;
 pub const RxSlot = pool_mod.RxSlot;
 pub const TxSlot = pool_mod.TxSlot;
+
+pub const TrustPolicy = union(features_mod.LoginFlow) {
+    certificate_chain: chain.ChainPolicy,
+    oidc: oidc.OidcPolicy,
+};
 
 pub const Options = struct {
     limits: ?Limits = null,
@@ -365,6 +372,67 @@ pub const Session = struct {
         errdefer self.close();
 
         const identity = try oidc.verifyOidc(allocator, token, client_data, policy, self.limits);
+        self.peer_key = identity.public_key;
+
+        return identity;
+    }
+
+    /// authenticates player login using unified TrustPolicy, enforcing wire format and flow
+    pub fn authenticateLogin(
+        self: *Session,
+        allocator: std.mem.Allocator,
+        connection_request_bytes: []const u8,
+        policy: TrustPolicy,
+    ) !identity_mod.Identity {
+        try self.readyToAuthenticate(@as(features_mod.LoginFlow, policy));
+        errdefer self.close();
+
+        // decode binary connection_request wire format
+        const req = try wire.decodeConnectionRequest(connection_request_bytes, self.limits);
+
+        var envelope = try wire.parseChainEnvelope(allocator, req.chain_data, self.limits);
+        defer envelope.deinit(allocator);
+
+        switch (self.descriptor.features.connection_request_format) {
+            .legacy_chain => {
+                if (!envelope.is_legacy_chain) return error.UnsupportedProtocol;
+            },
+            .envelope => {
+                if (envelope.is_legacy_chain) return error.UnsupportedProtocol;
+            },
+        }
+
+        const identity = switch (policy) {
+            .oidc => |oidc_policy| blk: {
+                if (envelope.authentication_type == 1 or envelope.authentication_type > 2) {
+                    return error.UnsupportedAuthenticationType;
+                }
+                if (envelope.authentication_type == 2) {
+                    return error.UntrustedChain;
+                }
+
+                const id_token = envelope.token orelse return error.InvalidClaims;
+                break :blk try oidc.verifyOidc(allocator, id_token, req.client_data, oidc_policy, self.limits);
+            },
+            .certificate_chain => |chain_policy| blk: {
+                if (!envelope.is_legacy_chain) {
+                    if (envelope.authentication_type == 1 or envelope.authentication_type > 2) {
+                        return error.UnsupportedAuthenticationType;
+                    }
+                    if (envelope.authentication_type == 2 and !chain_policy.allow_offline) {
+                        return error.UntrustedChain;
+                    }
+                }
+
+                const chain_json = if (envelope.is_legacy_chain)
+                    req.chain_data
+                else
+                    (envelope.certificate orelse return error.InvalidClaims);
+
+                break :blk try chain.verifyChain(allocator, chain_json, req.client_data, chain_policy, self.limits);
+            },
+        };
+
         self.peer_key = identity.public_key;
 
         return identity;

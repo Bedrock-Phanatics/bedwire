@@ -29,6 +29,8 @@ pub const AuthError = error{
     InvalidToken,
     InvalidSignature,
     UnsupportedAlgorithm,
+    UnsupportedAuthenticationType,
+    MalformedConnectionRequest,
     ExpiredToken,
     TokenNotYetValid,
     UnknownKey,
@@ -59,4 +61,4 @@ pub const SessionError = error{
     OutOfMemory,
     PoolExhausted,
     IncompatibleLimits,
-} || FramingError || CompressionError || CryptoError;
+} || FramingError || CompressionError || CryptoError || AuthError;

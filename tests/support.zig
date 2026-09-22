@@ -17,10 +17,38 @@ pub const limits: bedwire.Limits = .{
     .max_resource_pack_chunk_bytes = 4096,
 };
 
+/// A version with envelope framing and OIDC login flow.
+pub const modern_oidc: bedwire.Descriptor = bedwire.protocol.describe(944) catch unreachable;
 /// A version that negotiates compression and uses the validation step.
 pub const modern: bedwire.Descriptor = bedwire.protocol.describe(818) catch unreachable;
 /// A version whose batches are implicitly DEFLATE with no marker byte.
 pub const legacy: bedwire.Descriptor = bedwire.protocol.describe(440) catch unreachable;
+
+pub fn buildConnectionRequest(allocator: std.mem.Allocator, chain_data: []const u8, client_data: []const u8) ![]u8 {
+    const total_len = 4 + chain_data.len + 4 + client_data.len;
+    const buf = try allocator.alloc(u8, total_len);
+    errdefer allocator.free(buf);
+
+    std.mem.writeInt(i32, buf[0..4], @intCast(chain_data.len), .little);
+    @memcpy(buf[4 .. 4 + chain_data.len], chain_data);
+    const raw_offset = 4 + chain_data.len;
+    std.mem.writeInt(i32, buf[raw_offset..][0..4], @intCast(client_data.len), .little);
+    @memcpy(buf[raw_offset + 4 .. total_len], client_data);
+
+    return buf;
+}
+
+pub fn buildEnvelope(allocator: std.mem.Allocator, auth_type: u8, cert: ?[]const u8, token: ?[]const u8) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"AuthenticationType\":{d},\"Certificate\":{f},\"Token\":{f}}}",
+        .{
+            auth_type,
+            std.json.fmt(cert orelse "", .{}),
+            std.json.fmt(token orelse "", .{}),
+        },
+    );
+}
 
 pub fn idOf(descriptor: *const bedwire.Descriptor, kind: PacketKind) u16 {
     return descriptor.idOf(kind).?;

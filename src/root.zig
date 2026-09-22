@@ -29,6 +29,7 @@ pub const protocol = struct {
 };
 
 pub const Session = @import("session/session.zig").Session;
+pub const TrustPolicy = @import("session/session.zig").TrustPolicy;
 pub const Packet = @import("session/session.zig").Packet;
 pub const Packets = @import("session/session.zig").Packets;
 pub const SessionOptions = @import("session/session.zig").Options;
@@ -70,6 +71,7 @@ pub const auth = struct {
     pub const Identity = @import("auth/identity.zig").Identity;
     pub const ChainPolicy = @import("auth/chain.zig").ChainPolicy;
     pub const OidcPolicy = @import("auth/oidc.zig").OidcPolicy;
+    pub const TrustPolicy = @import("session/session.zig").TrustPolicy;
     pub const verifyChain = @import("auth/chain.zig").verifyChain;
     pub const verifyOidc = @import("auth/oidc.zig").verifyOidc;
     pub const moj_root = @import("auth/moj_root.zig");

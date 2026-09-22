@@ -411,3 +411,403 @@ test "gameplay enforces known packet directions between client and server" {
     try testing.expectEqual(bedwire.PacketKind.other, p4.next().?.kind);
     p4.deinit();
 }
+
+test "authenticateLogin succeeds with modern OIDC envelope (protocol >= 898)" {
+    const allocator = testing.allocator;
+    var pair = try support.Pair.init(allocator, &support.modern_oidc);
+    defer pair.deinit();
+
+    var key_set = try bedwire.auth.jwks.KeySet.parse(allocator, support.test_jwks_json, support.limits);
+    defer key_set.deinit();
+
+    const client_key = try support.deterministicKey(10);
+    const cpk_b64 = support.encodedKey(client_key.public_key);
+
+    const payload = try std.fmt.allocPrint(
+        allocator,
+        "{{\"iss\":\"https://authorization.franchise.minecraft-services.net/\",\"aud\":\"api://auth-minecraft-services/multiplayer\",\"exp\":2000,\"cpk\":\"{s}\",\"xname\":\"Alex\",\"xid\":\"987654321\"}}",
+        .{cpk_b64},
+    );
+    defer allocator.free(payload);
+
+    const token = try support.signRsaToken(allocator, "{\"alg\":\"RS256\",\"kid\":\"test-rsa-key-1\"}", payload);
+    defer allocator.free(token);
+
+    const client_data = try support.buildClientData(allocator, client_key);
+    defer allocator.free(client_data);
+
+    const envelope = try support.buildEnvelope(allocator, 0, null, token);
+    defer allocator.free(envelope);
+
+    const wire_bytes = try support.buildConnectionRequest(allocator, envelope, client_data);
+    defer allocator.free(wire_bytes);
+
+    var build: support.Builder = .{};
+    try pair.clientToServerDiscard(&.{build.make(&support.modern_oidc, .request_network_settings)});
+    try pair.serverToClientDiscard(&.{build.make(&support.modern_oidc, .network_settings)});
+    try pair.server.negotiateCompression(.snappy, 0);
+    try pair.client.negotiateCompression(.snappy, 0);
+    try pair.clientToServerDiscard(&.{build.make(&support.modern_oidc, .login)});
+
+    const policy: bedwire.auth.OidcPolicy = .{
+        .now = 1100,
+        .keys = &key_set,
+    };
+
+    var id = try pair.server.authenticateLogin(allocator, wire_bytes, .{ .oidc = policy });
+    defer id.deinit();
+
+    try testing.expectEqualStrings("Alex", id.display_name);
+    try testing.expectEqualStrings("987654321", id.xuid);
+    try testing.expect(id.online);
+    try testing.expect(pair.server.peer_key != null);
+
+    const server_key = try support.deterministicKey(4);
+    try pair.serverToClientDiscard(&.{build.make(&support.modern_oidc, .server_to_client_handshake)});
+    try pair.server.installServerCrypto(server_key.secret_key, @splat(9));
+    try testing.expect(pair.server.encrypted());
+}
+
+test "authenticateLogin succeeds with envelope-framed certificate chain (818 <= protocol < 898)" {
+    const allocator = testing.allocator;
+    var pair = try support.Pair.init(allocator, &support.modern);
+    defer pair.deinit();
+
+    const keys = [3]support.Ecdsa.KeyPair{
+        try support.deterministicKey(1),
+        try support.deterministicKey(2),
+        try support.deterministicKey(3),
+    };
+
+    const chain_json = try support.buildChain(allocator, keys);
+    defer allocator.free(chain_json);
+
+    const client_data = try support.buildClientData(allocator, keys[0]);
+    defer allocator.free(client_data);
+
+    const envelope = try support.buildEnvelope(allocator, 0, chain_json, null);
+    defer allocator.free(envelope);
+
+    const wire_bytes = try support.buildConnectionRequest(allocator, envelope, client_data);
+    defer allocator.free(wire_bytes);
+
+    var build: support.Builder = .{};
+    try pair.clientToServerDiscard(&.{build.make(&support.modern, .request_network_settings)});
+    try pair.serverToClientDiscard(&.{build.make(&support.modern, .network_settings)});
+    try pair.server.negotiateCompression(.deflate, 0);
+    try pair.client.negotiateCompression(.deflate, 0);
+    try pair.clientToServerDiscard(&.{build.make(&support.modern, .login)});
+
+    const policy: bedwire.auth.ChainPolicy = .{
+        .now = 100,
+        .root = keys[1].public_key,
+    };
+
+    var id = try pair.server.authenticateLogin(allocator, wire_bytes, .{ .certificate_chain = policy });
+    defer id.deinit();
+
+    try testing.expectEqualStrings("Steve", id.display_name);
+    try testing.expectEqualStrings("1234", id.xuid);
+    try testing.expect(id.online);
+    try testing.expect(pair.server.peer_key != null);
+}
+
+test "authenticateLogin succeeds with legacy wire certificate chain (protocol < 818)" {
+    const allocator = testing.allocator;
+    var pair = try support.Pair.init(allocator, &support.legacy);
+    defer pair.deinit();
+
+    const keys = [3]support.Ecdsa.KeyPair{
+        try support.deterministicKey(1),
+        try support.deterministicKey(2),
+        try support.deterministicKey(3),
+    };
+
+    const chain_json = try support.buildChain(allocator, keys);
+    defer allocator.free(chain_json);
+
+    const client_data = try support.buildClientData(allocator, keys[0]);
+    defer allocator.free(client_data);
+
+    const wire_bytes = try support.buildConnectionRequest(allocator, chain_json, client_data);
+    defer allocator.free(wire_bytes);
+
+    var build: support.Builder = .{};
+    try pair.serverToClientDiscard(&.{build.make(&support.legacy, .play_status)});
+    pair.server.state = .authenticating;
+    pair.client.state = .authenticating;
+    try pair.clientToServerDiscard(&.{build.make(&support.legacy, .login)});
+
+    const policy: bedwire.auth.ChainPolicy = .{
+        .now = 100,
+        .root = keys[1].public_key,
+    };
+
+    var id = try pair.server.authenticateLogin(allocator, wire_bytes, .{ .certificate_chain = policy });
+    defer id.deinit();
+
+    try testing.expectEqualStrings("Steve", id.display_name);
+    try testing.expectEqualStrings("1234", id.xuid);
+    try testing.expect(id.online);
+    try testing.expect(pair.server.peer_key != null);
+}
+
+test "authenticateLogin prevents protocol downgrade between OIDC and CertificateChain" {
+    const allocator = testing.allocator;
+
+    const dummy_keys = bedwire.auth.jwks.KeySet{
+        .allocator = allocator,
+        .backing = &.{},
+        .count = 0,
+    };
+
+    {
+        var pair = try support.Pair.init(allocator, &support.modern_oidc);
+        defer pair.deinit();
+
+        pair.server.state = .authenticating;
+        pair.server.received.insert(.login);
+
+        const policy: bedwire.auth.ChainPolicy = .{ .now = 100 };
+        try testing.expectError(error.UnsupportedProtocol, pair.server.authenticateLogin(allocator, "", .{ .certificate_chain = policy }));
+    }
+
+    {
+        var pair = try support.Pair.init(allocator, &support.modern);
+        defer pair.deinit();
+
+        pair.server.state = .authenticating;
+        pair.server.received.insert(.login);
+
+        const policy: bedwire.auth.OidcPolicy = .{ .now = 100, .keys = &dummy_keys };
+        try testing.expectError(error.UnsupportedProtocol, pair.server.authenticateLogin(allocator, "", .{ .oidc = policy }));
+    }
+
+    {
+        var pair = try support.Pair.init(allocator, &support.legacy);
+        defer pair.deinit();
+
+        pair.server.state = .authenticating;
+        pair.server.received.insert(.login);
+
+        const policy: bedwire.auth.OidcPolicy = .{ .now = 100, .keys = &dummy_keys };
+        try testing.expectError(error.UnsupportedProtocol, pair.server.authenticateLogin(allocator, "", .{ .oidc = policy }));
+    }
+}
+
+test "authenticateLogin rejects wire format mismatch against session features" {
+    const allocator = testing.allocator;
+
+    {
+        var pair = try support.Pair.init(allocator, &support.legacy);
+        defer pair.deinit();
+
+        pair.server.state = .authenticating;
+        pair.server.received.insert(.login);
+
+        const envelope = "{\"AuthenticationType\":0,\"Certificate\":\"\"}";
+        const wire_bytes = try support.buildConnectionRequest(allocator, envelope, "raw");
+        defer allocator.free(wire_bytes);
+
+        const policy: bedwire.auth.ChainPolicy = .{ .now = 100 };
+        try testing.expectError(error.UnsupportedProtocol, pair.server.authenticateLogin(allocator, wire_bytes, .{ .certificate_chain = policy }));
+        try testing.expectEqual(State.disconnected, pair.server.state);
+    }
+
+    {
+        var pair = try support.Pair.init(allocator, &support.modern_oidc);
+        defer pair.deinit();
+
+        var key_set = try bedwire.auth.jwks.KeySet.parse(allocator, support.test_jwks_json, support.limits);
+        defer key_set.deinit();
+
+        pair.server.state = .authenticating;
+        pair.server.received.insert(.login);
+
+        const legacy_chain = "{\"chain\":[]}";
+        const wire_bytes = try support.buildConnectionRequest(allocator, legacy_chain, "raw");
+        defer allocator.free(wire_bytes);
+
+        const policy: bedwire.auth.OidcPolicy = .{ .now = 100, .keys = &key_set };
+        try testing.expectError(error.UnsupportedProtocol, pair.server.authenticateLogin(allocator, wire_bytes, .{ .oidc = policy }));
+        try testing.expectEqual(State.disconnected, pair.server.state);
+    }
+}
+
+test "authenticateLogin enforces AuthenticationType policy" {
+    const allocator = testing.allocator;
+
+    {
+        var pair = try support.Pair.init(allocator, &support.modern_oidc);
+        defer pair.deinit();
+
+        var key_set = try bedwire.auth.jwks.KeySet.parse(allocator, support.test_jwks_json, support.limits);
+        defer key_set.deinit();
+
+        pair.server.state = .authenticating;
+        pair.server.received.insert(.login);
+
+        const envelope = try support.buildEnvelope(allocator, 1, null, "token");
+        defer allocator.free(envelope);
+
+        const wire_bytes = try support.buildConnectionRequest(allocator, envelope, "raw");
+        defer allocator.free(wire_bytes);
+
+        const policy: bedwire.auth.OidcPolicy = .{ .now = 100, .keys = &key_set };
+        try testing.expectError(error.UnsupportedAuthenticationType, pair.server.authenticateLogin(allocator, wire_bytes, .{ .oidc = policy }));
+        try testing.expectEqual(State.disconnected, pair.server.state);
+    }
+
+    {
+        var pair = try support.Pair.init(allocator, &support.modern);
+        defer pair.deinit();
+
+        pair.server.state = .authenticating;
+        pair.server.received.insert(.login);
+
+        const envelope = try support.buildEnvelope(allocator, 2, "{\"chain\":[]}", null);
+        defer allocator.free(envelope);
+
+        const wire_bytes = try support.buildConnectionRequest(allocator, envelope, "raw");
+        defer allocator.free(wire_bytes);
+
+        const policy: bedwire.auth.ChainPolicy = .{ .now = 100, .allow_offline = false };
+        try testing.expectError(error.UntrustedChain, pair.server.authenticateLogin(allocator, wire_bytes, .{ .certificate_chain = policy }));
+        try testing.expectEqual(State.disconnected, pair.server.state);
+    }
+
+    {
+        var pair = try support.Pair.init(allocator, &support.modern_oidc);
+        defer pair.deinit();
+
+        var key_set = try bedwire.auth.jwks.KeySet.parse(allocator, support.test_jwks_json, support.limits);
+        defer key_set.deinit();
+
+        pair.server.state = .authenticating;
+        pair.server.received.insert(.login);
+
+        const envelope = try support.buildEnvelope(allocator, 2, null, "token");
+        defer allocator.free(envelope);
+
+        const wire_bytes = try support.buildConnectionRequest(allocator, envelope, "raw");
+        defer allocator.free(wire_bytes);
+
+        const policy: bedwire.auth.OidcPolicy = .{ .now = 100, .keys = &key_set };
+        try testing.expectError(error.UntrustedChain, pair.server.authenticateLogin(allocator, wire_bytes, .{ .oidc = policy }));
+        try testing.expectEqual(State.disconnected, pair.server.state);
+    }
+
+    {
+        var pair = try support.Pair.init(allocator, &support.modern_oidc);
+        defer pair.deinit();
+
+        var key_set = try bedwire.auth.jwks.KeySet.parse(allocator, support.test_jwks_json, support.limits);
+        defer key_set.deinit();
+
+        pair.server.state = .authenticating;
+        pair.server.received.insert(.login);
+
+        const envelope = try support.buildEnvelope(allocator, 3, null, "token");
+        defer allocator.free(envelope);
+
+        const wire_bytes = try support.buildConnectionRequest(allocator, envelope, "raw");
+        defer allocator.free(wire_bytes);
+
+        const policy: bedwire.auth.OidcPolicy = .{ .now = 100, .keys = &key_set };
+        try testing.expectError(error.UnsupportedAuthenticationType, pair.server.authenticateLogin(allocator, wire_bytes, .{ .oidc = policy }));
+        try testing.expectEqual(State.disconnected, pair.server.state);
+    }
+}
+
+test "authenticateLogin guarantees failure atomicity (peer_key remains null and session disconnected)" {
+    const allocator = testing.allocator;
+    var pair = try support.Pair.init(allocator, &support.modern_oidc);
+    defer pair.deinit();
+
+    var key_set = try bedwire.auth.jwks.KeySet.parse(allocator, support.test_jwks_json, support.limits);
+    defer key_set.deinit();
+
+    const client = try support.deterministicKey(10);
+    const cpk_b64 = support.encodedKey(client.public_key);
+
+    const payload = try std.fmt.allocPrint(
+        allocator,
+        "{{\"iss\":\"https://authorization.franchise.minecraft-services.net/\",\"aud\":\"api://auth-minecraft-services/multiplayer\",\"exp\":2000,\"cpk\":\"{s}\",\"xname\":\"Alex\",\"xid\":\"987654321\"}}",
+        .{cpk_b64},
+    );
+    defer allocator.free(payload);
+
+    const token = try support.signRsaToken(allocator, "{\"alg\":\"RS256\",\"kid\":\"test-rsa-key-1\"}", payload);
+    defer allocator.free(token);
+
+    var tampered_token = try allocator.dupe(u8, token);
+    defer allocator.free(tampered_token);
+    tampered_token[tampered_token.len - 5] ^= 0x01;
+
+    const client_data = try support.buildClientData(allocator, client);
+    defer allocator.free(client_data);
+
+    const envelope = try support.buildEnvelope(allocator, 0, null, tampered_token);
+    defer allocator.free(envelope);
+
+    const wire_bytes = try support.buildConnectionRequest(allocator, envelope, client_data);
+    defer allocator.free(wire_bytes);
+
+    pair.server.state = .authenticating;
+    pair.server.received.insert(.login);
+
+    const policy: bedwire.auth.OidcPolicy = .{
+        .now = 1100,
+        .keys = &key_set,
+    };
+
+    try testing.expectError(error.InvalidSignature, pair.server.authenticateLogin(allocator, wire_bytes, .{ .oidc = policy }));
+
+    try testing.expect(pair.server.peer_key == null);
+    try testing.expectEqual(State.disconnected, pair.server.state);
+}
+
+fn testAuthenticateLoginAllocations(allocator: std.mem.Allocator) !void {
+    var key_set = try bedwire.auth.jwks.KeySet.parse(allocator, support.test_jwks_json, support.limits);
+    defer key_set.deinit();
+
+    const client = try support.deterministicKey(10);
+    const cpk_b64 = support.encodedKey(client.public_key);
+
+    const payload = try std.fmt.allocPrint(
+        allocator,
+        "{{\"iss\":\"https://authorization.franchise.minecraft-services.net/\",\"aud\":\"api://auth-minecraft-services/multiplayer\",\"exp\":2000,\"cpk\":\"{s}\",\"xname\":\"Alex\",\"xid\":\"987654321\"}}",
+        .{cpk_b64},
+    );
+    defer allocator.free(payload);
+
+    const token = try support.signRsaToken(allocator, "{\"alg\":\"RS256\",\"kid\":\"test-rsa-key-1\"}", payload);
+    defer allocator.free(token);
+
+    const client_data = try support.buildClientData(allocator, client);
+    defer allocator.free(client_data);
+
+    const envelope = try support.buildEnvelope(allocator, 0, null, token);
+    defer allocator.free(envelope);
+
+    const wire_bytes = try support.buildConnectionRequest(allocator, envelope, client_data);
+    defer allocator.free(wire_bytes);
+
+    var pair = try support.Pair.init(allocator, &support.modern_oidc);
+    defer pair.deinit();
+
+    pair.server.state = .authenticating;
+    pair.server.received.insert(.login);
+
+    const policy: bedwire.auth.OidcPolicy = .{
+        .now = 1100,
+        .keys = &key_set,
+    };
+
+    var id = try pair.server.authenticateLogin(allocator, wire_bytes, .{ .oidc = policy });
+    id.deinit();
+}
+
+test "authenticateLogin handles allocation failures cleanly" {
+    try std.testing.checkAllAllocationFailures(testing.allocator, testAuthenticateLoginAllocations, .{});
+}
