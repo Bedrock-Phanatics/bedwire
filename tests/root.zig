@@ -8,12 +8,14 @@ test {
     _ = @import("session/pool.zig");
     _ = @import("session/concurrency.zig");
     _ = @import("session/transactions.zig");
+    _ = @import("session/campaigns.zig");
 
     _ = @import("auth/jwt.zig");
     _ = @import("auth/chain.zig");
     _ = @import("auth/wire.zig");
     _ = @import("auth/jwks.zig");
     _ = @import("auth/oidc.zig");
+    _ = @import("auth/campaigns.zig");
 
     _ = @import("compression/codecs.zig");
     _ = @import("compression/interop.zig");
