@@ -108,6 +108,20 @@ defer frame.release();
 try carrier.send(frame.bytes);
 ```
 
+Each session permits one outstanding `Frame` and one `Packets` iterator.
+Release the frame before another encode (`PoolExhausted`) and deinit the iterator
+before another ingest (`InvalidState`). Shared pool exhaustion also returns
+`PoolExhausted`; there is no fallback allocation or queue.
+
+Frame and packet bytes survive `Session.close()`. Release/deinit ends the borrow
+for all copies; `Session.deinit()` ends any remaining borrows. Keep sessions and
+pools at stable addresses, and serialize access to each session.
+
+Send frames in encode order. If sending fails or a frame is abandoned, close the
+session. Transport send hooks must consume or copy bytes before returning.
+NetherNet `pump` closes after a consumed message fails admission; push-style
+callers may retry backpressure if they retain the input.
+
 ## Authentication
 
 Bedwire provides a unified entry point `session.authenticateLogin(...)` that enforces strict protocol-version gating, wire format matching, and failure atomicity.

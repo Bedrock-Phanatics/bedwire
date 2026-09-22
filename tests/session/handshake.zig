@@ -804,7 +804,14 @@ fn testAuthenticateLoginAllocations(allocator: std.mem.Allocator) !void {
         .keys = &key_set,
     };
 
-    var id = try pair.server.authenticateLogin(allocator, wire_bytes, .{ .oidc = policy });
+    try pair.server.installVerifiedClientKey(client.public_key);
+    var id = pair.server.authenticateLogin(allocator, wire_bytes, .{ .oidc = policy }) catch |err| {
+        try testing.expectEqual(State.disconnected, pair.server.state);
+        try testing.expect(pair.server.peer_key == null);
+        try testing.expect(pair.server.crypto == null);
+        try testing.expect(pair.pool.isIdle());
+        return err;
+    };
     id.deinit();
 }
 

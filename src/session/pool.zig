@@ -27,7 +27,8 @@ pub const TxSlot = struct {
     table: snappy.Table = undefined,
 };
 
-/// Shared bounded buffer pool with partitioned RX and TX capacity
+/// Shared bounded RX/TX pool. Keep its address stable and destroy it after all
+/// sessions and leases; releasing a token invalidates slices into its slot.
 pub const BufferPool = struct {
     allocator: std.mem.Allocator,
     limits: Limits,

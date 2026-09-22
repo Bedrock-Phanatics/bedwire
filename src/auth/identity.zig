@@ -2,6 +2,7 @@ const std = @import("std");
 const Limits = @import("../limits.zig").Limits;
 const spki = @import("../crypto/spki.zig");
 
+/// Owns its strings; copies share those allocations.
 pub const Identity = struct {
     allocator: std.mem.Allocator,
     display_name: []u8,

@@ -4,6 +4,74 @@ const support = @import("../support.zig");
 
 const testing = std.testing;
 
+const SessionWorker = struct {
+    pool: *bedwire.BufferPool,
+    key_byte: u8,
+    failure: ?anyerror = null,
+
+    fn run(self: *@This()) void {
+        self.exchange() catch |err| {
+            self.failure = err;
+        };
+    }
+
+    fn exchange(self: *@This()) !void {
+        var sender = try bedwire.Session.init(testing.allocator, .client, &support.modern, .{ .pool = self.pool });
+        defer sender.deinit();
+        var receiver = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = self.pool });
+        defer receiver.deinit();
+        sender.state = .in_game;
+        receiver.state = .in_game;
+        sender.crypto = bedwire.crypto.SessionCrypto.init(@splat(self.key_byte));
+        receiver.crypto = bedwire.crypto.SessionCrypto.init(@splat(self.key_byte));
+        var storage: [32]u8 = undefined;
+        const packet = support.packet(&storage, support.idOf(&support.modern, .client_cache_status), &.{self.key_byte});
+
+        for (0..1000) |_| {
+            const frame = while (true) {
+                break sender.encodeOne(packet) catch |err| {
+                    if (err != error.PoolExhausted) return err;
+                    try std.Thread.yield();
+                    continue;
+                };
+            };
+            defer frame.release();
+            try std.Thread.yield();
+            var packets = while (true) {
+                break receiver.ingest(frame.bytes) catch |err| {
+                    if (err != error.PoolExhausted) return err;
+                    try std.Thread.yield();
+                    continue;
+                };
+            };
+            defer packets.deinit();
+            try std.Thread.yield();
+            try testing.expectEqualSlices(u8, packet, packets.next().?.bytes);
+        }
+        try testing.expectEqual(@as(u64, 1000), sender.crypto.?.send_counter);
+        try testing.expectEqual(@as(u64, 1000), receiver.crypto.?.recv_counter);
+    }
+};
+
+test "independent encrypted sessions share bounded slots under contention" {
+    const limits: bedwire.Limits = .{ .max_frame_bytes = 1024, .max_batch_bytes = 1024, .max_packet_bytes = 512 };
+    var pool = try bedwire.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+    var workers: [4]SessionWorker = undefined;
+    var threads: [4]std.Thread = undefined;
+    var started: usize = 0;
+    {
+        defer for (threads[0..started]) |thread| thread.join();
+        for (&workers, 0..) |*worker, i| {
+            worker.* = .{ .pool = &pool, .key_byte = @intCast(i + 1) };
+            threads[i] = try std.Thread.spawn(.{}, SessionWorker.run, .{worker});
+            started += 1;
+        }
+    }
+    for (workers) |worker| if (worker.failure) |err| return err;
+    try testing.expect(pool.isIdle());
+}
+
 const Worker = struct {
     pool: *bedwire.BufferPool,
     iterations: usize,

@@ -189,6 +189,7 @@ test "session max_frame_bytes is enforced when pool limits are larger" {
     try testing.expectError(error.LimitExceeded, batch_session.encode(&.{ p1, p2 }));
 
     // RX batch limit: compressed frame fits in 256 bytes, but decompressed batch exceeds 256
+    client_frame.release();
     try client.compression.negotiate(.deflate, 0);
     try batch_session.compression.negotiate(.deflate, 0);
 

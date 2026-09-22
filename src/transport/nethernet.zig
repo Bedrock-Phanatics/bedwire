@@ -15,6 +15,8 @@ const Session = session_mod.Session;
 /// or pull-style with pump() on a polling thread.
 /// minecraft bedrock drops the session if packets arrive out of order,
 /// so pump() will error out if an unreliable datagram slips through.
+/// send must consume or copy bytes before returning. Message.data must remain
+/// valid through deliver; handlers must not retain borrowed packet bytes.
 pub fn NetherNet(comptime Connection: type, comptime Handler: type) type {
     comptime validate(Handler);
 
@@ -22,6 +24,7 @@ pub fn NetherNet(comptime Connection: type, comptime Handler: type) type {
         session: *Session,
         connection: *Connection,
         handler: *Handler,
+        pumping: bool = false,
 
         const Self = @This();
 
@@ -29,15 +32,25 @@ pub fn NetherNet(comptime Connection: type, comptime Handler: type) type {
         pub fn deliver(self: *Self, payload: []const u8) !void {
             var packets = try self.session.ingest(payload);
             defer packets.deinit();
+            errdefer self.session.close();
             while (packets.next()) |packet| try self.handler.onPacket(self.session, packet);
         }
 
         /// pull the next reliable message from NetherNet
         pub fn pump(self: *Self) !void {
+            if (self.session.state == .disconnected) return error.TransportClosed;
+            if (self.pumping or self.session.active_generation != null or self.session.rx_slot != null) return error.InvalidState;
+            self.pumping = true;
+            defer self.pumping = false;
+
             const message = self.connection.receive() catch |err| {
-                if (err == error.TransportClosed) self.session.close();
+                // NetherNet poll closes on error; Canceled and UnexpectedSignal
+                // come from receive after a successful poll.
+                if (err != error.Canceled and err != error.UnexpectedSignal) self.session.close();
                 return err;
             };
+            // The message has been consumed. Admission failure cannot be retried here.
+            errdefer self.session.close();
             if (message.reliability != .reliable) {
                 self.session.close();
                 return error.TransportClosed;
@@ -77,10 +90,12 @@ const Channel = struct {
 
     inbound: []const u8 = &.{},
     inbound_reliability: Reliability = .reliable,
+    receive_error: ?anyerror = null,
     outbound: [4096]u8 = undefined,
     outbound_len: usize = 0,
 
     fn receive(self: *Channel) !Message {
+        if (self.receive_error) |err| return err;
         if (self.inbound.len == 0) return error.TransportClosed;
         return .{ .reliability = self.inbound_reliability, .data = self.inbound };
     }
@@ -157,6 +172,40 @@ test "terminal connection failure in pump disconnects the session" {
 
     try testing.expectError(error.TransportClosed, adapter.pump());
     try testing.expectEqual(session_mod.State.disconnected, local.state);
+}
+
+test "pump closes on upstream terminal receive failures" {
+    const version = comptime registry.describe(800) catch unreachable;
+    inline for (.{ error.ConnectionClosed, error.Timeout, error.ReassemblyTimeout }) |receive_error| {
+        var pool = try session_mod.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 1, .tx_slots = 1 });
+        defer pool.deinit();
+        var local = try Session.init(testing.allocator, .client, &version, .{ .pool = &pool });
+        defer local.deinit();
+        local.state = .in_game;
+        var channel: Channel = .{ .receive_error = receive_error };
+        var counter: Counter = .{};
+        var adapter = NetherNet(Channel, Counter){ .session = &local, .connection = &channel, .handler = &counter };
+
+        try testing.expectError(receive_error, adapter.pump());
+        try testing.expectEqual(session_mod.State.disconnected, local.state);
+        try testing.expectError(error.TransportClosed, adapter.pump());
+    }
+}
+
+test "pump preserves session on canceled wait" {
+    const version = comptime registry.describe(800) catch unreachable;
+    var pool = try session_mod.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 1, .tx_slots = 1 });
+    defer pool.deinit();
+    var local = try Session.init(testing.allocator, .client, &version, .{ .pool = &pool });
+    defer local.deinit();
+    local.state = .in_game;
+    var channel: Channel = .{ .receive_error = error.Canceled };
+    var counter: Counter = .{};
+    var adapter = NetherNet(Channel, Counter){ .session = &local, .connection = &channel, .handler = &counter };
+
+    try testing.expectError(error.Canceled, adapter.pump());
+    try testing.expectEqual(session_mod.State.in_game, local.state);
+    try testing.expect(!adapter.pumping);
 }
 
 test "adapter sends reliable frames and stops once closed" {

@@ -167,6 +167,7 @@ fn benchIngest(io: std.Io, allocator: std.mem.Allocator, pool: *bedwire.BufferPo
 
     for (frames) |*frame| {
         const f = try sender.encode(packets);
+        defer f.release();
         frame.* = try allocator.dupe(u8, f.bytes);
     }
 

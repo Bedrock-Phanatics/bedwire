@@ -55,6 +55,7 @@ test "the threshold decides per batch and both sides agree" {
         const small_frame = try pair.client.encode(&.{small});
         defer small_frame.release();
         try testing.expectEqual(@as(u8, 0xff), small_frame.bytes[1]);
+        small_frame.release();
 
         // at or above threshold uses negotiated algorithm marker
         var big_storage: [256]u8 = undefined;
@@ -62,6 +63,7 @@ test "the threshold decides per batch and both sides agree" {
         const big_frame = try pair.client.encode(&.{big});
         defer big_frame.release();
         try testing.expectEqual(@intFromEnum(algorithm), big_frame.bytes[1]);
+        big_frame.release();
 
         try roundTrip(&pair, &([_]u8{'a'} ** 16));
         try roundTrip(&pair, &([_]u8{'a'} ** 96));

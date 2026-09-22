@@ -13,6 +13,8 @@ const Session = session_mod.Session;
 ///
 /// Bedwire doesn't touch transport level stuff like acks, packet loss, resends or MTU splits,
 /// that's all left up to raknet.
+/// send must consume or copy bytes before returning. Handlers may send or close,
+/// but must not destroy the session or retain borrowed packet bytes.
 pub fn RakNet(comptime Peer: type, comptime Handler: type) type {
     comptime validate(Handler);
 
@@ -29,6 +31,7 @@ pub fn RakNet(comptime Peer: type, comptime Handler: type) type {
         pub fn deliver(self: *Self, payload: []const u8) !void {
             var packets = try self.session.ingest(payload);
             defer packets.deinit();
+            errdefer self.session.close();
             while (packets.next()) |packet| try self.handler.onPacket(self.session, packet);
         }
 

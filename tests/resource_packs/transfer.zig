@@ -65,6 +65,7 @@ test "the final chunk must complete the announced hash" {
 
     try transfer.accept(.{ .pack_id = "alpha", .index = 0, .offset = 0, .data = archive[0..256] });
     try transfer.accept(.{ .pack_id = "alpha", .index = 1, .offset = 256, .data = archive[256..512] });
+    const before_hash = transfer.hash;
     try testing.expectError(error.IntegrityMismatch, transfer.accept(.{
         .pack_id = "alpha",
         .index = 2,
@@ -74,6 +75,9 @@ test "the final chunk must complete the announced hash" {
 
     try testing.expect(transfer.failed);
     try testing.expect(!transfer.complete);
+    try testing.expectEqual(@as(u64, 512), transfer.progress());
+    try testing.expectEqual(@as(u32, 2), transfer.next_index);
+    try testing.expectEqualDeep(before_hash, transfer.hash);
 }
 
 test "substituted chunk contents are caught by the hash, not by length" {

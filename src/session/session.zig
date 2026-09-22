@@ -45,7 +45,8 @@ pub const Options = struct {
     pool: *BufferPool,
 };
 
-/// Borrowed outbound wire frame slice valid until next encode or explicit release
+/// Outbound bytes remain valid until release or Session.deinit, including across close.
+/// Copies share one lease; the Session must stay at a stable address.
 pub const Frame = struct {
     bytes: []const u8,
     session: *Session,
@@ -56,14 +57,15 @@ pub const Frame = struct {
     }
 };
 
-/// Decoded packet from an ingested batch
+/// Packet bytes borrow the RX lease until Packets.deinit or Session.deinit.
 pub const Packet = struct {
     kind: PacketKind,
     id: PacketId,
     bytes: []const u8,
 };
 
-/// Iterator over parsed packets in an admitted batch
+/// Copies have separate cursors but share one RX lease; deinit of any copy
+/// invalidates every Packet slice from that lease. EOF and close retain storage.
 pub const Packets = struct {
     reader: batch.Reader,
     descriptor: *const Descriptor,
@@ -115,7 +117,8 @@ pub const Packets = struct {
     }
 };
 
-/// Bedrock session state machine and framing engine
+/// Serialize access to each Session, including release. Independent Sessions
+/// may share a pool. Keep the Session at a stable address while leases exist.
 pub const Session = struct {
     allocator: std.mem.Allocator,
     descriptor: *const Descriptor,
@@ -163,6 +166,7 @@ pub const Session = struct {
 
     pub fn deinit(self: *Session) void {
         self.close();
+        self.releaseTxToken(self.tx_token);
         if (self.rx_slot) |st| {
             self.rx_slot = null;
             self.active_generation = null;
@@ -171,19 +175,12 @@ pub const Session = struct {
         self.* = undefined;
     }
 
-    /// Closes session and zeroes crypto keys without prematurely freeing active RX storage
+    /// Closes the Session without invalidating borrowed RX or TX storage.
     pub fn close(self: *Session) void {
-        if (self.state == .disconnected) return;
-
         self.state = .disconnected;
         if (self.crypto) |*crypto| crypto.deinit();
         self.crypto = null;
-
-        if (self.tx_slot) |st| {
-            self.tx_slot = null;
-            self.tx_token +%= 1;
-            self.pool.releaseTx(st);
-        }
+        self.peer_key = null;
     }
 
     /// Set state to closing
@@ -241,9 +238,8 @@ pub const Session = struct {
         );
         const observed = try self.admit(raw, self.role.peer());
 
-        self.observe(observed.kinds, self.role.peer());
-
         const reader = try batch.Reader.init(raw, self.limits);
+        self.observe(observed.kinds, self.role.peer());
         self.generation +%= 1;
         self.active_generation = self.generation;
         self.rx_slot = rx_token;
@@ -257,23 +253,14 @@ pub const Session = struct {
         };
     }
 
-    /// Encodes packets into a wire frame using pooled TX storage
+    /// A held Frame returns PoolExhausted. Send successful frames in order;
+    /// close the Session if a committed frame is abandoned or sending fails.
     pub fn encode(self: *Session, packets: []const []const u8) !Frame {
         if (self.state == .disconnected) return error.TransportClosed;
+        if (self.tx_slot != null) return error.PoolExhausted;
 
-        const slot_token = self.tx_slot orelse try self.pool.acquireTx();
-        self.tx_slot = slot_token;
-
-        self.tx_token +%= 1;
-        const current_token = self.tx_token;
-
-        errdefer {
-            if (self.tx_slot) |st| {
-                self.tx_slot = null;
-                self.tx_token +%= 1;
-                self.pool.releaseTx(st);
-            }
-        }
+        const slot_token = try self.pool.acquireTx();
+        errdefer self.pool.releaseTx(slot_token);
 
         const slot = self.pool.getTx(slot_token) orelse return error.InvalidState;
 
@@ -310,14 +297,15 @@ pub const Session = struct {
 
         var len = reserve + framed.bytes.len;
         if (self.crypto) |*crypto| len = 1 + (try crypto.seal(slot.egress[1..max_egress], len - 1)).len;
-        if (len > self.limits.max_frame_bytes) return error.LimitExceeded;
 
+        self.tx_slot = slot_token;
+        self.tx_token +%= 1;
         self.observe(observed, self.role);
 
         return Frame{
             .bytes = slot.egress[0..len],
             .session = self,
-            .token = current_token,
+            .token = self.tx_token,
         };
     }
 
@@ -476,8 +464,8 @@ pub const Session = struct {
         errdefer self.close();
 
         const handshake = try login.Handshake.verify(allocator, token, self.limits);
-        self.peer_key = handshake.peer_key;
         try self.enableCrypto(secret, handshake.peer_key, handshake.salt);
+        self.peer_key = handshake.peer_key;
     }
 
     /// advance state machine to next phase

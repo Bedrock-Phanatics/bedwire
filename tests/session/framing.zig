@@ -207,6 +207,7 @@ test "exhaust -> deinit -> new ingest" {
     try testing.expectEqualStrings("p1", p1.bytes[p1.bytes.len - 2 ..]);
 
     // new ingest rejected while EOF iterator still active
+    frame1.release();
     const frame2 = try client.encode(&.{support.packet(&storage2, 60, "p2")});
     defer frame2.release();
     try testing.expectError(error.InvalidState, session.ingest(frame2.bytes));
@@ -246,6 +247,7 @@ test "double deinit" {
     iter1.deinit();
     try testing.expectEqual(@as(?u64, null), session.active_generation);
 
+    frame1.release();
     const frame2 = try client.encode(&.{support.packet(&storage, 60, "p2")});
     defer frame2.release();
     var iter2 = try session.ingest(frame2.bytes);
@@ -281,6 +283,7 @@ test "old iterator vs newer ingest" {
     iter1.deinit();
     try testing.expectEqual(@as(?u64, null), session.active_generation);
 
+    frame1.release();
     const frame2 = try client.encode(&.{support.packet(&storage2, 60, "second_batch")});
     defer frame2.release();
     var iter2 = try session.ingest(frame2.bytes);
@@ -365,6 +368,7 @@ test "nested ingest rejection without disconnect" {
 
     // nested ingest rejected while outer iterator still has the lease
     var storage3: [16]u8 = undefined;
+    frame1.release();
     const frame2 = try client.encode(&.{support.packet(&storage3, 60, "nested")});
     defer frame2.release();
     try testing.expectError(error.InvalidState, session.ingest(frame2.bytes));
@@ -482,7 +486,7 @@ test "stale Frame release does not release reused TX slot" {
     const p = support.packet(&storage, 60, "data");
 
     const frame1 = try session.encode(&.{p});
-    // frame1 now holds token 1
+    frame1.release();
 
     const frame2 = try session.encode(&.{p});
     defer frame2.release();
@@ -492,7 +496,7 @@ test "stale Frame release does not release reused TX slot" {
     try testing.expect(session.tx_slot != null);
 }
 
-test "encode failure releases TX slot and invalidates prior frames" {
+test "held frame blocks a failing encode until explicitly released" {
     const tight: bedwire.Limits = .{ .max_frame_bytes = 48, .max_batch_bytes = 4096, .max_packet_bytes = 4096 };
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
@@ -506,8 +510,10 @@ test "encode failure releases TX slot and invalidates prior frames" {
 
     var storage2: [256]u8 = undefined;
     const oversized = [_]u8{0xa5} ** 200;
+    try testing.expectError(error.PoolExhausted, session.encodeOne(support.packet(&storage2, 60, &oversized)));
+    try testing.expect(session.tx_slot != null);
+    frame1.release();
     try testing.expectError(error.NoSpaceLeft, session.encodeOne(support.packet(&storage2, 60, &oversized)));
-
     try testing.expect(session.tx_slot == null);
 
     // frame1 release is safe no-op
@@ -600,6 +606,7 @@ test "copied Packets EOF semantics: cursor-local traversal with generation-scope
     try testing.expectEqual(@as(?bedwire.Packet, null), copy.next());
 
     var storage3: [16]u8 = undefined;
+    frame.release();
     const frame2 = try client.encode(&.{support.packet(&storage3, 60, "gen2")});
     defer frame2.release();
     var packets2 = try session.ingest(frame2.bytes);
