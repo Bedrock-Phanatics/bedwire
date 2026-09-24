@@ -1,4 +1,5 @@
 test {
+    _ = @import("session/profile.zig");
     _ = @import("session/handshake.zig");
     _ = @import("session/framing.zig");
     _ = @import("session/compression.zig");

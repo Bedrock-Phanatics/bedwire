@@ -6,8 +6,8 @@ const testing = std.testing;
 const SessionCrypto = bedwire.crypto.SessionCrypto;
 
 /// An encrypted pair in gameplay, both sides holding the same session key.
-fn encrypted(allocator: std.mem.Allocator, key: [32]u8) !support.Pair {
-    var pair = try support.Pair.init(allocator, &support.modern);
+fn encrypted(allocator: std.mem.Allocator, key: [32]u8) !support.PairFor(support.modern) {
+    var pair = try support.Pair.init(allocator, support.modern);
     errdefer pair.deinit();
 
     try pair.server.compression.negotiate(.snappy, 0);
@@ -27,7 +27,7 @@ test "an encrypted session stays in step over many batches" {
     var storage: [256]u8 = undefined;
 
     for (0..64) |i| {
-        const packet = support.packet(&storage, 60, &[_]u8{@intCast(i % 251)});
+        const packet = support.packet(&storage, support.opaque_packet_id, &[_]u8{@intCast(i % 251)});
 
         var packets = try pair.clientToServer(&.{packet});
         defer packets.deinit();
@@ -45,7 +45,7 @@ test "tampering with any byte of an encrypted frame is detected" {
         var pair = try encrypted(testing.allocator, @splat(0x42));
         defer pair.deinit();
 
-        const frame = try pair.client.encode(&.{support.packet(&storage, 60, "tamper")});
+        const frame = try pair.client.encode(&.{support.packet(&storage, support.opaque_packet_id, "tamper")});
         defer frame.release();
         @memcpy(pair.relay[0..frame.bytes.len], frame.bytes);
         const captured = pair.relay[0..frame.bytes.len];
@@ -58,7 +58,7 @@ test "tampering with any byte of an encrypted frame is detected" {
 }
 
 test "a wrong session key never decrypts" {
-    var pair = try support.Pair.init(testing.allocator, &support.modern);
+    var pair = try support.Pair.init(testing.allocator, support.modern);
     defer pair.deinit();
 
     try pair.server.compression.negotiate(.snappy, 0);
@@ -69,7 +69,7 @@ test "a wrong session key never decrypts" {
     pair.server.state = .in_game;
 
     var storage: [64]u8 = undefined;
-    try testing.expectError(error.ChecksumMismatch, pair.clientToServer(&.{support.packet(&storage, 60, "x")}));
+    try testing.expectError(error.ChecksumMismatch, pair.clientToServer(&.{support.packet(&storage, support.opaque_packet_id, "x")}));
 }
 
 test "a frame shorter than the checksum is refused" {

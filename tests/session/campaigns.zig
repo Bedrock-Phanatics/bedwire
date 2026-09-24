@@ -18,9 +18,9 @@ test "deterministic session operation sequences preserve leases and commits" {
     const cycles = @max(32, @import("build_options").fuzz_iterations / 100);
 
     for (0..cycles) |_| {
-        var sender = try bedwire.Session.init(testing.allocator, .client, &support.modern, .{ .pool = &pool });
+        var sender = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
         defer sender.deinit();
-        var receiver = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = &pool });
+        var receiver = try support.Session.init(testing.allocator, .server, .{ .pool = &pool });
         defer receiver.deinit();
         sender.state = .in_game;
         receiver.state = .in_game;
@@ -28,10 +28,10 @@ test "deterministic session operation sequences preserve leases and commits" {
         receiver.crypto = bedwire.crypto.SessionCrypto.init(@splat(0x42));
 
         var storage: [16]u8 = undefined;
-        const packet = support.packet(&storage, 60, "x");
-        var held_frame: ?bedwire.Frame = null;
-        var stale_frame: ?bedwire.Frame = null;
-        var held_packets: ?bedwire.Packets = null;
+        const packet = support.packet(&storage, support.opaque_packet_id, "x");
+        var held_frame: ?support.Session.Frame = null;
+        var stale_frame: ?support.Session.Frame = null;
+        var held_packets: ?support.Session.Packets = null;
         var frame_consumed = false;
         var sent_count: u64 = 0;
         var received_count: u64 = 0;
@@ -119,12 +119,12 @@ test "mutated compressed frames release leases and keep commits atomic" {
     var prng = std.Random.DefaultPrng.init(0xf6a9e);
     const random = prng.random();
     for ([_]bedwire.compression.Algorithm{ .deflate, .snappy }) |algorithm| {
-        var sender = try bedwire.Session.init(testing.allocator, .client, &support.modern, .{ .pool = &pool });
+        var sender = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
         defer sender.deinit();
         sender.state = .in_game;
         try sender.compression.negotiate(algorithm, 0);
         var storage: [128]u8 = undefined;
-        const packet = support.packet(&storage, 60, &([_]u8{'a'} ** 96));
+        const packet = support.packet(&storage, support.opaque_packet_id, &([_]u8{'a'} ** 96));
         const frame = try sender.encodeOne(packet);
         var valid: [256]u8 = undefined;
         @memcpy(valid[0..frame.bytes.len], frame.bytes);
@@ -133,7 +133,7 @@ test "mutated compressed frames release leases and keep commits atomic" {
 
         const cases = @max(64, @import("build_options").fuzz_iterations / 40);
         for (0..cases) |i| {
-            var receiver = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = &pool });
+            var receiver = try support.Session.init(testing.allocator, .server, .{ .pool = &pool });
             defer receiver.deinit();
             receiver.state = .in_game;
             try receiver.compression.negotiate(algorithm, 0);
@@ -159,11 +159,11 @@ test "shared pool remains reusable after repeated session deinit" {
     defer pool.deinit();
     const cycles = @max(64, @import("build_options").fuzz_iterations / 20);
     var storage: [16]u8 = undefined;
-    const packet = support.packet(&storage, 60, "reuse");
+    const packet = support.packet(&storage, support.opaque_packet_id, "reuse");
 
     for (0..cycles) |_| {
-        var sender = try bedwire.Session.init(testing.allocator, .client, &support.modern, .{ .pool = &pool });
-        var receiver = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = &pool });
+        var sender = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
+        var receiver = try support.Session.init(testing.allocator, .server, .{ .pool = &pool });
         sender.state = .in_game;
         receiver.state = .in_game;
         const frame = try sender.encodeOne(packet);

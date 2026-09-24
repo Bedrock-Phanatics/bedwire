@@ -16,16 +16,16 @@ const SessionWorker = struct {
     }
 
     fn exchange(self: *@This()) !void {
-        var sender = try bedwire.Session.init(testing.allocator, .client, &support.modern, .{ .pool = self.pool });
+        var sender = try support.Session.init(testing.allocator, .client, .{ .pool = self.pool });
         defer sender.deinit();
-        var receiver = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = self.pool });
+        var receiver = try support.Session.init(testing.allocator, .server, .{ .pool = self.pool });
         defer receiver.deinit();
         sender.state = .in_game;
         receiver.state = .in_game;
         sender.crypto = bedwire.crypto.SessionCrypto.init(@splat(self.key_byte));
         receiver.crypto = bedwire.crypto.SessionCrypto.init(@splat(self.key_byte));
         var storage: [32]u8 = undefined;
-        const packet = support.packet(&storage, support.idOf(&support.modern, .client_cache_status), &.{self.key_byte});
+        const packet = support.packet(&storage, support.packetId(support.modern, .client_cache_status), &.{self.key_byte});
 
         for (0..1000) |_| {
             const frame = while (true) {

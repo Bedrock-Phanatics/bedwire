@@ -16,10 +16,15 @@ const Session = session_mod.Session;
 /// send must consume or copy bytes before returning. Handlers may send or close,
 /// but must not destroy the session or retain borrowed packet bytes.
 pub fn RakNet(comptime Peer: type, comptime Handler: type) type {
+    return RakNetWithProfile(@import("bedrock_protocol").Current, Peer, Handler);
+}
+
+pub fn RakNetWithProfile(comptime Profile: type, comptime Peer: type, comptime Handler: type) type {
     comptime validate(Handler);
+    const ProfileSession = session_mod.SessionWithProfile(Profile);
 
     return struct {
-        session: *Session,
+        session: *ProfileSession,
         peer: *Peer,
         handler: *Handler,
         // bedrock traffic uses channel 0
@@ -82,7 +87,7 @@ const FakePeer = struct {
 
 const Collector = struct {
     allocator: std.mem.Allocator,
-    kinds: std.ArrayList(session_mod.PacketKind) = .empty,
+    kinds: std.ArrayList(?session_mod.PacketKind) = .empty,
     copies: std.ArrayList([]u8) = .empty,
 
     fn onPacket(self: *Collector, s: *Session, packet: Packet) !void {
@@ -98,8 +103,6 @@ const Collector = struct {
     }
 };
 
-const registry = @import("../protocol/registry.zig");
-
 const limits: @import("../limits.zig").Limits = .{
     .max_frame_bytes = 4096,
     .max_batch_bytes = 4096,
@@ -108,16 +111,15 @@ const limits: @import("../limits.zig").Limits = .{
 
 test "adapter drives ingest and reliable ordered send" {
     const allocator = testing.allocator;
-    const version = comptime registry.describe(800) catch unreachable;
 
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var server = try Session.init(allocator, .server, &version, .{ .limits = limits, .pool = &pool });
+    var server = try Session.init(allocator, .server, .{ .limits = limits, .pool = &pool });
     defer server.deinit();
     server.state = .in_game;
 
-    var client = try Session.init(allocator, .client, &version, .{ .limits = limits, .pool = &pool });
+    var client = try Session.init(allocator, .client, .{ .limits = limits, .pool = &pool });
     defer client.deinit();
     client.state = .in_game;
 
@@ -143,12 +145,11 @@ test "adapter drives ingest and reliable ordered send" {
 
 test "transport failure closes the session" {
     const allocator = testing.allocator;
-    const version = comptime registry.describe(800) catch unreachable;
 
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var client = try Session.init(allocator, .client, &version, .{ .limits = limits, .pool = &pool });
+    var client = try Session.init(allocator, .client, .{ .limits = limits, .pool = &pool });
     defer client.deinit();
     client.state = .in_game;
 
@@ -166,12 +167,11 @@ test "transport failure closes the session" {
 
 test "hostile payload closes the session inside the callback" {
     const allocator = testing.allocator;
-    const version = comptime registry.describe(800) catch unreachable;
 
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var server = try Session.init(allocator, .server, &version, .{ .limits = limits, .pool = &pool });
+    var server = try Session.init(allocator, .server, .{ .limits = limits, .pool = &pool });
     defer server.deinit();
 
     var peer: FakePeer = .{ .allocator = allocator };
@@ -188,16 +188,15 @@ test "hostile payload closes the session inside the callback" {
 
 test "reentrant deliver or ingest is rejected with InvalidState" {
     const allocator = testing.allocator;
-    const version = comptime registry.describe(800) catch unreachable;
 
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var server = try Session.init(allocator, .server, &version, .{ .limits = limits, .pool = &pool });
+    var server = try Session.init(allocator, .server, .{ .limits = limits, .pool = &pool });
     defer server.deinit();
     server.state = .in_game;
 
-    var client = try Session.init(allocator, .client, &version, .{ .limits = limits, .pool = &pool });
+    var client = try Session.init(allocator, .client, .{ .limits = limits, .pool = &pool });
     defer client.deinit();
     client.state = .in_game;
 

@@ -20,7 +20,7 @@ Minecraft: Bedrock Edition session networking for Zig 0.16.0.
 - **Legacy Authentication (Protocols $<$ 898 / Minecraft $<$ 1.21.130)**:
   - 3-link Mojang certificate chain verification against pinned Mojang root public key (`moj_root`).
 - **Strict Protocol Gating & Anti-Downgrade**:
-  - Wire framing (`legacy_chain` vs `envelope`) and login flow (`certificate_chain` vs `oidc`) are strictly gated by protocol version.
+  - Wire framing (`legacy_chain` vs `envelope`) is explicit session policy; login flow is supplied by the selected protocol profile.
   - Atomic failure rollback: any verification or decoding error zeroes cryptographic state and resets session to `.disconnected`.
 - **Zero-Allocation Steady State**:
   - Fixed-capacity shared `BufferPool` with generational slot recycling and zero heap allocations during steady-state packet I/O.
@@ -70,18 +70,23 @@ try limits.validate();
 var pool = try bedwire.BufferPool.init(allocator, limits, bedwire.PoolConfig.conservative());
 defer pool.deinit();
 
-// Select protocol descriptor for target Bedrock version (e.g. 944)
-const descriptor = try bedwire.protocol.describe(944);
-
-// Create session instance
+// Create a session using protocol-zig's current profile
 var session = try bedwire.Session.init(
     allocator,
     .server,
-    &descriptor,
     .{ .pool = &pool, .limits = limits },
 );
 defer session.deinit();
 ```
+
+For a third-party multiversion profile, use
+`bedwire.SessionWithProfile(MyProfile).init(allocator, .server, options)`.
+The profile must implement `bedrock_protocol.validateProfile`'s compile-time
+contract. Profiles are selected per session type; there is no global registry.
+Set `options.policy.connection_request_format = .legacy_chain` for a profile
+whose login uses that Bedwire authentication envelope.
+For profile-specific adapters, use `bedwire.transport.RakNetWithProfile` or
+`bedwire.transport.NetherNetWithProfile` with the same profile type.
 
 ### 2. Ingest and Process Packets
 
@@ -91,9 +96,10 @@ var packets = try session.ingest(batch_bytes);
 defer packets.deinit();
 
 while (packets.next()) |packet| {
-    // packet.kind: PacketKind
+    // packet.kind: ?bedrock_protocol.PacketKind
     // packet.id: PacketId
     // packet.bytes: []const u8 (borrows from internal pool buffer)
+    // session.decodePacket(packet) uses the selected profile's borrowed codec
 }
 ```
 
@@ -124,7 +130,7 @@ callers may retry backpressure if they retain the input.
 
 ## Authentication
 
-Bedwire provides a unified entry point `session.authenticateLogin(...)` that enforces strict protocol-version gating, wire format matching, and failure atomicity.
+Bedwire provides `session.authenticateLoginPacket(...)` for a profile-decoded Login packet, or `session.authenticateLogin(...)` for an already extracted connection request. Both enforce the selected login flow, wire format policy, and failure atomicity.
 
 ### Modern OIDC Authentication (Protocols $\ge$ 898, e.g. 944)
 

@@ -1,9 +1,12 @@
 const std = @import("std");
 const bedwire = @import("bedwire");
+const protocol = @import("bedrock_protocol");
 
 pub const Ecdsa = bedwire.crypto.spki.Ecdsa;
-pub const Session = bedwire.Session;
+pub const Session = bedwire.SessionWithProfile(modern);
 pub const PacketKind = bedwire.PacketKind;
+pub const opaque_packet_id: u16 = 1020;
+pub const opaque_packet_id_2: u16 = 1021;
 
 /// Small enough that a session fits comfortably in a test, large enough to
 /// exercise compression and multi-packet batches.
@@ -18,11 +21,30 @@ pub const limits: bedwire.Limits = .{
 };
 
 /// A version with envelope framing and OIDC login flow.
-pub const modern_oidc: bedwire.Descriptor = bedwire.protocol.describe(944) catch unreachable;
+pub const modern_oidc = Profile(944, .{ .login_flow = .oidc });
 /// A version that negotiates compression and uses the validation step.
-pub const modern: bedwire.Descriptor = bedwire.protocol.describe(818) catch unreachable;
+pub const modern = Profile(818, .{ .login_flow = .certificate_chain });
 /// A version whose batches are implicitly DEFLATE with no marker byte.
-pub const legacy: bedwire.Descriptor = bedwire.protocol.describe(440) catch unreachable;
+pub const legacy = Profile(440, .{
+    .uses_request_network_settings = false,
+    .compression_mode = .implicit,
+    .supports_snappy = false,
+    .initial_algorithm = .deflate,
+    .login_flow = .certificate_chain,
+    .resource_pack_flow = .classic,
+});
+
+pub fn Profile(comptime number: u32, comptime capabilities: protocol.SessionFeatures) type {
+    return struct {
+        pub const protocol_number = number;
+        pub const features = capabilities;
+        pub const packetKind = protocol.Current.packetKind;
+        pub const packetId = protocol.Current.packetId;
+        pub const packetDirection = protocol.Current.packetDirection;
+        pub const decodeBorrowed = protocol.Current.decodeBorrowed;
+        pub const encode = protocol.Current.encode;
+    };
+}
 
 pub fn buildConnectionRequest(allocator: std.mem.Allocator, chain_data: []const u8, client_data: []const u8) ![]u8 {
     const total_len = 4 + chain_data.len + 4 + client_data.len;
@@ -50,12 +72,11 @@ pub fn buildEnvelope(allocator: std.mem.Allocator, auth_type: u8, cert: ?[]const
     );
 }
 
-pub fn idOf(descriptor: *const bedwire.Descriptor, kind: PacketKind) u16 {
-    return descriptor.idOf(kind).?;
+pub fn packetId(comptime profile: type, kind: PacketKind) u16 {
+    return profile.packetId(kind).?;
 }
 
-/// Writes `header ++ payload` for one packet. Bedwire does not read packet
-/// bodies, so tests only need the semantic id to be right.
+/// Writes `header ++ payload` for one packet.
 pub fn packet(dest: []u8, id: u16, payload: []const u8) []u8 {
     const len = bedwire.framing.varint.writeU32(dest, id) catch unreachable;
     @memcpy(dest[len..][0..payload.len], payload);
@@ -73,8 +94,91 @@ pub fn subclientPacket(dest: []u8, id: u16, sender: u2, target: u2) []u8 {
 pub const Builder = struct {
     storage: [4096]u8 = undefined,
 
-    pub fn make(self: *Builder, descriptor: *const bedwire.Descriptor, kind: PacketKind) []u8 {
-        return packet(&self.storage, idOf(descriptor, kind), "\x00");
+    pub fn make(self: *Builder, comptime profile: type, kind: PacketKind) []const u8 {
+        if (kind == .network_settings) {
+            var writer = protocol.Writer.init(&self.storage);
+            profile.encode(&writer, .{
+                .header = .{ .packet_id = profile.packetId(kind).? },
+                .kind = kind,
+                .payload = &.{},
+                .value = .{ .typed = .{ .network_settings = .{
+                    .compression_threshold = 0,
+                    .compression_algorithm = 1,
+                    .client_throttle = false,
+                    .client_throttle_threshold = 0,
+                    .client_throttle_scalar = 0,
+                } } },
+            }) catch unreachable;
+            return writer.written();
+        }
+        const empty_textures: protocol.codecs.resource_pack.TexturePacks = .{ .bytes = &.{}, .count = 0, .limits = protocol.DecodeLimits.defaults };
+        const empty_stack: protocol.codecs.resource_pack.StackPacks = .{ .bytes = &.{}, .count = 0, .limits = protocol.DecodeLimits.defaults };
+        const empty_experiments: protocol.codecs.resource_pack.Experiments = .{ .bytes = &.{}, .count = 0, .limits = protocol.DecodeLimits.defaults };
+        const borrowed: ?protocol.BorrowedEnvelope = switch (kind) {
+            .resource_packs_info => .{
+                .header = .{ .packet_id = profile.packetId(kind).? },
+                .kind = kind,
+                .payload = &.{},
+                .value = .{ .resource_packs_info = .{
+                    .texture_pack_required = false,
+                    .has_addons = false,
+                    .has_scripts = false,
+                    .force_disable_vibrant_visuals = false,
+                    .world_template_uuid = @splat(0),
+                    .world_template_version = "",
+                    .texture_packs = empty_textures,
+                } },
+            },
+            .resource_pack_stack => .{
+                .header = .{ .packet_id = profile.packetId(kind).? },
+                .kind = kind,
+                .payload = &.{},
+                .value = .{ .resource_pack_stack = .{
+                    .texture_pack_required = false,
+                    .texture_packs = empty_stack,
+                    .base_game_version = "",
+                    .experiments = empty_experiments,
+                    .experiments_previously_toggled = false,
+                    .include_editor_packs = false,
+                } },
+            },
+            .resource_pack_client_response => .{
+                .header = .{ .packet_id = profile.packetId(kind).? },
+                .kind = kind,
+                .payload = &.{},
+                .value = .{ .resource_pack_client_response = .{
+                    .response = .completed,
+                    .packs_to_download = .{ .bytes = &.{}, .count = 0, .limits = protocol.DecodeLimits.defaults },
+                } },
+            },
+            else => null,
+        };
+        if (borrowed) |envelope| {
+            var writer = protocol.Writer.init(&self.storage);
+            profile.encode(&writer, envelope) catch unreachable;
+            return writer.written();
+        }
+        const typed: ?protocol.typed.Packet = switch (kind) {
+            .request_network_settings => .{ .request_network_settings = .{ .client_protocol = profile.protocol_number } },
+            .network_settings => .{ .network_settings = .{
+                .compression_threshold = 0,
+                .compression_algorithm = 1,
+                .client_throttle = false,
+                .client_throttle_threshold = 0,
+                .client_throttle_scalar = 0,
+            } },
+            .login => .{ .login = .{ .client_protocol = profile.protocol_number, .connection_request = "fixture" } },
+            .server_to_client_handshake => .{ .server_to_client_handshake = .{ .jwt = "fixture" } },
+            .client_to_server_handshake => .{ .client_to_server_handshake = .{} },
+            .disconnect => .{ .disconnect = .{ .reason = 0, .message_skipped = true } },
+            else => null,
+        };
+        if (typed) |value| {
+            var writer = protocol.Writer.init(&self.storage);
+            protocol.typed.encode(&writer, .{ .header = .{ .packet_id = profile.packetId(kind).? }, .packet = value }) catch unreachable;
+            return writer.written();
+        }
+        return packet(&self.storage, packetId(profile, kind), "\x00");
     }
 
     pub fn makeId(self: *Builder, id: u16) []u8 {
@@ -82,72 +186,83 @@ pub const Builder = struct {
     }
 };
 
-/// A connected server and client sharing one descriptor, plus a copy buffer so
+/// A connected server and client using one profile, plus a copy buffer so
 /// a frame survives the encode that produced it.
 pub const Pair = struct {
-    allocator: std.mem.Allocator,
-    pool: *bedwire.BufferPool,
-    server: Session,
-    client: Session,
-    relay: []u8,
-
-    pub fn init(allocator: std.mem.Allocator, descriptor: *const bedwire.Descriptor) !Pair {
-        const pool = try allocator.create(bedwire.BufferPool);
-        errdefer allocator.destroy(pool);
-        pool.* = try bedwire.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
-        errdefer pool.deinit();
-
-        var server = try Session.init(allocator, .server, descriptor, .{ .limits = limits, .pool = pool });
-        errdefer server.deinit();
-
-        var client = try Session.init(allocator, .client, descriptor, .{ .limits = limits, .pool = pool });
-        errdefer client.deinit();
-
-        return .{
-            .allocator = allocator,
-            .pool = pool,
-            .server = server,
-            .client = client,
-            .relay = try allocator.alloc(u8, limits.max_frame_bytes),
-        };
-    }
-
-    pub fn deinit(self: *Pair) void {
-        self.server.deinit();
-        self.client.deinit();
-        self.pool.deinit();
-        self.allocator.destroy(self.pool);
-        self.allocator.free(self.relay);
-        self.* = undefined;
-    }
-
-    /// Encodes on `from`, copies the frame, and ingests it on `to`.
-    pub fn relayFrom(self: *Pair, from: *Session, to: *Session, packets: []const []const u8) !bedwire.Packets {
-        const frame = try from.encode(packets);
-        defer frame.release();
-        @memcpy(self.relay[0..frame.bytes.len], frame.bytes);
-
-        return to.ingest(self.relay[0..frame.bytes.len]);
-    }
-
-    pub fn clientToServer(self: *Pair, packets: []const []const u8) !bedwire.Packets {
-        return self.relayFrom(&self.client, &self.server, packets);
-    }
-
-    pub fn serverToClient(self: *Pair, packets: []const []const u8) !bedwire.Packets {
-        return self.relayFrom(&self.server, &self.client, packets);
-    }
-
-    pub fn clientToServerDiscard(self: *Pair, packets: []const []const u8) !void {
-        var iter = try self.clientToServer(packets);
-        iter.deinit();
-    }
-
-    pub fn serverToClientDiscard(self: *Pair, packets: []const []const u8) !void {
-        var iter = try self.serverToClient(packets);
-        iter.deinit();
+    pub fn init(allocator: std.mem.Allocator, comptime profile: type) !PairFor(profile) {
+        return PairFor(profile).init(allocator);
     }
 };
+
+pub fn PairFor(comptime profile: type) type {
+    return struct {
+        const Self = @This();
+        const ProfileSession = bedwire.SessionWithProfile(profile);
+        allocator: std.mem.Allocator,
+        pool: *bedwire.BufferPool,
+        server: ProfileSession,
+        client: ProfileSession,
+        relay: []u8,
+
+        pub fn init(allocator: std.mem.Allocator) !Self {
+            const pool = try allocator.create(bedwire.BufferPool);
+            errdefer allocator.destroy(pool);
+            pool.* = try bedwire.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
+            errdefer pool.deinit();
+
+            const policy: bedwire.SessionPolicy = .{ .connection_request_format = if (profile == legacy) .legacy_chain else .envelope };
+            var server = try ProfileSession.init(allocator, .server, .{ .limits = limits, .pool = pool, .policy = policy });
+            errdefer server.deinit();
+
+            var client = try ProfileSession.init(allocator, .client, .{ .limits = limits, .pool = pool, .policy = policy });
+            errdefer client.deinit();
+
+            return .{
+                .allocator = allocator,
+                .pool = pool,
+                .server = server,
+                .client = client,
+                .relay = try allocator.alloc(u8, limits.max_frame_bytes),
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.server.deinit();
+            self.client.deinit();
+            self.pool.deinit();
+            self.allocator.destroy(self.pool);
+            self.allocator.free(self.relay);
+            self.* = undefined;
+        }
+
+        /// Encodes on `from`, copies the frame, and ingests it on `to`
+        pub fn relayFrom(self: *Self, from: *ProfileSession, to: *ProfileSession, packets: []const []const u8) !ProfileSession.Packets {
+            const frame = try from.encode(packets);
+            defer frame.release();
+            @memcpy(self.relay[0..frame.bytes.len], frame.bytes);
+
+            return to.ingest(self.relay[0..frame.bytes.len]);
+        }
+
+        pub fn clientToServer(self: *Self, packets: []const []const u8) !ProfileSession.Packets {
+            return self.relayFrom(&self.client, &self.server, packets);
+        }
+
+        pub fn serverToClient(self: *Self, packets: []const []const u8) !ProfileSession.Packets {
+            return self.relayFrom(&self.server, &self.client, packets);
+        }
+
+        pub fn clientToServerDiscard(self: *Self, packets: []const []const u8) !void {
+            var iter = try self.clientToServer(packets);
+            iter.deinit();
+        }
+
+        pub fn serverToClientDiscard(self: *Self, packets: []const []const u8) !void {
+            var iter = try self.serverToClient(packets);
+            iter.deinit();
+        }
+    };
+}
 
 pub fn deterministicKey(seed: u8) !Ecdsa.KeyPair {
     return Ecdsa.KeyPair.generateDeterministic(@splat(seed));

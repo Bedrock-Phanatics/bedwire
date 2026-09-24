@@ -6,8 +6,8 @@ const testing = std.testing;
 const Algorithm = bedwire.compression.Algorithm;
 
 /// A negotiated pair already in gameplay, so only compression is under test
-fn negotiated(allocator: std.mem.Allocator, algorithm: Algorithm, threshold: u16) !support.Pair {
-    var pair = try support.Pair.init(allocator, &support.modern);
+fn negotiated(allocator: std.mem.Allocator, algorithm: Algorithm, threshold: u16) !support.PairFor(support.modern) {
+    var pair = try support.Pair.init(allocator, support.modern);
     errdefer pair.deinit();
 
     try pair.server.compression.negotiate(algorithm, threshold);
@@ -18,14 +18,14 @@ fn negotiated(allocator: std.mem.Allocator, algorithm: Algorithm, threshold: u16
     return pair;
 }
 
-fn roundTrip(pair: *support.Pair, payload: []const u8) !void {
+fn roundTrip(pair: *support.PairFor(support.modern), payload: []const u8) !void {
     var storage: [8192]u8 = undefined;
-    const packet = support.packet(&storage, 60, payload);
+    const packet = support.packet(&storage, support.opaque_packet_id, payload);
 
     var packets = try pair.clientToServer(&.{packet});
     defer packets.deinit();
     try testing.expectEqualSlices(u8, packet, packets.next().?.bytes);
-    try testing.expectEqual(@as(?bedwire.Packet, null), packets.next());
+    try testing.expectEqual(@as(?support.Session.Packet, null), packets.next());
 }
 
 test "every algorithm round-trips compressible and incompressible payloads" {
@@ -51,7 +51,7 @@ test "the threshold decides per batch and both sides agree" {
         var storage: [256]u8 = undefined;
 
         // under threshold uses uncompressed marker 0xff
-        const small = support.packet(&storage, 60, &([_]u8{'a'} ** 16));
+        const small = support.packet(&storage, support.opaque_packet_id, &([_]u8{'a'} ** 16));
         const small_frame = try pair.client.encode(&.{small});
         defer small_frame.release();
         try testing.expectEqual(@as(u8, 0xff), small_frame.bytes[1]);
@@ -59,7 +59,7 @@ test "the threshold decides per batch and both sides agree" {
 
         // at or above threshold uses negotiated algorithm marker
         var big_storage: [256]u8 = undefined;
-        const big = support.packet(&big_storage, 60, &([_]u8{'a'} ** 96));
+        const big = support.packet(&big_storage, support.opaque_packet_id, &([_]u8{'a'} ** 96));
         const big_frame = try pair.client.encode(&.{big});
         defer big_frame.release();
         try testing.expectEqual(@intFromEnum(algorithm), big_frame.bytes[1]);
@@ -75,7 +75,7 @@ test "an unexpected algorithm marker is refused" {
     defer pair.deinit();
 
     var storage: [128]u8 = undefined;
-    const frame = try pair.client.encode(&.{support.packet(&storage, 60, &([_]u8{'a'} ** 64))});
+    const frame = try pair.client.encode(&.{support.packet(&storage, support.opaque_packet_id, &([_]u8{'a'} ** 64))});
     defer frame.release();
     @memcpy(pair.relay[0..frame.bytes.len], frame.bytes);
     const captured = pair.relay[0..frame.bytes.len];
@@ -93,11 +93,11 @@ test "an unknown algorithm marker is refused" {
 }
 
 test "a version that does not support Snappy refuses to negotiate it" {
-    const descriptor: bedwire.Descriptor = comptime bedwire.protocol.describeWith(818, .{ .supports_snappy = false }) catch unreachable;
+    const Profile = support.Profile(818, .{ .supports_snappy = false, .login_flow = .certificate_chain });
 
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
-    var session = try bedwire.Session.init(testing.allocator, .server, &descriptor, .{ .pool = &pool, .limits = support.limits });
+    var session = try bedwire.SessionWithProfile(Profile).init(testing.allocator, .server, .{ .pool = &pool, .limits = support.limits });
     defer session.deinit();
 
     try testing.expectError(error.UnsupportedCompression, session.compression.negotiate(.snappy, 0));
@@ -111,7 +111,7 @@ test "malformed compressed streams are rejected" {
         defer pair.deinit();
 
         var storage: [1024]u8 = undefined;
-        const frame = try pair.client.encode(&.{support.packet(&storage, 60, &([_]u8{'q'} ** 512))});
+        const frame = try pair.client.encode(&.{support.packet(&storage, support.opaque_packet_id, &([_]u8{'q'} ** 512))});
         defer frame.release();
         @memcpy(pair.relay[0..frame.bytes.len], frame.bytes);
         const captured = pair.relay[0..frame.bytes.len];
@@ -131,7 +131,7 @@ test "truncated compressed streams are rejected" {
         defer pair.deinit();
 
         var storage: [1024]u8 = undefined;
-        const frame = try pair.client.encode(&.{support.packet(&storage, 60, &([_]u8{'q'} ** 512))});
+        const frame = try pair.client.encode(&.{support.packet(&storage, support.opaque_packet_id, &([_]u8{'q'} ** 512))});
         defer frame.release();
         @memcpy(pair.relay[0..frame.bytes.len], frame.bytes);
         const captured = pair.relay[0 .. frame.bytes.len - 4];
@@ -149,7 +149,7 @@ test "a DEFLATE bomb is bounded by the batch limit, not by memory" {
 
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
-    var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = &pool, .limits = tight });
+    var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
     try session.compression.negotiate(.deflate, 0);
@@ -168,7 +168,7 @@ test "a Snappy bomb is refused on its advertised length alone" {
 
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
-    var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = &pool, .limits = tight });
+    var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
     try session.compression.negotiate(.snappy, 0);
@@ -184,7 +184,7 @@ test "compression that cannot beat the frame limit fails cleanly" {
     for ([_]Algorithm{ .deflate, .snappy }) |algorithm| {
         var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
         defer pool.deinit();
-        var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = &pool, .limits = tight });
+        var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = tight });
         defer session.deinit();
         session.state = .in_game;
         try session.compression.negotiate(algorithm, 0);
@@ -194,13 +194,13 @@ test "compression that cannot beat the frame limit fails cleanly" {
         random.random().bytes(&noise);
 
         var storage: [8192]u8 = undefined;
-        try testing.expectError(error.NoSpaceLeft, session.encodeOne(support.packet(&storage, 60, &noise)));
+        try testing.expectError(error.NoSpaceLeft, session.encodeOne(support.packet(&storage, support.opaque_packet_id, &noise)));
         try testing.expectEqual(bedwire.State.in_game, session.state);
     }
 }
 
 test "Snappy carries batches larger than the frame limit when they compress" {
-    var pair = try support.Pair.init(testing.allocator, &support.modern);
+    var pair = try support.Pair.init(testing.allocator, support.modern);
     defer pair.deinit();
 
     try pair.client.compression.negotiate(.snappy, 0);
@@ -209,7 +209,7 @@ test "Snappy carries batches larger than the frame limit when they compress" {
     pair.server.state = .in_game;
 
     var storage: [8192]u8 = undefined;
-    const packet = support.packet(&storage, 60, &([_]u8{'a'} ** 4096));
+    const packet = support.packet(&storage, support.opaque_packet_id, &([_]u8{'a'} ** 4096));
 
     const frame = try pair.client.encode(&.{packet});
     defer frame.release();
@@ -222,13 +222,13 @@ test "Snappy carries batches larger than the frame limit when they compress" {
 }
 
 test "implicit compression mode carries no marker byte" {
-    var pair = try support.Pair.init(testing.allocator, &support.legacy);
+    var pair = try support.Pair.init(testing.allocator, support.legacy);
     defer pair.deinit();
     pair.client.state = .in_game;
     pair.server.state = .in_game;
 
     var storage: [256]u8 = undefined;
-    const packet = support.packet(&storage, 60, &([_]u8{'a'} ** 64));
+    const packet = support.packet(&storage, support.opaque_packet_id, &([_]u8{'a'} ** 64));
 
     const frame = try pair.client.encode(&.{packet});
     defer frame.release();
@@ -242,18 +242,19 @@ test "implicit compression mode carries no marker byte" {
 }
 
 test "an absent compression mode never compresses" {
-    const descriptor: bedwire.Descriptor = comptime bedwire.protocol.describeWith(818, .{
+    const Profile = support.Profile(818, .{
         .compression_mode = .absent,
         .initial_algorithm = .none,
-    }) catch unreachable;
+        .login_flow = .certificate_chain,
+    });
 
-    var pair = try support.Pair.init(testing.allocator, &descriptor);
+    var pair = try support.Pair.init(testing.allocator, Profile);
     defer pair.deinit();
     pair.client.state = .in_game;
     pair.server.state = .in_game;
 
     var storage: [256]u8 = undefined;
-    const packet = support.packet(&storage, 60, &([_]u8{'a'} ** 128));
+    const packet = support.packet(&storage, support.opaque_packet_id, &([_]u8{'a'} ** 128));
 
     const frame = try pair.client.encode(&.{packet});
     defer frame.release();

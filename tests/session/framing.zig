@@ -4,8 +4,8 @@ const support = @import("../support.zig");
 
 const testing = std.testing;
 
-fn gameSession(allocator: std.mem.Allocator, pool: *bedwire.BufferPool, role: bedwire.Role) !bedwire.Session {
-    var session = try bedwire.Session.init(allocator, role, &support.modern, .{ .pool = pool, .limits = support.limits });
+fn gameSession(allocator: std.mem.Allocator, pool: *bedwire.BufferPool, role: bedwire.Role) !support.Session {
+    var session = try support.Session.init(allocator, role, .{ .pool = pool, .limits = support.limits });
     session.state = .in_game;
     return session;
 }
@@ -26,7 +26,7 @@ test "frames must carry the session header" {
 }
 
 test "empty batches are refused in both directions" {
-    var pair = try support.Pair.init(testing.allocator, &support.modern);
+    var pair = try support.Pair.init(testing.allocator, support.modern);
     defer pair.deinit();
     pair.client.state = .in_game;
     pair.server.state = .in_game;
@@ -42,7 +42,7 @@ test "malformed and truncated length prefixes are rejected" {
         &.{ 0xfe, 4, 60, 1 }, // length past the end of the batch
         &.{ 0xfe, 0x80 }, // dangling continuation byte
         &.{ 0xfe, 0x80, 0x00, 60 }, // overlong length prefix
-        &.{ 0xfe, 2, 60, 1, 5 }, // trailing prefix with no payload
+        &.{ 0xfe, 2, @as(u8, @intCast(support.packetId(support.modern, .player_action))), 1, 5 }, // trailing prefix with no payload
     };
 
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
@@ -58,20 +58,20 @@ test "malformed and truncated length prefixes are rejected" {
 }
 
 test "a batch that smuggles one illegal packet delivers none of them" {
-    var pair = try support.Pair.init(testing.allocator, &support.modern);
+    var pair = try support.Pair.init(testing.allocator, support.modern);
     defer pair.deinit();
     pair.client.state = .in_game;
     pair.server.state = .in_game;
 
     var legal: [16]u8 = undefined;
     var illegal: [16]u8 = undefined;
-    const login_id = support.idOf(&support.modern, .login);
+    const login_id = support.packetId(support.modern, .login);
 
     // encode a mixed batch while the state machine permits both
     pair.client.state = .spawn_ready;
     const frame = try pair.client.encode(&.{
-        support.packet(&legal, 60, "ok"),
-        support.packet(&illegal, 61, "ok"),
+        support.packet(&legal, 1020, "ok"),
+        support.packet(&illegal, support.packetId(support.modern, .set_local_player_as_initialised), "ok"),
     });
     defer frame.release();
     @memcpy(pair.relay[0..frame.bytes.len], frame.bytes);
@@ -80,7 +80,7 @@ test "a batch that smuggles one illegal packet delivers none of them" {
     pair.server.state = .resource_packs;
     try testing.expectError(error.InvalidState, pair.server.ingest(captured));
     try testing.expectEqual(bedwire.State.disconnected, pair.server.state);
-    try testing.expect(login_id != 60);
+    try testing.expect(login_id != support.opaque_packet_id);
 }
 
 test "packet count and packet size limits bound one batch" {
@@ -94,20 +94,20 @@ test "packet count and packet size limits bound one batch" {
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = &pool, .limits = tight });
+    var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 
     var storage: [4][32]u8 = undefined;
     var packets: [4][]const u8 = undefined;
-    for (&packets, 0..) |*slot, i| slot.* = support.packet(&storage[i], 60 + @as(u16, @intCast(i)), "x");
+    for (&packets, 0..) |*slot, i| slot.* = support.packet(&storage[i], 1020 + @as(u16, @intCast(i)), "x");
 
     const ok_frame = try session.encode(packets[0..3]);
     ok_frame.release();
     try testing.expectError(error.LimitExceeded, session.encode(&packets));
 
     var oversized: [64]u8 = undefined;
-    try testing.expectError(error.LimitExceeded, session.encodeOne(support.packet(&oversized, 60, &([_]u8{7} ** 32))));
+    try testing.expectError(error.LimitExceeded, session.encodeOne(support.packet(&oversized, 1020, &([_]u8{7} ** 32))));
 }
 
 test "an oversized frame is refused before it is copied" {
@@ -116,7 +116,7 @@ test "an oversized frame is refused before it is copied" {
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = &pool, .limits = tight });
+    var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 
@@ -133,19 +133,19 @@ test "output that cannot fit a frame fails instead of truncating" {
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = &pool, .limits = tight });
+    var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 
     var storage: [256]u8 = undefined;
     const payload = [_]u8{0xa5} ** 200;
 
-    try testing.expectError(error.NoSpaceLeft, session.encodeOne(support.packet(&storage, 60, &payload)));
+    try testing.expectError(error.NoSpaceLeft, session.encodeOne(support.packet(&storage, 1020, &payload)));
     try testing.expectEqual(bedwire.State.in_game, session.state);
 }
 
 test "invalid packet headers are refused on both paths" {
-    var pair = try support.Pair.init(testing.allocator, &support.modern);
+    var pair = try support.Pair.init(testing.allocator, support.modern);
     defer pair.deinit();
     pair.client.state = .in_game;
     pair.server.state = .in_game;
@@ -156,29 +156,29 @@ test "invalid packet headers are refused on both paths" {
 }
 
 test "packet iteration can be replayed and reports semantic identity" {
-    var pair = try support.Pair.init(testing.allocator, &support.modern);
+    var pair = try support.Pair.init(testing.allocator, support.modern);
     defer pair.deinit();
     pair.client.state = .in_game;
     pair.server.state = .in_game;
 
     var first: [16]u8 = undefined;
-    var second: [16]u8 = undefined;
-    const disconnect_id = support.idOf(&support.modern, .disconnect);
+    var second: support.Builder = .{};
+    const disconnect_id = support.packetId(support.modern, .disconnect);
 
     var packets = try pair.clientToServer(&.{
-        support.packet(&first, 60, "a"),
-        support.packet(&second, disconnect_id, "b"),
+        support.packet(&first, 1020, "a"),
+        second.make(support.modern, .disconnect),
     });
     defer packets.deinit();
 
-    try testing.expectEqual(bedwire.PacketKind.other, packets.next().?.kind);
+    try testing.expectEqual(null, packets.next().?.kind);
     const disconnect = packets.next().?;
     try testing.expectEqual(bedwire.PacketKind.disconnect, disconnect.kind);
     try testing.expectEqual(disconnect_id, disconnect.id);
 
     // reset while active rewinds to beginning
     packets.reset();
-    try testing.expectEqual(bedwire.PacketKind.other, packets.next().?.kind);
+    try testing.expectEqual(null, packets.next().?.kind);
 }
 
 test "exhaust -> deinit -> new ingest" {
@@ -193,14 +193,14 @@ test "exhaust -> deinit -> new ingest" {
 
     var client = try gameSession(testing.allocator, &pool, .client);
     defer client.deinit();
-    const frame1 = try client.encode(&.{support.packet(&storage1, 60, "p1")});
+    const frame1 = try client.encode(&.{support.packet(&storage1, 1020, "p1")});
     defer frame1.release();
 
     var iter1 = try session.ingest(frame1.bytes);
     try testing.expect(session.active_generation != null);
     const p1 = iter1.next().?;
-    try testing.expectEqual(bedwire.PacketKind.other, p1.kind);
-    try testing.expectEqual(@as(?bedwire.Packet, null), iter1.next());
+    try testing.expectEqual(null, p1.kind);
+    try testing.expectEqual(@as(?support.Session.Packet, null), iter1.next());
 
     // EOF preserves RX storage and active ownership until deinit
     try testing.expect(session.active_generation != null);
@@ -208,7 +208,7 @@ test "exhaust -> deinit -> new ingest" {
 
     // new ingest rejected while EOF iterator still active
     frame1.release();
-    const frame2 = try client.encode(&.{support.packet(&storage2, 60, "p2")});
+    const frame2 = try client.encode(&.{support.packet(&storage2, 1020, "p2")});
     defer frame2.release();
     try testing.expectError(error.InvalidState, session.ingest(frame2.bytes));
 
@@ -219,8 +219,8 @@ test "exhaust -> deinit -> new ingest" {
     var iter2 = try session.ingest(frame2.bytes);
     defer iter2.deinit();
     try testing.expect(session.active_generation != null);
-    try testing.expectEqual(bedwire.PacketKind.other, iter2.next().?.kind);
-    try testing.expectEqual(@as(?bedwire.Packet, null), iter2.next());
+    try testing.expectEqual(null, iter2.next().?.kind);
+    try testing.expectEqual(@as(?support.Session.Packet, null), iter2.next());
 }
 
 test "double deinit" {
@@ -234,7 +234,7 @@ test "double deinit" {
     defer client.deinit();
 
     var storage: [16]u8 = undefined;
-    const frame1 = try client.encode(&.{support.packet(&storage, 60, "p1")});
+    const frame1 = try client.encode(&.{support.packet(&storage, 1020, "p1")});
     defer frame1.release();
 
     var iter1 = try session.ingest(frame1.bytes);
@@ -248,7 +248,7 @@ test "double deinit" {
     try testing.expectEqual(@as(?u64, null), session.active_generation);
 
     frame1.release();
-    const frame2 = try client.encode(&.{support.packet(&storage, 60, "p2")});
+    const frame2 = try client.encode(&.{support.packet(&storage, 1020, "p2")});
     defer frame2.release();
     var iter2 = try session.ingest(frame2.bytes);
     defer iter2.deinit();
@@ -258,7 +258,7 @@ test "double deinit" {
     iter1.deinit();
     try testing.expectEqual(active_gen, session.active_generation.?);
 
-    try testing.expectEqual(bedwire.PacketKind.other, iter2.next().?.kind);
+    try testing.expectEqual(null, iter2.next().?.kind);
 }
 
 test "old iterator vs newer ingest" {
@@ -274,7 +274,7 @@ test "old iterator vs newer ingest" {
     var storage1: [16]u8 = undefined;
     var storage2: [16]u8 = undefined;
 
-    const frame1 = try client.encode(&.{support.packet(&storage1, 60, "first_batch")});
+    const frame1 = try client.encode(&.{support.packet(&storage1, 1020, "first_batch")});
     defer frame1.release();
     var iter1 = try session.ingest(frame1.bytes);
 
@@ -284,14 +284,14 @@ test "old iterator vs newer ingest" {
     try testing.expectEqual(@as(?u64, null), session.active_generation);
 
     frame1.release();
-    const frame2 = try client.encode(&.{support.packet(&storage2, 60, "second_batch")});
+    const frame2 = try client.encode(&.{support.packet(&storage2, 1020, "second_batch")});
     defer frame2.release();
     var iter2 = try session.ingest(frame2.bytes);
     defer iter2.deinit();
     const gen2 = session.active_generation.?;
 
     // old copy cannot read reused buffer
-    try testing.expectEqual(@as(?bedwire.Packet, null), copy1.next());
+    try testing.expectEqual(@as(?support.Session.Packet, null), copy1.next());
 
     // stale deinit cannot clear new lease
     copy1.deinit();
@@ -300,11 +300,11 @@ test "old iterator vs newer ingest" {
     // stale reset cannot reacquire either
     copy1.reset();
     try testing.expectEqual(gen2, session.active_generation.?);
-    try testing.expectEqual(@as(?bedwire.Packet, null), copy1.next());
+    try testing.expectEqual(@as(?support.Session.Packet, null), copy1.next());
 
     const p = iter2.next().?;
-    try testing.expectEqual(bedwire.PacketKind.other, p.kind);
-    try testing.expectEqualSlices(u8, support.packet(&storage2, 60, "second_batch"), p.bytes);
+    try testing.expectEqual(null, p.kind);
+    try testing.expectEqualSlices(u8, support.packet(&storage2, 1020, "second_batch"), p.bytes);
 }
 
 test "reset semantics" {
@@ -321,8 +321,8 @@ test "reset semantics" {
     var storage2: [16]u8 = undefined;
 
     const frame1 = try client.encode(&.{
-        support.packet(&storage1, 60, "a"),
-        support.packet(&storage2, 61, "b"),
+        support.packet(&storage1, 1020, "a"),
+        support.packet(&storage2, 1021, "b"),
     });
     defer frame1.release();
 
@@ -330,15 +330,15 @@ test "reset semantics" {
     defer iter.deinit();
 
     // reset while active rewinds to start
-    try testing.expectEqual(bedwire.PacketKind.other, iter.next().?.kind);
+    try testing.expectEqual(null, iter.next().?.kind);
     iter.reset();
-    try testing.expectEqual(bedwire.PacketKind.other, iter.next().?.kind);
-    try testing.expectEqual(bedwire.PacketKind.other, iter.next().?.kind);
-    try testing.expectEqual(@as(?bedwire.Packet, null), iter.next());
+    try testing.expectEqual(null, iter.next().?.kind);
+    try testing.expectEqual(null, iter.next().?.kind);
+    try testing.expectEqual(@as(?support.Session.Packet, null), iter.next());
 
     // reset after EOF is permanently disabled
     iter.reset();
-    try testing.expectEqual(@as(?bedwire.Packet, null), iter.next());
+    try testing.expectEqual(@as(?support.Session.Packet, null), iter.next());
 }
 
 test "nested ingest rejection without disconnect" {
@@ -355,8 +355,8 @@ test "nested ingest rejection without disconnect" {
     var storage2: [16]u8 = undefined;
 
     const frame1 = try client.encode(&.{
-        support.packet(&storage1, 60, "p1"),
-        support.packet(&storage2, 61, "p2"),
+        support.packet(&storage1, 1020, "p1"),
+        support.packet(&storage2, 1021, "p2"),
     });
     defer frame1.release();
 
@@ -364,12 +364,12 @@ test "nested ingest rejection without disconnect" {
     defer outer.deinit();
 
     const p1 = outer.next().?;
-    try testing.expectEqual(bedwire.PacketKind.other, p1.kind);
+    try testing.expectEqual(null, p1.kind);
 
     // nested ingest rejected while outer iterator still has the lease
     var storage3: [16]u8 = undefined;
     frame1.release();
-    const frame2 = try client.encode(&.{support.packet(&storage3, 60, "nested")});
+    const frame2 = try client.encode(&.{support.packet(&storage3, 1020, "nested")});
     defer frame2.release();
     try testing.expectError(error.InvalidState, session.ingest(frame2.bytes));
 
@@ -379,9 +379,9 @@ test "nested ingest rejection without disconnect" {
 
     // outer iterator still works
     const p2 = outer.next().?;
-    try testing.expectEqual(bedwire.PacketKind.other, p2.kind);
-    try testing.expectEqual(@as(u10, 61), p2.id);
-    try testing.expectEqual(@as(?bedwire.Packet, null), outer.next());
+    try testing.expectEqual(null, p2.kind);
+    try testing.expectEqual(@as(u10, 1021), p2.id);
+    try testing.expectEqual(@as(?support.Session.Packet, null), outer.next());
 }
 
 test "close with active Packets stops reads without prematurely freeing RX slot" {
@@ -398,8 +398,8 @@ test "close with active Packets stops reads without prematurely freeing RX slot"
     var storage2: [16]u8 = undefined;
 
     const frame = try client.encode(&.{
-        support.packet(&storage1, 60, "a"),
-        support.packet(&storage2, 61, "b"),
+        support.packet(&storage1, 1020, "a"),
+        support.packet(&storage2, support.opaque_packet_id_2, "b"),
     });
     defer frame.release();
 
@@ -414,11 +414,11 @@ test "close with active Packets stops reads without prematurely freeing RX slot"
     try testing.expect(session.rx_slot != null);
 
     // reads stopped after close
-    try testing.expectEqual(@as(?bedwire.Packet, null), packets.next());
+    try testing.expectEqual(@as(?support.Session.Packet, null), packets.next());
 
     // reset disabled after close
     packets.reset();
-    try testing.expectEqual(@as(?bedwire.Packet, null), packets.next());
+    try testing.expectEqual(@as(?support.Session.Packet, null), packets.next());
 
     packets.deinit();
     try testing.expectEqual(@as(?u64, null), session.active_generation);
@@ -460,7 +460,7 @@ test "PoolExhausted is non-fatal and leaves session state intact" {
     defer pool.releaseRx(rx_token);
 
     var storage: [16]u8 = undefined;
-    const frame = try client.encode(&.{support.packet(&storage, 60, "x")});
+    const frame = try client.encode(&.{support.packet(&storage, 1020, "x")});
 
     try testing.expectError(error.PoolExhausted, session.ingest(frame.bytes));
     frame.release();
@@ -471,7 +471,7 @@ test "PoolExhausted is non-fatal and leaves session state intact" {
     const tx_token = try pool.acquireTx();
     defer pool.releaseTx(tx_token);
 
-    try testing.expectError(error.PoolExhausted, session.encode(&.{support.packet(&storage, 60, "x")}));
+    try testing.expectError(error.PoolExhausted, session.encode(&.{support.packet(&storage, 1020, "x")}));
     try testing.expectEqual(bedwire.State.in_game, session.state);
 }
 
@@ -483,7 +483,7 @@ test "stale Frame release does not release reused TX slot" {
     defer session.deinit();
 
     var storage: [16]u8 = undefined;
-    const p = support.packet(&storage, 60, "data");
+    const p = support.packet(&storage, 1020, "data");
 
     const frame1 = try session.encode(&.{p});
     frame1.release();
@@ -501,19 +501,19 @@ test "held frame blocks a failing encode until explicitly released" {
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
 
-    var session = try bedwire.Session.init(testing.allocator, .server, &support.modern, .{ .pool = &pool, .limits = tight });
+    var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 
     var storage1: [16]u8 = undefined;
-    const frame1 = try session.encode(&.{support.packet(&storage1, 60, "ok")});
+    const frame1 = try session.encode(&.{support.packet(&storage1, 1020, "ok")});
 
     var storage2: [256]u8 = undefined;
     const oversized = [_]u8{0xa5} ** 200;
-    try testing.expectError(error.PoolExhausted, session.encodeOne(support.packet(&storage2, 60, &oversized)));
+    try testing.expectError(error.PoolExhausted, session.encodeOne(support.packet(&storage2, 1020, &oversized)));
     try testing.expect(session.tx_slot != null);
     frame1.release();
-    try testing.expectError(error.NoSpaceLeft, session.encodeOne(support.packet(&storage2, 60, &oversized)));
+    try testing.expectError(error.NoSpaceLeft, session.encodeOne(support.packet(&storage2, 1020, &oversized)));
     try testing.expect(session.tx_slot == null);
 
     // frame1 release is safe no-op
@@ -544,7 +544,7 @@ test "encode while Packets is active preserves uncorrupted data" {
     defer client.deinit();
 
     var client_storage: [16]u8 = undefined;
-    const client_packet = support.packet(&client_storage, 60, "client_msg");
+    const client_packet = support.packet(&client_storage, 1020, "client_msg");
     const client_frame = try client.encode(&.{client_packet});
     defer client_frame.release();
 
@@ -555,7 +555,7 @@ test "encode while Packets is active preserves uncorrupted data" {
     try testing.expectEqualSlices(u8, client_packet, p.bytes);
 
     var server_storage: [16]u8 = undefined;
-    const server_packet = support.packet(&server_storage, 61, "server_msg");
+    const server_packet = support.packet(&server_storage, support.opaque_packet_id_2, "server_msg");
     const server_frame = try server.encode(&.{server_packet});
     defer server_frame.release();
 
@@ -575,8 +575,8 @@ test "copied Packets EOF semantics: cursor-local traversal with generation-scope
 
     var storage1: [16]u8 = undefined;
     var storage2: [16]u8 = undefined;
-    const p1_bytes = support.packet(&storage1, 60, "packet_one");
-    const p2_bytes = support.packet(&storage2, 61, "packet_two");
+    const p1_bytes = support.packet(&storage1, 1020, "packet_one");
+    const p2_bytes = support.packet(&storage2, support.opaque_packet_id_2, "packet_two");
 
     const frame = try client.encode(&.{ p1_bytes, p2_bytes });
     defer frame.release();
@@ -588,7 +588,7 @@ test "copied Packets EOF semantics: cursor-local traversal with generation-scope
     try testing.expectEqualSlices(u8, p1_bytes, first.bytes);
     const second = packets.next().?;
     try testing.expectEqualSlices(u8, p2_bytes, second.bytes);
-    try testing.expectEqual(@as(?bedwire.Packet, null), packets.next());
+    try testing.expectEqual(@as(?support.Session.Packet, null), packets.next());
 
     try testing.expect(session.active_generation != null);
     try testing.expect(session.rx_slot != null);
@@ -597,17 +597,17 @@ test "copied Packets EOF semantics: cursor-local traversal with generation-scope
     try testing.expectEqualSlices(u8, p1_bytes, copy_first.bytes);
     const copy_second = copy.next().?;
     try testing.expectEqualSlices(u8, p2_bytes, copy_second.bytes);
-    try testing.expectEqual(@as(?bedwire.Packet, null), copy.next());
+    try testing.expectEqual(@as(?support.Session.Packet, null), copy.next());
 
     packets.deinit();
     try testing.expectEqual(@as(?u64, null), session.active_generation);
     try testing.expect(session.rx_slot == null);
 
-    try testing.expectEqual(@as(?bedwire.Packet, null), copy.next());
+    try testing.expectEqual(@as(?support.Session.Packet, null), copy.next());
 
     var storage3: [16]u8 = undefined;
     frame.release();
-    const frame2 = try client.encode(&.{support.packet(&storage3, 60, "gen2")});
+    const frame2 = try client.encode(&.{support.packet(&storage3, 1020, "gen2")});
     defer frame2.release();
     var packets2 = try session.ingest(frame2.bytes);
     defer packets2.deinit();
@@ -615,7 +615,7 @@ test "copied Packets EOF semantics: cursor-local traversal with generation-scope
 
     copy.deinit();
     try testing.expectEqual(gen2, session.active_generation.?);
-    try testing.expectEqual(@as(?bedwire.Packet, null), copy.next());
+    try testing.expectEqual(@as(?support.Session.Packet, null), copy.next());
     try testing.expect(packets2.next() != null);
 }
 

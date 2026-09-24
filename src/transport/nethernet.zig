@@ -9,7 +9,7 @@ const Session = session_mod.Session;
 ///
 /// used for lan games, friend invites and xbox relay connections.
 /// Connection needs send(bytes, reliability) and receive() !Message.
-/// Handler needs onPacket(*Handler, *Session, Packet) !void.
+/// Handler needs onPacket(*Handler, *SessionWithProfile(Profile), Packet) !void.
 ///
 /// can be driven push-style with deliver() when your loop gets data,
 /// or pull-style with pump() on a polling thread.
@@ -18,10 +18,15 @@ const Session = session_mod.Session;
 /// send must consume or copy bytes before returning. Message.data must remain
 /// valid through deliver; handlers must not retain borrowed packet bytes.
 pub fn NetherNet(comptime Connection: type, comptime Handler: type) type {
+    return NetherNetWithProfile(@import("bedrock_protocol").Current, Connection, Handler);
+}
+
+pub fn NetherNetWithProfile(comptime Profile: type, comptime Connection: type, comptime Handler: type) type {
     comptime validate(Handler);
+    const ProfileSession = session_mod.SessionWithProfile(Profile);
 
     return struct {
-        session: *Session,
+        session: *ProfileSession,
         connection: *Connection,
         handler: *Handler,
         pumping: bool = false,
@@ -81,7 +86,6 @@ fn validate(comptime Handler: type) void {
 }
 
 const testing = std.testing;
-const registry = @import("../protocol/registry.zig");
 
 /// mock nethernet channel
 const Channel = struct {
@@ -125,16 +129,15 @@ const limits: @import("../limits.zig").Limits = .{
 
 test "pump accepts reliable messages and refuses unreliable ones" {
     const allocator = testing.allocator;
-    const version = comptime registry.describe(800) catch unreachable;
 
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var peer_session = try Session.init(allocator, .server, &version, .{ .limits = limits, .pool = &pool });
+    var peer_session = try Session.init(allocator, .server, .{ .limits = limits, .pool = &pool });
     defer peer_session.deinit();
     peer_session.state = .in_game;
 
-    var local = try Session.init(allocator, .client, &version, .{ .limits = limits, .pool = &pool });
+    var local = try Session.init(allocator, .client, .{ .limits = limits, .pool = &pool });
     defer local.deinit();
     local.state = .in_game;
 
@@ -157,12 +160,11 @@ test "pump accepts reliable messages and refuses unreliable ones" {
 
 test "terminal connection failure in pump disconnects the session" {
     const allocator = testing.allocator;
-    const version = comptime registry.describe(800) catch unreachable;
 
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var local = try Session.init(allocator, .client, &version, .{ .limits = limits, .pool = &pool });
+    var local = try Session.init(allocator, .client, .{ .limits = limits, .pool = &pool });
     defer local.deinit();
     local.state = .in_game;
 
@@ -175,11 +177,10 @@ test "terminal connection failure in pump disconnects the session" {
 }
 
 test "pump closes on upstream terminal receive failures" {
-    const version = comptime registry.describe(800) catch unreachable;
     inline for (.{ error.ConnectionClosed, error.Timeout, error.ReassemblyTimeout }) |receive_error| {
         var pool = try session_mod.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 1, .tx_slots = 1 });
         defer pool.deinit();
-        var local = try Session.init(testing.allocator, .client, &version, .{ .pool = &pool });
+        var local = try Session.init(testing.allocator, .client, .{ .pool = &pool });
         defer local.deinit();
         local.state = .in_game;
         var channel: Channel = .{ .receive_error = receive_error };
@@ -193,10 +194,9 @@ test "pump closes on upstream terminal receive failures" {
 }
 
 test "pump preserves session on canceled wait" {
-    const version = comptime registry.describe(800) catch unreachable;
     var pool = try session_mod.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
-    var local = try Session.init(testing.allocator, .client, &version, .{ .pool = &pool });
+    var local = try Session.init(testing.allocator, .client, .{ .pool = &pool });
     defer local.deinit();
     local.state = .in_game;
     var channel: Channel = .{ .receive_error = error.Canceled };
@@ -210,12 +210,11 @@ test "pump preserves session on canceled wait" {
 
 test "adapter sends reliable frames and stops once closed" {
     const allocator = testing.allocator;
-    const version = comptime registry.describe(800) catch unreachable;
 
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var local = try Session.init(allocator, .client, &version, .{ .limits = limits, .pool = &pool });
+    var local = try Session.init(allocator, .client, .{ .limits = limits, .pool = &pool });
     defer local.deinit();
     local.state = .in_game;
 

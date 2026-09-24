@@ -1,10 +1,9 @@
 const std = @import("std");
 
-const features_mod = @import("../protocol/features.zig");
-const kind_mod = @import("../protocol/kind.zig");
-
-const PacketKind = kind_mod.PacketKind;
-const SessionFeatures = features_mod.SessionFeatures;
+const protocol = @import("bedrock_protocol");
+const PacketKind = protocol.PacketKind;
+const PacketDirection = protocol.PacketDirection;
+const SessionFeatures = protocol.SessionFeatures;
 
 pub const Role = enum {
     client,
@@ -59,11 +58,25 @@ pub const State = enum {
     }
 
     /// whether a given packet type can be sent in the current phase
-    pub fn permits(self: State, session_features: SessionFeatures, sender: Role, kind: PacketKind) bool {
+    pub fn permits(self: State, session_features: SessionFeatures, sender: Role, kind: ?PacketKind) bool {
+        const packet_direction = if (kind) |known| protocol.Current.packetDirection(known) else .bidirectional;
+        return self.permitsWithDirection(session_features, sender, kind, packet_direction);
+    }
+
+    /// Profile-aware state admission; unknown packet IDs remain application-owned.
+    pub fn permitsWithDirection(self: State, session_features: SessionFeatures, sender: Role, kind: ?PacketKind, packet_direction: PacketDirection) bool {
         if (self == .disconnected) return false;
         if (kind == .disconnect) return true;
         if (self == .closing) return false;
+        const effective_direction: PacketDirection = if (kind) |known| switch (known) {
+            .client_cache_status, .set_local_player_as_initialised => .client_to_server,
+            else => packet_direction,
+        } else packet_direction;
+        return self.permitsKnown(session_features, sender, kind, effective_direction);
+    }
 
+    fn permitsKnown(self: State, session_features: SessionFeatures, sender: Role, kind: ?PacketKind, packet_direction: PacketDirection) bool {
+        const effective_direction = packet_direction;
         return switch (self) {
             .transport_ready => sender == .client and
                 kind == .request_network_settings and
@@ -94,27 +107,48 @@ pub const State = enum {
                     kind == .play_status,
             },
 
-            .waiting_for_start_game => sender == .server and
-                (kind == .start_game or kind == .play_status or kind == .other),
+            .waiting_for_start_game => if (kind == .start_game or kind == .play_status)
+                sender == .server
+            else
+                sender == .server and isGenericGameplay(kind) and permitsDirection(effective_direction, sender),
 
             .spawn_ready => switch (sender) {
                 .client => kind == .request_chunk_radius or
                     kind == .set_local_player_as_initialised or
                     kind == .client_cache_status or
-                    kind == .other,
-                .server => kind == .chunk_radius_updated or kind == .play_status or kind == .other,
+                    (isGenericGameplay(kind) and permitsDirection(effective_direction, sender)),
+                .server => kind == .chunk_radius_updated or kind == .play_status or
+                    (isGenericGameplay(kind) and permitsDirection(effective_direction, sender)),
             },
 
-            .in_game => !kind.isHandshake() and switch (kind.direction()) {
-                .client_to_server => sender == .client,
-                .server_to_client => sender == .server,
-                .bidirectional => true,
-            },
+            .in_game => !isHandshake(kind) and permitsDirection(effective_direction, sender),
 
             .closing, .disconnected => false,
         };
     }
 };
+
+fn permitsDirection(packet_direction: PacketDirection, sender: Role) bool {
+    return switch (packet_direction) {
+        .client_to_server => sender == .client,
+        .server_to_client => sender == .server,
+        .bidirectional => true,
+    };
+}
+
+fn isHandshake(kind: ?PacketKind) bool {
+    return switch (kind orelse return false) {
+        .request_network_settings, .network_settings, .login, .server_to_client_handshake, .client_to_server_handshake, .resource_packs_info, .resource_pack_stack, .resource_pack_client_response, .resource_pack_data_info, .resource_pack_chunk_data, .resource_pack_chunk_request, .resource_packs_ready_for_validation, .start_game => true,
+        else => false,
+    };
+}
+
+fn isGenericGameplay(kind: ?PacketKind) bool {
+    return switch (kind orelse return true) {
+        .request_network_settings, .network_settings, .login, .play_status, .server_to_client_handshake, .client_to_server_handshake, .disconnect, .resource_packs_info, .resource_pack_stack, .resource_pack_client_response, .resource_pack_data_info, .resource_pack_chunk_data, .resource_pack_chunk_request, .resource_packs_ready_for_validation, .client_cache_status, .start_game, .request_chunk_radius, .chunk_radius_updated, .set_local_player_as_initialised => false,
+        else => true,
+    };
+}
 
 const testing = std.testing;
 const modern: SessionFeatures = .{};
@@ -161,18 +195,18 @@ test "validation acknowledgement follows the resource pack flow feature" {
     try testing.expect(!State.resource_packs.permits(legacy, .client, .resource_packs_ready_for_validation));
     try testing.expect(State.resource_packs.permits(legacy, .client, .resource_pack_client_response));
     try testing.expect(!State.resource_packs.permits(modern, .server, .resource_pack_client_response));
-    try testing.expect(!State.resource_packs.permits(modern, .client, .other));
+    try testing.expect(!State.resource_packs.permits(modern, .client, null));
 }
 
 test "gameplay stages refuse every handshake kind" {
-    for (kind_mod.mapped) |kind| {
-        if (!kind.isHandshake()) continue;
+    for (std.enums.values(PacketKind)) |kind| {
+        if (!isHandshake(kind)) continue;
         try testing.expect(!State.in_game.permits(modern, .client, kind));
         try testing.expect(!State.in_game.permits(modern, .server, kind));
     }
 
-    try testing.expect(State.in_game.permits(modern, .client, .other));
-    try testing.expect(State.in_game.permits(modern, .server, .other));
+    try testing.expect(State.in_game.permits(modern, .client, null));
+    try testing.expect(State.in_game.permits(modern, .server, null));
     try testing.expect(State.in_game.permits(modern, .server, .play_status));
     try testing.expect(!State.in_game.permits(modern, .client, .play_status));
     try testing.expect(State.in_game.permits(modern, .client, .request_chunk_radius));
@@ -184,12 +218,21 @@ test "gameplay stages refuse every handshake kind" {
     try testing.expect(State.in_game.permits(modern, .client, .set_local_player_as_initialised));
     try testing.expect(!State.in_game.permits(modern, .server, .set_local_player_as_initialised));
     try testing.expect(State.waiting_for_start_game.permits(modern, .server, .start_game));
-    try testing.expect(!State.waiting_for_start_game.permits(modern, .client, .other));
+    try testing.expect(!State.waiting_for_start_game.permits(modern, .client, null));
     try testing.expect(State.spawn_ready.permits(modern, .client, .set_local_player_as_initialised));
 }
 
+test "pre-game stages keep session packet directions" {
+    try testing.expect(!State.waiting_for_start_game.permits(modern, .server, .client_cache_status));
+    try testing.expect(!State.spawn_ready.permits(modern, .server, .request_chunk_radius));
+    try testing.expect(!State.spawn_ready.permits(modern, .client, .chunk_radius_updated));
+    try testing.expect(State.spawn_ready.permits(modern, .server, .set_time));
+    try testing.expect(!State.in_game.permits(modern, .client, .set_time));
+    try testing.expect(State.in_game.permits(modern, .server, .set_time));
+}
+
 test "closing and disconnected admit nothing but disconnect" {
-    for (kind_mod.mapped) |kind| {
+    for (std.enums.values(PacketKind)) |kind| {
         if (kind == .disconnect) continue;
         try testing.expect(!State.closing.permits(modern, .client, kind));
         try testing.expect(!State.disconnected.permits(modern, .server, kind));

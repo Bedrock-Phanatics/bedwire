@@ -1,13 +1,25 @@
 const std = @import("std");
 
 const Limits = @import("../limits.zig").Limits;
-const features = @import("../protocol/features.zig");
 const flate = @import("flate.zig");
 const snappy = @import("snappy.zig");
 
-pub const Algorithm = features.Algorithm;
-pub const CompressionMode = features.CompressionMode;
-pub const SessionFeatures = features.SessionFeatures;
+pub const Algorithm = enum(u8) {
+    deflate = 0,
+    snappy = 1,
+    none = 0xff,
+
+    pub fn fromWire(byte: u8) !Algorithm {
+        return switch (byte) {
+            0 => .deflate,
+            1 => .snappy,
+            0xff => .none,
+            else => error.UnsupportedCompression,
+        };
+    }
+};
+pub const CompressionMode = @FieldType(SessionFeatures, "compression_mode");
+pub const SessionFeatures = @import("bedrock_protocol").SessionFeatures;
 
 /// reusable buffers for deflate window and snappy tables so we don't alloc per packet
 pub const Workspace = struct {
@@ -49,7 +61,11 @@ pub const Compression = struct {
             .mode = session_features.compression_mode,
             .supports_deflate = session_features.supports_deflate,
             .supports_snappy = session_features.supports_snappy,
-            .algorithm = session_features.initial_algorithm,
+            .algorithm = switch (session_features.initial_algorithm) {
+                .none => .none,
+                .deflate => .deflate,
+                .snappy => .snappy,
+            },
             .negotiated = session_features.compression_mode != .marked,
         };
     }

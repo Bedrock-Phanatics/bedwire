@@ -8,27 +8,11 @@ const std = @import("std");
 pub const Limits = @import("limits.zig").Limits;
 pub const errors = @import("errors.zig");
 
-pub const protocol = struct {
-    pub const PacketKind = @import("protocol/kind.zig").PacketKind;
-    pub const Descriptor = @import("protocol/descriptor.zig").Descriptor;
-    pub const Entry = @import("protocol/descriptor.zig").Entry;
-    pub const PacketId = @import("protocol/descriptor.zig").PacketId;
-    pub const build = @import("protocol/descriptor.zig").build;
-
-    pub const SessionFeatures = @import("protocol/features.zig").SessionFeatures;
-    pub const Algorithm = @import("protocol/features.zig").Algorithm;
-    pub const CompressionMode = @import("protocol/features.zig").CompressionMode;
-    pub const ConnectionRequestFormat = @import("protocol/features.zig").ConnectionRequestFormat;
-    pub const LoginFlow = @import("protocol/features.zig").LoginFlow;
-    pub const ResourcePackFlow = @import("protocol/features.zig").ResourcePackFlow;
-    pub const EncryptionPolicy = @import("protocol/features.zig").EncryptionPolicy;
-    pub const forVersion = @import("protocol/features.zig").forVersion;
-
-    pub const describe = @import("protocol/registry.zig").describe;
-    pub const describeWith = @import("protocol/registry.zig").describeWith;
-};
+pub const protocol = @import("bedrock_protocol");
 
 pub const Session = @import("session/session.zig").Session;
+pub const SessionWithProfile = @import("session/session.zig").SessionWithProfile;
+pub const SessionPolicy = @import("session/session.zig").SessionPolicy;
 pub const TrustPolicy = @import("session/session.zig").TrustPolicy;
 pub const Identity = @import("auth/identity.zig").Identity;
 pub const Packet = @import("session/session.zig").Packet;
@@ -40,7 +24,6 @@ pub const PoolConfig = @import("session/session.zig").PoolConfig;
 pub const Role = @import("session/state.zig").Role;
 pub const State = @import("session/state.zig").State;
 pub const PacketKind = protocol.PacketKind;
-pub const Descriptor = protocol.Descriptor;
 
 pub const framing = struct {
     pub const batch = @import("framing/batch.zig");
@@ -50,7 +33,7 @@ pub const framing = struct {
 pub const compression = struct {
     pub const Compression = @import("compression/algorithm.zig").Compression;
     pub const Workspace = @import("compression/algorithm.zig").Workspace;
-    pub const Algorithm = protocol.Algorithm;
+    pub const Algorithm = @import("compression/algorithm.zig").Algorithm;
     pub const flate = @import("compression/flate.zig");
     pub const snappy = @import("compression/snappy.zig");
 };
@@ -100,17 +83,15 @@ pub const resource_packs = struct {
 /// so depending on Bedwire never pulls in RakNet or libdatachannel.
 pub const transport = struct {
     pub const RakNet = @import("transport/raknet.zig").RakNet;
+    pub const RakNetWithProfile = @import("transport/raknet.zig").RakNetWithProfile;
     pub const NetherNet = @import("transport/nethernet.zig").NetherNet;
+    pub const NetherNetWithProfile = @import("transport/nethernet.zig").NetherNetWithProfile;
 };
 
 test {
     std.testing.refAllDecls(@This());
 
     _ = @import("limits.zig");
-    _ = @import("protocol/kind.zig");
-    _ = @import("protocol/features.zig");
-    _ = @import("protocol/descriptor.zig");
-    _ = @import("protocol/registry.zig");
     _ = @import("framing/varint.zig");
     _ = @import("framing/batch.zig");
     _ = @import("session/state.zig");

@@ -10,7 +10,7 @@ test "deterministic malformed IO keeps commits and pool leases consistent" {
     var prng = std.Random.DefaultPrng.init(0xbed004);
     const random = prng.random();
     for (0..@import("build_options").fuzz_iterations) |_| {
-        var session = try bedwire.Session.init(testing.allocator, .client, &support.modern, .{ .pool = &pool });
+        var session = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
         defer session.deinit();
         session.state = .in_game;
         session.peer_key = bedwire.auth.moj_root.key();
@@ -20,7 +20,7 @@ test "deterministic malformed IO keeps commits and pool leases consistent" {
         const packet = input[0..random.uintLessThan(usize, input.len + 1)];
         var payload: [192]u8 = undefined;
         var payload_len: usize = undefined;
-        var held: ?bedwire.Frame = null;
+        var held: ?support.Session.Frame = null;
         if (session.encodeOne(packet)) |frame| {
             held = frame;
             payload_len = frame.bytes.len;
@@ -53,12 +53,12 @@ test "deterministic malformed IO keeps commits and pool leases consistent" {
 }
 
 test "held frame applies backpressure without changing bytes or crypto" {
-    var pair = try support.Pair.init(testing.allocator, &support.modern);
+    var pair = try support.Pair.init(testing.allocator, support.modern);
     defer pair.deinit();
     pair.client.state = .in_game;
     pair.client.crypto = bedwire.crypto.SessionCrypto.init(@splat(0x42));
     var builder: support.Builder = .{};
-    const packet = builder.make(&support.modern, .client_cache_status);
+    const packet = builder.make(support.modern, .client_cache_status);
     const frame = try pair.client.encodeOne(packet);
     defer frame.release();
     const saved = try testing.allocator.dupe(u8, frame.bytes);
@@ -76,13 +76,13 @@ test "held frame applies backpressure without changing bytes or crypto" {
 test "close retains held frame until release and clears peer identity" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
-    var session = try bedwire.Session.init(testing.allocator, .client, &support.modern, .{ .pool = &pool });
+    var session = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
     defer session.deinit();
     session.state = .in_game;
     session.peer_key = bedwire.auth.moj_root.key();
     session.crypto = bedwire.crypto.SessionCrypto.init(@splat(0x42));
     var builder: support.Builder = .{};
-    const frame = try session.encodeOne(builder.make(&support.modern, .client_cache_status));
+    const frame = try session.encodeOne(builder.make(support.modern, .client_cache_status));
     defer frame.release();
     session.close();
     session.close();
@@ -97,7 +97,7 @@ test "close retains held frame until release and clears peer identity" {
 }
 
 test "fatal authentication clears a previously installed peer key" {
-    var pair = try support.Pair.init(testing.allocator, &support.modern);
+    var pair = try support.Pair.init(testing.allocator, support.modern);
     defer pair.deinit();
     pair.server.state = .authenticating;
     pair.server.received.insert(.login);
@@ -113,7 +113,7 @@ const Handler = struct {
     fail: bool = false,
     calls: usize = 0,
 
-    pub fn onPacket(self: *@This(), _: *bedwire.Session, _: bedwire.Packet) !void {
+    pub fn onPacket(self: *@This(), _: *support.Session, _: support.Session.Packet) !void {
         self.calls += 1;
         if (self.fail) return error.HandlerFailed;
     }
@@ -121,7 +121,7 @@ const Handler = struct {
 
 fn Carrier(comptime nether: bool) type {
     return struct {
-        session: *bedwire.Session,
+        session: *support.Session,
         reenter: bool = false,
         fail: bool = false,
 
@@ -140,7 +140,7 @@ fn Carrier(comptime nether: bool) type {
             @memcpy(saved[0..bytes.len], bytes);
             if (self.reenter) {
                 var builder: support.Builder = .{};
-                try testing.expectError(error.PoolExhausted, self.session.encodeOne(builder.make(&support.modern, .client_cache_status)));
+                try testing.expectError(error.PoolExhausted, self.session.encodeOne(builder.make(support.modern, .client_cache_status)));
                 self.session.close();
                 try testing.expectError(error.PoolExhausted, self.session.pool.acquireTx());
                 try testing.expectEqualSlices(u8, saved[0..bytes.len], bytes);
@@ -153,10 +153,10 @@ fn Carrier(comptime nether: bool) type {
 test "both adapters close on handler failure and preserve send borrows during reentry" {
     inline for (.{ false, true }) |nether| {
         const Connection = Carrier(nether);
-        const Adapter = if (nether) bedwire.transport.NetherNet(Connection, Handler) else bedwire.transport.RakNet(Connection, Handler);
+        const Adapter = if (nether) bedwire.transport.NetherNetWithProfile(support.modern, Connection, Handler) else bedwire.transport.RakNetWithProfile(support.modern, Connection, Handler);
         var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
         defer pool.deinit();
-        var session = try bedwire.Session.init(testing.allocator, .client, &support.modern, .{ .pool = &pool });
+        var session = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
         defer session.deinit();
         session.state = .in_game;
         var connection: Connection = .{ .session = &session };
@@ -170,7 +170,7 @@ test "both adapters close on handler failure and preserve send borrows during re
         var raw: [128]u8 = undefined;
         raw[0] = 0xfe;
         var writer = bedwire.framing.batch.Writer.init(raw[1..], support.limits);
-        const packet = builder.make(&support.modern, .play_status);
+        const packet = builder.make(support.modern, .play_status);
         try writer.append(packet);
         try writer.append(packet);
         try testing.expectError(error.HandlerFailed, adapter.deliver(raw[0 .. 1 + writer.written().len]));
@@ -180,21 +180,21 @@ test "both adapters close on handler failure and preserve send borrows during re
 
         session.state = .in_game;
         connection.reenter = true;
-        try adapter.sendOne(builder.make(&support.modern, .client_cache_status));
+        try adapter.sendOne(builder.make(support.modern, .client_cache_status));
         try testing.expectEqual(bedwire.State.disconnected, session.state);
         try testing.expect(pool.isIdle());
 
         session.state = .in_game;
         connection.reenter = false;
         connection.fail = true;
-        try testing.expectError(error.WouldBlock, adapter.sendOne(builder.make(&support.modern, .client_cache_status)));
+        try testing.expectError(error.WouldBlock, adapter.sendOne(builder.make(support.modern, .client_cache_status)));
         try testing.expectEqual(bedwire.State.disconnected, session.state);
         try testing.expect(pool.isIdle());
     }
 }
 
 const PumpChannel = struct {
-    const Adapter = bedwire.transport.NetherNet(@This(), Handler);
+    const Adapter = bedwire.transport.NetherNetWithProfile(support.modern, @This(), Handler);
     adapter: ?*Adapter = null,
     receives: usize = 0,
     payload: []const u8,
@@ -211,14 +211,14 @@ const PumpChannel = struct {
 test "pump rejects reentry before receive and closes if consumed data cannot be admitted" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
-    var session = try bedwire.Session.init(testing.allocator, .client, &support.modern, .{ .pool = &pool });
+    var session = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
     defer session.deinit();
     session.state = .in_game;
     var builder: support.Builder = .{};
     var raw: [128]u8 = undefined;
     raw[0] = 0xfe;
     var writer = bedwire.framing.batch.Writer.init(raw[1..], support.limits);
-    try writer.append(builder.make(&support.modern, .play_status));
+    try writer.append(builder.make(support.modern, .play_status));
     var channel: PumpChannel = .{ .payload = raw[0 .. 1 + writer.written().len] };
     var handler: Handler = .{};
     var adapter: PumpChannel.Adapter = .{ .session = &session, .connection = &channel, .handler = &handler };
@@ -243,12 +243,12 @@ test "pump rejects reentry before receive and closes if consumed data cannot be 
 }
 
 test "recoverable encode failures preserve observations and crypto and return the lease" {
-    var pair = try support.Pair.init(testing.allocator, &support.modern);
+    var pair = try support.Pair.init(testing.allocator, support.modern);
     defer pair.deinit();
     pair.client.crypto = bedwire.crypto.SessionCrypto.init(@splat(0x42));
     pair.server.crypto = bedwire.crypto.SessionCrypto.init(@splat(0x42));
     var builder: support.Builder = .{};
-    const packet = builder.make(&support.modern, .request_network_settings);
+    const packet = builder.make(support.modern, .request_network_settings);
     const before = pair.client.crypto.?;
     const token = pair.client.tx_token;
     for (0..8) |_| {
@@ -269,7 +269,7 @@ test "recoverable encode failures preserve observations and crypto and return th
     const exhausted = pair.client.crypto.?;
     const committed_token = pair.client.tx_token;
     for (0..8) |_| {
-        try testing.expectError(error.CounterExhausted, pair.client.encodeOne(builder.make(&support.modern, .client_cache_status)));
+        try testing.expectError(error.CounterExhausted, pair.client.encodeOne(builder.make(support.modern, .client_cache_status)));
         try testing.expectEqualDeep(exhausted, pair.client.crypto.?);
         try testing.expectEqual(committed_token, pair.client.tx_token);
         try testing.expect(!pair.client.didSend(.client_cache_status));
@@ -280,16 +280,16 @@ test "recoverable encode failures preserve observations and crypto and return th
 test "shared RX backpressure preserves ciphertext for retry and held packets survive close" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 2 });
     defer pool.deinit();
-    var sessions: [3]bedwire.Session = undefined;
+    var sessions: [3]support.Session = undefined;
     for (&sessions) |*session| {
-        session.* = try bedwire.Session.init(testing.allocator, .client, &support.modern, .{ .pool = &pool });
+        session.* = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
         session.state = .in_game;
         session.crypto = bedwire.crypto.SessionCrypto.init(@splat(0x42));
     }
     defer for (&sessions) |*session| session.deinit();
     sessions[0].role = .server;
     var builder: support.Builder = .{};
-    const packet = builder.make(&support.modern, .play_status);
+    const packet = builder.make(support.modern, .play_status);
     const frame = try sessions[0].encodeOne(packet);
     defer frame.release();
     var held = try sessions[1].ingest(frame.bytes);
@@ -314,8 +314,8 @@ test "shared RX backpressure preserves ciphertext for retry and held packets sur
 }
 
 test "compression negotiation failure leaves the old state intact" {
-    const descriptor = comptime bedwire.protocol.describeWith(818, .{ .supports_snappy = false }) catch unreachable;
-    var pair = try support.Pair.init(testing.allocator, &descriptor);
+    const descriptor = support.Profile(818, .{ .supports_snappy = false, .login_flow = .certificate_chain });
+    var pair = try support.Pair.init(testing.allocator, descriptor);
     defer pair.deinit();
     pair.client.state = .network_settings;
     pair.client.received.insert(.network_settings);
