@@ -26,7 +26,7 @@ test "a full handshake runs on packets encoded and decoded by protocol-zig" {
     // client sends RequestNetworkSettings
     {
         const id = descriptor.packetId(.request_network_settings).?;
-        const bytes = try encodePacket(&storage, .{ .request_network_settings = .{ .client_protocol = @intCast(protocol.Current.protocol_number) } }, id);
+        const bytes = try encodePacket(&storage, .{ .request_network_settings = .{ .client_network_version = @intCast(protocol.Current.protocol_number) } }, id);
 
         var packets = try pair.clientToServer(&.{bytes});
         defer packets.deinit();
@@ -34,16 +34,16 @@ test "a full handshake runs on packets encoded and decoded by protocol-zig" {
         try testing.expectEqual(bedwire.PacketKind.request_network_settings, received.kind);
 
         const envelope = try pair.server.decodePacket(received);
-        try testing.expectEqual(@as(i32, @intCast(protocol.Current.protocol_number)), envelope.value.typed.request_network_settings.client_protocol);
+        try testing.expectEqual(@as(i32, @intCast(protocol.Current.protocol_number)), envelope.value.typed.request_network_settings.client_network_version);
     }
 
     // server responds with NetworkSettings
     {
         const id = descriptor.packetId(.network_settings).?;
-        const settings: protocol.packets.network_settings.NetworkSettingsPacket = .{
+        const settings: protocol.packets.network_settings.Packet = .{
             .compression_threshold = 256,
-            .compression_algorithm = @intFromEnum(bedwire.compression.Algorithm.snappy),
-            .client_throttle = false,
+            .compression_algorithm = .snappy,
+            .client_throttle_enabled = false,
             .client_throttle_threshold = 0,
             .client_throttle_scalar = 0,
         };
@@ -66,7 +66,7 @@ test "a full handshake runs on packets encoded and decoded by protocol-zig" {
     // client sends Login
     {
         const id = descriptor.packetId(.login).?;
-        const bytes = try encodePacket(&storage, .{ .login = .{ .client_protocol = @intCast(protocol.Current.protocol_number), .connection_request = "blob" } }, id);
+        const bytes = try encodePacket(&storage, .{ .login = .{ .client_network_version = @intCast(protocol.Current.protocol_number), .connection_request = "blob" } }, id);
 
         var packets = try pair.clientToServer(&.{bytes});
         defer packets.deinit();
@@ -85,7 +85,7 @@ test "a full handshake runs on packets encoded and decoded by protocol-zig" {
 
         var big: [4096]u8 = undefined;
         const id = descriptor.packetId(.server_to_client_handshake).?;
-        const bytes = try encodePacket(&big, .{ .server_to_client_handshake = .{ .jwt = token } }, id);
+        const bytes = try encodePacket(&big, .{ .server_to_client_handshake = .{ .handshake_web_token = token } }, id);
 
         var packets = try pair.serverToClient(&.{bytes});
         defer packets.deinit();
@@ -122,10 +122,8 @@ test "a disconnect decoded by protocol-zig still closes the session" {
     var storage: [256]u8 = undefined;
     const id = support.modern.packetId(.disconnect).?;
     const bytes = try encodePacket(&storage, .{ .disconnect = .{
-        .reason = 0,
-        .message_skipped = false,
-        .message = "bye",
-        .filtered_message = "",
+        .reason = .unknown,
+        .messages = .{ .messages = .{ .message = "bye", .filtered_message = "" } },
     } }, id);
 
     var packets = try pair.serverToClient(&.{bytes});
@@ -133,7 +131,7 @@ test "a disconnect decoded by protocol-zig still closes the session" {
     const received = packets.next().?;
 
     const envelope = try pair.client.decodePacket(received);
-    try testing.expectEqualStrings("bye", envelope.value.typed.disconnect.message);
+    try testing.expectEqualStrings("bye", envelope.value.typed.disconnect.messages.messages.message);
     try testing.expectEqual(bedwire.State.closing, pair.client.state);
 }
 

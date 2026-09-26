@@ -103,53 +103,47 @@ pub const Builder = struct {
                 .payload = &.{},
                 .value = .{ .typed = .{ .network_settings = .{
                     .compression_threshold = 0,
-                    .compression_algorithm = 1,
-                    .client_throttle = false,
+                    .compression_algorithm = .snappy,
+                    .client_throttle_enabled = false,
                     .client_throttle_threshold = 0,
                     .client_throttle_scalar = 0,
                 } } },
             }) catch unreachable;
             return writer.written();
         }
-        const empty_textures: protocol.codecs.resource_pack.TexturePacks = .{ .bytes = &.{}, .count = 0, .limits = protocol.DecodeLimits.defaults };
-        const empty_stack: protocol.codecs.resource_pack.StackPacks = .{ .bytes = &.{}, .count = 0, .limits = protocol.DecodeLimits.defaults };
-        const empty_experiments: protocol.codecs.resource_pack.Experiments = .{ .bytes = &.{}, .count = 0, .limits = protocol.DecodeLimits.defaults };
         const borrowed: ?protocol.BorrowedEnvelope = switch (kind) {
             .resource_packs_info => .{
                 .header = .{ .packet_id = profile.packetId(kind).? },
                 .kind = kind,
                 .payload = &.{},
-                .value = .{ .resource_packs_info = .{
-                    .texture_pack_required = false,
-                    .has_addons = false,
+                .value = .{ .typed = .{ .resource_packs_info = .{
+                    .resource_pack_required = false,
+                    .has_addon_packs = false,
                     .has_scripts = false,
                     .force_disable_vibrant_visuals = false,
-                    .world_template_uuid = @splat(0),
-                    .world_template_version = "",
-                    .texture_packs = empty_textures,
-                } },
+                    .world_template_id_and_version = .{ .pack_uuid = @splat(0), .pack_version = "" },
+                    .resource_packs = .empty,
+                } } },
             },
             .resource_pack_stack => .{
                 .header = .{ .packet_id = profile.packetId(kind).? },
                 .kind = kind,
                 .payload = &.{},
-                .value = .{ .resource_pack_stack = .{
+                .value = .{ .typed = .{ .resource_pack_stack = .{
                     .texture_pack_required = false,
-                    .texture_packs = empty_stack,
+                    .texture_pack_list = .empty,
                     .base_game_version = "",
-                    .experiments = empty_experiments,
-                    .experiments_previously_toggled = false,
+                    .experiments = .{ .toggles = .empty, .experiments_ever_toggled = false },
                     .include_editor_packs = false,
-                } },
+                } } },
             },
             .resource_pack_client_response => .{
                 .header = .{ .packet_id = profile.packetId(kind).? },
                 .kind = kind,
                 .payload = &.{},
-                .value = .{ .resource_pack_client_response = .{
-                    .response = .completed,
-                    .packs_to_download = .{ .bytes = &.{}, .count = 0, .limits = protocol.DecodeLimits.defaults },
-                } },
+                .value = .{ .typed = .{ .resource_pack_client_response = .{
+                    .response = .{ .resource_pack_stack_finished = "resourcepackstackfinished" },
+                } } },
             },
             else => null,
         };
@@ -159,18 +153,18 @@ pub const Builder = struct {
             return writer.written();
         }
         const typed: ?protocol.typed.Packet = switch (kind) {
-            .request_network_settings => .{ .request_network_settings = .{ .client_protocol = profile.protocol_number } },
+            .request_network_settings => .{ .request_network_settings = .{ .client_network_version = profile.protocol_number } },
             .network_settings => .{ .network_settings = .{
                 .compression_threshold = 0,
-                .compression_algorithm = 1,
-                .client_throttle = false,
+                .compression_algorithm = .snappy,
+                .client_throttle_enabled = false,
                 .client_throttle_threshold = 0,
                 .client_throttle_scalar = 0,
             } },
-            .login => .{ .login = .{ .client_protocol = profile.protocol_number, .connection_request = "fixture" } },
-            .server_to_client_handshake => .{ .server_to_client_handshake = .{ .jwt = "fixture" } },
+            .login => .{ .login = .{ .client_network_version = profile.protocol_number, .connection_request = "fixture" } },
+            .server_to_client_handshake => .{ .server_to_client_handshake = .{ .handshake_web_token = "fixture" } },
             .client_to_server_handshake => .{ .client_to_server_handshake = .{} },
-            .disconnect => .{ .disconnect = .{ .reason = 0, .message_skipped = true } },
+            .disconnect => .{ .disconnect = .{ .reason = .unknown, .messages = .empty } },
             else => null,
         };
         if (typed) |value| {

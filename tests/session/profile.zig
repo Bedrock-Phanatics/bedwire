@@ -35,9 +35,9 @@ const External = struct {
             .kind = .network_settings,
             .payload = raw.payload,
             .value = .{ .typed = .{ .network_settings = .{
-                .compression_algorithm = algorithm,
+                .compression_algorithm = @enumFromInt(algorithm),
                 .compression_threshold = threshold,
-                .client_throttle = false,
+                .client_throttle_enabled = false,
                 .client_throttle_threshold = 0,
                 .client_throttle_scalar = 0,
             } } },
@@ -48,10 +48,10 @@ const External = struct {
         if (envelope.kind != .network_settings) return protocol.Current.encode(writer, envelope);
         if (envelope.header.packet_id != 1000 or envelope.value != .typed or envelope.value.typed != .network_settings) return error.InvalidValue;
         const settings = envelope.value.typed.network_settings;
-        if (settings.compression_algorithm > 255) return error.InvalidValue;
+        if (@intFromEnum(settings.compression_algorithm) > 255) return error.InvalidValue;
         if (writer.remainingCapacity() < 5) return error.NoSpaceLeft;
         try writer.writeVarU32(envelope.header.toWire());
-        try writer.writeU8(@intCast(settings.compression_algorithm));
+        try writer.writeU8(@intCast(@intFromEnum(settings.compression_algorithm)));
         try writer.writeU16(settings.compression_threshold);
     }
 };
@@ -83,10 +83,10 @@ test "current and external sessions decode different network settings wire layou
     current.state = .network_settings;
     external.state = .network_settings;
 
-    const settings: protocol.packets.network_settings.NetworkSettingsPacket = .{
+    const settings: protocol.packets.network_settings.Packet = .{
         .compression_threshold = 70,
-        .compression_algorithm = 1,
-        .client_throttle = false,
+        .compression_algorithm = .snappy,
+        .client_throttle_enabled = false,
         .client_throttle_threshold = 0,
         .client_throttle_scalar = 0,
     };
@@ -155,8 +155,8 @@ test "session consumes normalized network settings from the selected profile" {
         .header = .{ .packet_id = id },
         .packet = .{ .network_settings = .{
             .compression_threshold = 64,
-            .compression_algorithm = 1,
-            .client_throttle = false,
+            .compression_algorithm = .snappy,
+            .client_throttle_enabled = false,
             .client_throttle_threshold = 0,
             .client_throttle_scalar = 0,
         } },
@@ -184,8 +184,8 @@ test "network settings accept none and reject unknown compression algorithms wit
             .header = .{ .packet_id = id },
             .packet = .{ .network_settings = .{
                 .compression_threshold = 0,
-                .compression_algorithm = algorithm,
-                .client_throttle = false,
+                .compression_algorithm = @enumFromInt(algorithm),
+                .client_throttle_enabled = false,
                 .client_throttle_threshold = 0,
                 .client_throttle_scalar = 0,
             } },
@@ -324,7 +324,7 @@ test "external profile completes negotiation authentication crypto and spawn flo
         .kind = .login,
         .payload = &.{},
         .value = .{ .typed = .{ .login = .{
-            .client_protocol = @intCast(External.protocol_number),
+            .client_network_version = @intCast(External.protocol_number),
             .connection_request = connection_request,
         } } },
     });
@@ -346,7 +346,7 @@ test "external profile completes negotiation authentication crypto and spawn flo
         .header = .{ .packet_id = External.packetId(.server_to_client_handshake).? },
         .kind = .server_to_client_handshake,
         .payload = &.{},
-        .value = .{ .typed = .{ .server_to_client_handshake = .{ .jwt = handshake_token } } },
+        .value = .{ .typed = .{ .server_to_client_handshake = .{ .handshake_web_token = handshake_token } } },
     });
     var handshake_packets = try pair.serverToClient(&.{handshake_writer.written()});
     const handshake = handshake_packets.next().?;

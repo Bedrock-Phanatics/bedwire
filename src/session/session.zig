@@ -338,10 +338,10 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             if (decoded.value != .typed or decoded.value.typed != .network_settings) return error.InvalidProfile;
             const settings = decoded.value.typed.network_settings;
             const algorithm: Algorithm = switch (settings.compression_algorithm) {
-                0 => .deflate,
-                1 => .snappy,
-                0xffff => .none,
-                else => return error.UnsupportedCompression,
+                .zlib => .deflate,
+                .snappy => .snappy,
+                .none => .none,
+                _ => return error.UnsupportedCompression,
             };
             try self.negotiateCompression(algorithm, settings.compression_threshold);
         }
@@ -362,7 +362,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             errdefer self.close();
             const decoded = try self.decodePacket(packet);
             if (decoded.value != .typed or decoded.value.typed != .server_to_client_handshake) return error.InvalidProfile;
-            return self.acceptServerHandshake(allocator, decoded.value.typed.server_to_client_handshake.jwt, secret);
+            return self.acceptServerHandshake(allocator, decoded.value.typed.server_to_client_handshake.handshake_web_token, secret);
         }
 
         pub fn releaseTxToken(self: *Self, token: u64) void {
@@ -624,15 +624,8 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             if (bytes.len > self.limits.max_packet_bytes) return error.LimitExceeded;
             const decoded = try Profile.decodeBorrowed(bytes, protocolLimits(self.limits));
             if (decoded.header.toWire() != header.toWire() or decoded.kind != kind) return error.InvalidProfile;
-            switch (known) {
-                .resource_packs_info => if (decoded.value != .resource_packs_info) return error.InvalidProfile,
-                .resource_pack_stack => if (decoded.value != .resource_pack_stack) return error.InvalidProfile,
-                .resource_pack_client_response => if (decoded.value != .resource_pack_client_response) return error.InvalidProfile,
-                else => {
-                    if (decoded.value != .typed) return error.InvalidProfile;
-                    if (protocol.typed.packetKind(decoded.value.typed) != known) return error.InvalidProfile;
-                },
-            }
+            if (decoded.value != .typed) return error.InvalidProfile;
+            if (protocol.typed.packetKind(decoded.value.typed) != known) return error.InvalidProfile;
         }
     };
 }

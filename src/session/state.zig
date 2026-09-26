@@ -209,8 +209,8 @@ test "gameplay stages refuse every handshake kind" {
     try testing.expect(State.in_game.permits(modern, .server, null));
     try testing.expect(State.in_game.permits(modern, .server, .play_status));
     try testing.expect(!State.in_game.permits(modern, .client, .play_status));
-    try testing.expect(State.in_game.permits(modern, .client, .request_chunk_radius));
-    try testing.expect(!State.in_game.permits(modern, .server, .request_chunk_radius));
+    try testing.expect(State.in_game.permits(modern, .client, .server_bound_data_store));
+    try testing.expect(!State.in_game.permits(modern, .server, .server_bound_data_store));
     try testing.expect(State.in_game.permits(modern, .server, .chunk_radius_updated));
     try testing.expect(!State.in_game.permits(modern, .client, .chunk_radius_updated));
     try testing.expect(State.in_game.permits(modern, .client, .client_cache_status));

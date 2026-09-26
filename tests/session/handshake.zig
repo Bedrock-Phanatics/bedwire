@@ -383,12 +383,12 @@ test "gameplay enforces known packet directions between client and server" {
     pair.server.state = .in_game;
 
     // client -> server only
-    var p1 = try pair.clientToServer(&.{build.make(descriptor, .request_chunk_radius)});
-    try testing.expectEqual(bedwire.PacketKind.request_chunk_radius, p1.next().?.kind);
+    var p1 = try pair.clientToServer(&.{build.make(descriptor, .server_bound_data_store)});
+    try testing.expectEqual(bedwire.PacketKind.server_bound_data_store, p1.next().?.kind);
     p1.deinit();
 
     // server can't send this
-    try testing.expectError(error.InvalidState, pair.server.encodeOne(build.make(descriptor, .request_chunk_radius)));
+    try testing.expectError(error.InvalidState, pair.server.encodeOne(build.make(descriptor, .server_bound_data_store)));
 
     // server -> client only
     var storage1: [16]u8 = undefined;
