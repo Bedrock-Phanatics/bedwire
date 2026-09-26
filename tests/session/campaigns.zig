@@ -180,3 +180,63 @@ test "shared pool remains reusable after repeated session deinit" {
         try testing.expect(pool.isIdle());
     }
 }
+
+test "deterministic malformed codec campaign" {
+    const limits: bedwire.Limits = .{
+        .max_frame_bytes = 4096,
+        .max_batch_bytes = 8192,
+        .max_packet_bytes = 4096,
+        .max_packets_per_batch = 64,
+    };
+
+    var pool = try bedwire.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = limits });
+    defer session.deinit();
+
+    var flate_history: [bedwire.compression.flate.history_len]u8 = undefined;
+    var scratch: [8192]u8 = undefined;
+
+    var prng = std.Random.DefaultPrng.init(0xbed0_16);
+    var bytes: [4096]u8 = undefined;
+    for (0..@import("build_options").fuzz_iterations) |i| {
+        const len = i % (bytes.len + 1);
+        prng.random().bytes(bytes[0..len]);
+        const input = bytes[0..len];
+
+        _ = bedwire.framing.varint.readU32(input) catch {};
+
+        if (bedwire.framing.batch.strip(input, limits)) |stripped| {
+            var reader = bedwire.framing.batch.Reader.init(stripped, limits) catch null;
+            if (reader) |*r| {
+                var count: usize = 0;
+                while (count < limits.max_packets_per_batch) : (count += 1) {
+                    const packet = r.next() catch break;
+                    if (packet == null) break;
+                }
+            }
+        } else |_| {}
+
+        var reader = bedwire.framing.batch.Reader.init(input, limits) catch null;
+        if (reader) |*r| {
+            var count: usize = 0;
+            while (count < limits.max_packets_per_batch) : (count += 1) {
+                const packet = r.next() catch break;
+                if (packet == null) break;
+            }
+        }
+
+        _ = bedwire.compression.flate.decompress(input, &scratch, &flate_history, limits) catch {};
+        _ = bedwire.compression.snappy.decompress(input, &scratch, limits) catch {};
+
+        session.state = .in_game;
+        var packets = session.ingest(input) catch {
+            session.state = .in_game;
+            continue;
+        };
+        while (packets.next()) |_| {}
+        packets.deinit();
+    }
+    try testing.expect(pool.isIdle());
+}

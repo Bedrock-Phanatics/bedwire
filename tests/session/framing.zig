@@ -636,3 +636,41 @@ test "post-acquisition ingest failure releases RX slot and disconnects session" 
     // rx slot released by errdefer, no slot leak
     try testing.expect(pool.isIdle());
 }
+
+test "borrowed batch storage is reusable and owned packets stay independent" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var server = try gameSession(testing.allocator, &pool, .server);
+    defer server.deinit();
+
+    var client = try gameSession(testing.allocator, &pool, .client);
+    defer client.deinit();
+
+    var storage1: [16]u8 = undefined;
+    var storage2: [16]u8 = undefined;
+    const packet1 = support.packet(&storage1, 1020, "abc");
+    const packet2 = support.packet(&storage2, 1020, "xyz");
+
+    const frame1 = try client.encode(&.{packet1});
+    var packets1 = try server.ingest(frame1.bytes);
+    frame1.release();
+    const p1 = packets1.next().?;
+    const owned1 = try testing.allocator.dupe(u8, p1.bytes);
+    defer testing.allocator.free(owned1);
+    try testing.expectEqualStrings("abc", owned1[owned1.len - 3 ..]);
+    packets1.deinit();
+
+    const frame2 = try client.encode(&.{packet2});
+    var packets2 = try server.ingest(frame2.bytes);
+    frame2.release();
+    const p2 = packets2.next().?;
+    const owned2 = try testing.allocator.dupe(u8, p2.bytes);
+    defer testing.allocator.free(owned2);
+    try testing.expectEqualStrings("xyz", owned2[owned2.len - 3 ..]);
+    packets2.deinit();
+
+    try testing.expectEqualStrings("abc", owned1[owned1.len - 3 ..]);
+    try testing.expectEqualStrings("xyz", owned2[owned2.len - 3 ..]);
+    try testing.expect(pool.isIdle());
+}
