@@ -169,6 +169,18 @@ test "raw DEFLATE bounds its input by the frame limit" {
     try testing.expectError(error.LimitExceeded, flate.decompress(&([_]u8{0} ** 16), &decoded, &history, tight));
 }
 
+test "raw DEFLATE fixture decompresses correctly and enforces output buffer bound" {
+    const compressed = [_]u8{ 0x73, 0x74, 0x1c, 0x05, 0xa3, 0x60, 0x14, 0x0c, 0x77, 0x00, 0x00 };
+    var output: [1024]u8 = undefined;
+    var history: [flate.history_len]u8 = undefined;
+    const plain = try flate.decompress(&compressed, &output, &history, limits);
+    try testing.expectEqual(@as(usize, 1000), plain.len);
+    for (plain) |v| try testing.expectEqual(@as(u8, 'A'), v);
+
+    var tiny: [16]u8 = undefined;
+    try testing.expectError(error.LimitExceeded, flate.decompress(&compressed, &tiny, &history, limits));
+}
+
 test "compressing into any destination size either succeeds or reports no space" {
     var history: [flate.history_len]u8 = undefined;
     var destination: [512]u8 = undefined;
