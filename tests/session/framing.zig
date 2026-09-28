@@ -4,8 +4,8 @@ const support = @import("../support.zig");
 
 const testing = std.testing;
 
-fn gameSession(allocator: std.mem.Allocator, pool: *bedwire.BufferPool, role: bedwire.Role) !support.Session {
-    var session = try support.Session.init(allocator, role, .{ .pool = pool, .limits = support.limits });
+fn gameSession(pool: *bedwire.BufferPool, role: bedwire.Role) !support.Session {
+    var session = try support.Session.init(role, .{ .pool = pool, .limits = support.limits });
     session.state = .in_game;
     return session;
 }
@@ -14,13 +14,13 @@ test "frames must carry the session header" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var session = try gameSession(testing.allocator, &pool, .server);
+    var session = try gameSession(&pool, .server);
     defer session.deinit();
 
     try testing.expectError(error.MalformedBatch, session.ingest(&.{}));
     try testing.expectEqual(bedwire.State.disconnected, session.state);
 
-    var other = try gameSession(testing.allocator, &pool, .server);
+    var other = try gameSession(&pool, .server);
     defer other.deinit();
     try testing.expectError(error.MalformedBatch, other.ingest(&.{ 0xfd, 2, 60, 0 }));
 }
@@ -49,7 +49,7 @@ test "malformed and truncated length prefixes are rejected" {
     defer pool.deinit();
 
     for (cases) |frame| {
-        var session = try gameSession(testing.allocator, &pool, .server);
+        var session = try gameSession(&pool, .server);
         defer session.deinit();
 
         try testing.expectError(error.MalformedBatch, session.ingest(frame));
@@ -93,7 +93,7 @@ test "packet count and packet size limits bound one batch" {
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = tight });
+    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 
@@ -115,7 +115,7 @@ test "an oversized frame is refused before it is copied" {
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = tight });
+    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 
@@ -132,7 +132,7 @@ test "output that cannot fit a frame fails instead of truncating" {
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = tight });
+    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 
@@ -188,8 +188,8 @@ const Link = struct {
     fn init(pool: *bedwire.BufferPool) !Link {
         return .{
             .pool = pool,
-            .server = try gameSession(testing.allocator, pool, .server),
-            .client = try gameSession(testing.allocator, pool, .client),
+            .server = try gameSession(pool, .server),
+            .client = try gameSession(pool, .client),
         };
     }
 
@@ -300,7 +300,7 @@ test "a held frame blocks encoding and a stale release cannot free its successor
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
 
-    var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = tight });
+    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 
@@ -324,7 +324,7 @@ test "fatal framing error consumes no pool slot and closes session" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var session = try gameSession(testing.allocator, &pool, .server);
+    var session = try gameSession(&pool, .server);
     defer session.deinit();
 
     const token = try pool.acquireRx();
@@ -341,10 +341,10 @@ test "PoolExhausted is non-fatal and leaves session state intact" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
 
-    var session = try gameSession(testing.allocator, &pool, .server);
+    var session = try gameSession(&pool, .server);
     defer session.deinit();
 
-    var client = try gameSession(testing.allocator, &pool, .client);
+    var client = try gameSession(&pool, .client);
     defer client.deinit();
 
     const rx_token = try pool.acquireRx();
@@ -368,7 +368,7 @@ test "encode failure on fresh TX acquisition releases slot" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var session = try gameSession(testing.allocator, &pool, .server);
+    var session = try gameSession(&pool, .server);
     defer session.deinit();
 
     try testing.expect(pool.isIdle());
@@ -381,7 +381,7 @@ test "post-acquisition ingest failure releases RX slot and disconnects session" 
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var session = try gameSession(testing.allocator, &pool, .server);
+    var session = try gameSession(&pool, .server);
     defer session.deinit();
     try session.compression.negotiate(.deflate, 0);
 

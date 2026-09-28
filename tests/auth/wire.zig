@@ -31,26 +31,26 @@ test "negative, zero and truncated lengths are refused" {
 
 test "the envelope parser tells legacy chains from modern envelopes" {
     var legacy = try wire.parseChainEnvelope(testing.allocator, "{\"chain\":[\"token1\",\"token2\"]}", .{});
-    defer legacy.deinit(testing.allocator);
+    defer legacy.deinit();
     try testing.expect(legacy.is_legacy_chain);
     try testing.expect(legacy.token == null and legacy.certificate == null);
 
     var modern = try wire.parseChainEnvelope(testing.allocator, "{\"AuthenticationType\":0,\"Certificate\":\"{\\\"chain\\\":[\\\"cert\\\"]}\",\"Token\":\"oidc_jwt\"}", .{});
-    defer modern.deinit(testing.allocator);
+    defer modern.deinit();
     try testing.expect(!modern.is_legacy_chain);
     try testing.expectEqual(@as(u8, 0), modern.authentication_type);
     try testing.expectEqualStrings("oidc_jwt", modern.token.?);
     try testing.expectEqualStrings("{\"chain\":[\"cert\"]}", modern.certificate.?);
 
     var offline = try wire.parseChainEnvelope(testing.allocator, "{\"AuthenticationType\":2,\"Token\":\"self_token\"}", .{});
-    defer offline.deinit(testing.allocator);
+    defer offline.deinit();
     try testing.expectEqual(@as(u8, 2), offline.authentication_type);
     try testing.expectEqualStrings("self_token", offline.token.?);
 }
 
 fn parseEnvelope(allocator: std.mem.Allocator) !void {
     var envelope = try wire.parseChainEnvelope(allocator, "{\"AuthenticationType\":0,\"Token\":\"oidc_jwt\"}", .{});
-    envelope.deinit(allocator);
+    envelope.deinit();
 }
 
 test "parseChainEnvelope cleans up under every allocation failure" {

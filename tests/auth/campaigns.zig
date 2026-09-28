@@ -35,7 +35,7 @@ test "bounded auth input mutations clean up every accepted parse" {
         } else |_| {}
         if (bedwire.auth.wire.parseChainEnvelope(testing.allocator, bytes, limits)) |parsed| {
             var owned = parsed;
-            owned.deinit(testing.allocator);
+            owned.deinit();
         } else |_| {}
         if (bedwire.auth.wire.decodeConnectionRequest(bytes, limits)) |decoded| {
             try testing.expect(decoded.chain_data.len > 0);

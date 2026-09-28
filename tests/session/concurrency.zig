@@ -16,9 +16,9 @@ const SessionWorker = struct {
     }
 
     fn exchange(self: *@This()) !void {
-        var sender = try support.Session.init(testing.allocator, .client, .{ .pool = self.pool });
+        var sender = try support.Session.init(.client, .{ .pool = self.pool });
         defer sender.deinit();
-        var receiver = try support.Session.init(testing.allocator, .server, .{ .pool = self.pool });
+        var receiver = try support.Session.init(.server, .{ .pool = self.pool });
         defer receiver.deinit();
         sender.state = .in_game;
         receiver.state = .in_game;

@@ -45,8 +45,6 @@ const Result = struct {
     operations: usize,
     nanoseconds: u64,
     payload_bytes: usize,
-    allocations: usize,
-    allocated_bytes: usize,
 
     fn report(self: Result, out: *std.Io.Writer) !void {
         const seconds = @as(f64, @floatFromInt(self.nanoseconds)) / std.time.ns_per_s;
@@ -54,14 +52,7 @@ const Result = struct {
         const ops = @as(f64, @floatFromInt(self.operations)) / seconds;
         const throughput = @as(f64, @floatFromInt(self.payload_bytes)) / seconds / (1024 * 1024);
 
-        try out.print("{s: <34} {d: >10.1} ns/op  {d: >12.0} ops/s  {d: >8.1} MB/s  {d: >4} allocs/op  {d: >6} B/op\n", .{
-            self.name,
-            per_op,
-            ops,
-            throughput,
-            self.allocations / self.operations,
-            self.allocated_bytes / self.operations,
-        });
+        try out.print("{s: <34} {d: >10.1} ns/op  {d: >12.0} ops/s  {d: >8.1} MB/s\n", .{ self.name, per_op, ops, throughput });
     }
 };
 
@@ -127,8 +118,8 @@ const Setup = struct {
     encrypt: bool,
 };
 
-fn open(comptime Profile: type, allocator: std.mem.Allocator, pool: *bedwire.BufferPool, role: bedwire.Role, setup: Setup) !bedwire.SessionWithProfile(Profile) {
-    var session = try bedwire.SessionWithProfile(Profile).init(allocator, role, .{ .pool = pool, .limits = limits });
+fn open(comptime Profile: type, pool: *bedwire.BufferPool, role: bedwire.Role, setup: Setup) !bedwire.SessionWithProfile(Profile) {
+    var session = try bedwire.SessionWithProfile(Profile).init(role, .{ .pool = pool, .limits = limits });
     errdefer session.deinit();
 
     try session.compression.negotiate(setup.algorithm orelse .none, 0);
@@ -177,10 +168,9 @@ const ControlResults = struct { send: Result, ingest: Result };
 
 fn benchNetworkSettings(comptime Profile: type, io: std.Io, allocator: std.mem.Allocator, pool: *bedwire.BufferPool, label: []const u8, packet: []const u8, iterations: usize) !ControlResults {
     const ProfileSession = bedwire.SessionWithProfile(Profile);
-    var counting: Counting = .{ .backing = allocator };
-    var sender = try ProfileSession.init(counting.allocator(), .server, .{ .pool = pool, .limits = limits });
+    var sender = try ProfileSession.init(.server, .{ .pool = pool, .limits = limits });
     defer sender.deinit();
-    var receiver = try ProfileSession.init(counting.allocator(), .client, .{ .pool = pool, .limits = limits });
+    var receiver = try ProfileSession.init(.client, .{ .pool = pool, .limits = limits });
     defer receiver.deinit();
     sender.state = .network_settings;
     receiver.state = .network_settings;
@@ -196,8 +186,6 @@ fn benchNetworkSettings(comptime Profile: type, io: std.Io, allocator: std.mem.A
         bytes.* = try allocator.dupe(u8, frame.bytes);
     }
 
-    const send_allocations = counting.allocations;
-    const send_bytes = counting.bytes;
     var timer = Timer.start(io);
     for (0..iterations) |_| {
         const frame = try sender.encodeOne(packet);
@@ -206,8 +194,6 @@ fn benchNetworkSettings(comptime Profile: type, io: std.Io, allocator: std.mem.A
     }
     const send_elapsed = timer.read();
 
-    const ingest_allocations = counting.allocations;
-    const ingest_bytes = counting.bytes;
     timer = Timer.start(io);
     for (frames) |frame| {
         var packets = try receiver.ingest(frame);
@@ -222,30 +208,22 @@ fn benchNetworkSettings(comptime Profile: type, io: std.Io, allocator: std.mem.A
             .operations = iterations,
             .nanoseconds = send_elapsed,
             .payload_bytes = packet.len * iterations,
-            .allocations = counting.allocations - send_allocations,
-            .allocated_bytes = counting.bytes - send_bytes,
         },
         .ingest = .{
             .name = try std.fmt.allocPrint(allocator, "ingest NetworkSettings / {s}", .{label}),
             .operations = iterations,
             .nanoseconds = ingest_elapsed,
             .payload_bytes = packet.len * iterations,
-            .allocations = counting.allocations - ingest_allocations,
-            .allocated_bytes = counting.bytes - ingest_bytes,
         },
     };
 }
 
-fn benchSend(comptime Profile: type, io: std.Io, allocator: std.mem.Allocator, pool: *bedwire.BufferPool, name: []const u8, setup: Setup, packets: []const []const u8, iterations: usize) !Result {
-    var counting: Counting = .{ .backing = allocator };
-    var session = try open(Profile, counting.allocator(), pool, .server, setup);
+fn benchSend(comptime Profile: type, io: std.Io, pool: *bedwire.BufferPool, name: []const u8, setup: Setup, packets: []const []const u8, iterations: usize) !Result {
+    var session = try open(Profile, pool, .server, setup);
     defer session.deinit();
 
     var payload: usize = 0;
     for (packets) |packet| payload += packet.len;
-
-    const before = counting.allocations;
-    const before_bytes = counting.bytes;
 
     var timer = Timer.start(io);
     for (0..iterations) |_| {
@@ -260,17 +238,13 @@ fn benchSend(comptime Profile: type, io: std.Io, allocator: std.mem.Allocator, p
         .operations = iterations,
         .nanoseconds = elapsed,
         .payload_bytes = payload * iterations,
-        .allocations = counting.allocations - before,
-        .allocated_bytes = counting.bytes - before_bytes,
     };
 }
 
 fn benchIngest(comptime Profile: type, io: std.Io, allocator: std.mem.Allocator, pool: *bedwire.BufferPool, name: []const u8, setup: Setup, packets: []const []const u8, iterations: usize) !Result {
-    var counting: Counting = .{ .backing = allocator };
-
-    var sender = try open(Profile, counting.allocator(), pool, .client, setup);
+    var sender = try open(Profile, pool, .client, setup);
     defer sender.deinit();
-    var receiver = try open(Profile, counting.allocator(), pool, .server, setup);
+    var receiver = try open(Profile, pool, .server, setup);
     defer receiver.deinit();
 
     const frames = try allocator.alloc([]u8, iterations);
@@ -288,9 +262,6 @@ fn benchIngest(comptime Profile: type, io: std.Io, allocator: std.mem.Allocator,
         frame.* = try allocator.dupe(u8, f.bytes);
     }
 
-    const before = counting.allocations;
-    const before_bytes = counting.bytes;
-
     var timer = Timer.start(io);
     for (frames) |frame| {
         var iterator = try receiver.ingest(frame);
@@ -304,8 +275,6 @@ fn benchIngest(comptime Profile: type, io: std.Io, allocator: std.mem.Allocator,
         .operations = iterations,
         .nanoseconds = elapsed,
         .payload_bytes = payload * iterations,
-        .allocations = counting.allocations - before,
-        .allocated_bytes = counting.bytes - before_bytes,
     };
 }
 
@@ -315,7 +284,7 @@ fn benchClassification(comptime Profile: type, io: std.Io, name: []const u8, ite
         const id: u10 = @truncate(i);
         std.mem.doNotOptimizeAway(Profile.packetKind(id));
     }
-    return .{ .name = name, .operations = iterations, .nanoseconds = timer.read(), .payload_bytes = 0, .allocations = 0, .allocated_bytes = 0 };
+    return .{ .name = name, .operations = iterations, .nanoseconds = timer.read(), .payload_bytes = 0 };
 }
 
 fn benchState(comptime Profile: type, io: std.Io, name: []const u8, iterations: usize) Result {
@@ -325,7 +294,7 @@ fn benchState(comptime Profile: type, io: std.Io, name: []const u8, iterations: 
         const direction = if (kind) |known| Profile.packetDirection(known) else .bidirectional;
         std.mem.doNotOptimizeAway(bedwire.State.in_game.permitsWithDirection(Profile.features, .client, kind, direction));
     }
-    return .{ .name = name, .operations = iterations, .nanoseconds = timer.read(), .payload_bytes = 0, .allocations = 0, .allocated_bytes = 0 };
+    return .{ .name = name, .operations = iterations, .nanoseconds = timer.read(), .payload_bytes = 0 };
 }
 
 fn benchBatchSplit(io: std.Io, allocator: std.mem.Allocator, packets: []const []const u8, iterations: usize) !Result {
@@ -350,8 +319,6 @@ fn benchBatchSplit(io: std.Io, allocator: std.mem.Allocator, packets: []const []
         .operations = iterations,
         .nanoseconds = elapsed,
         .payload_bytes = payload * iterations,
-        .allocations = 0,
-        .allocated_bytes = 0,
     };
 }
 
@@ -374,8 +341,6 @@ fn benchSeal(io: std.Io, iterations: usize) !Result {
         .operations = iterations,
         .nanoseconds = elapsed,
         .payload_bytes = (storage.len - 8) * iterations,
-        .allocations = 0,
-        .allocated_bytes = 0,
     };
 }
 
@@ -409,20 +374,12 @@ fn benchOpen(io: std.Io, allocator: std.mem.Allocator, iterations: usize) !Resul
         .operations = iterations,
         .nanoseconds = elapsed,
         .payload_bytes = (storage.len - 8) * iterations,
-        .allocations = 0,
-        .allocated_bytes = 0,
     };
 }
 
-fn reportFootprint(allocator: std.mem.Allocator, pool: *bedwire.BufferPool, pool_counting: Counting, out: *std.Io.Writer) !void {
-    var counting: Counting = .{ .backing = allocator };
-
-    var session = try Session.init(counting.allocator(), .server, .{ .pool = pool, .limits = limits });
-    defer session.deinit();
-
-    try out.print("\nper-session fixed memory\n", .{});
+fn reportFootprint(pool: *bedwire.BufferPool, pool_counting: Counting, out: *std.Io.Writer) !void {
+    try out.print("\nmemory\n", .{});
     try out.print("  limits: frame {d} KiB, batch {d} KiB\n", .{ limits.max_frame_bytes / 1024, limits.max_batch_bytes / 1024 });
-    try out.print("  heap:   {d} KiB across {d} allocations (0 B eager backing buffers)\n", .{ counting.bytes / 1024, counting.allocations });
     try out.print("  pool logical:   {d} KiB ({d} B) backing storage\n", .{ pool.storageBytes() / 1024, pool.storageBytes() });
     try out.print("  pool allocator: {d} KiB ({d} B) across {d} allocations ({d} RX, {d} TX slots)\n", .{ pool_counting.bytes / 1024, pool_counting.bytes, pool_counting.allocations, pool.config.rx_slots, pool.config.tx_slots });
     try out.print("  struct: {d} B (Session), {d} B (BufferPool), {d} B (Packets), {d} B (Frame)\n", .{ @sizeOf(Session), @sizeOf(bedwire.BufferPool), @sizeOf(bedwire.Packets), @sizeOf(bedwire.Frame) });
@@ -475,7 +432,7 @@ pub fn main(init: std.process.Init) !void {
         for (workloads) |workload| {
             var name_storage: [64]u8 = undefined;
             const name = try std.fmt.bufPrint(&name_storage, "  encode {s} / {s}", .{ workload.name, case.name });
-            try (try benchSend(protocol.Current, init.io, allocator, &pool, name, case.setup, workload.packets, workload.iterations)).report(out);
+            try (try benchSend(protocol.Current, init.io, &pool, name, case.setup, workload.packets, workload.iterations)).report(out);
         }
     }
 
@@ -508,10 +465,10 @@ pub fn main(init: std.process.Init) !void {
     const external_control = try benchNetworkSettings(MockProfile, init.io, allocator, &pool, "external ID+layout", external_settings, 200_000);
     try external_control.send.report(out);
     try external_control.ingest.report(out);
-    try (try benchSend(MockProfile, init.io, allocator, &pool, "encode 1-packet / external", .{ .algorithm = null, .encrypt = false }, single, 200_000)).report(out);
+    try (try benchSend(MockProfile, init.io, &pool, "encode 1-packet / external", .{ .algorithm = null, .encrypt = false }, single, 200_000)).report(out);
     try (try benchIngest(MockProfile, init.io, allocator, &pool, "ingest 1-packet / external", .{ .algorithm = null, .encrypt = false }, single, 200_000)).report(out);
     try out.print("  external Session struct: {d} B\n", .{@sizeOf(bedwire.SessionWithProfile(MockProfile))});
 
-    try reportFootprint(allocator, &pool, pool_counting, out);
+    try reportFootprint(&pool, pool_counting, out);
     try out.flush();
 }

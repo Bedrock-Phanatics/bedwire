@@ -105,11 +105,11 @@ test "adapter drives ingest and reliable ordered send" {
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var server = try Session.init(allocator, .server, .{ .limits = limits, .pool = &pool });
+    var server = try Session.init(.server, .{ .limits = limits, .pool = &pool });
     defer server.deinit();
     server.state = .in_game;
 
-    var client = try Session.init(allocator, .client, .{ .limits = limits, .pool = &pool });
+    var client = try Session.init(.client, .{ .limits = limits, .pool = &pool });
     defer client.deinit();
     client.state = .in_game;
 
@@ -139,7 +139,7 @@ test "transport failure closes the session" {
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var client = try Session.init(allocator, .client, .{ .limits = limits, .pool = &pool });
+    var client = try Session.init(.client, .{ .limits = limits, .pool = &pool });
     defer client.deinit();
     client.state = .in_game;
 
@@ -161,7 +161,7 @@ test "hostile payload closes the session inside the callback" {
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var server = try Session.init(allocator, .server, .{ .limits = limits, .pool = &pool });
+    var server = try Session.init(.server, .{ .limits = limits, .pool = &pool });
     defer server.deinit();
 
     var peer: FakePeer = .{ .allocator = allocator };
@@ -182,11 +182,11 @@ test "reentrant deliver or ingest is rejected with InvalidState" {
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var server = try Session.init(allocator, .server, .{ .limits = limits, .pool = &pool });
+    var server = try Session.init(.server, .{ .limits = limits, .pool = &pool });
     defer server.deinit();
     server.state = .in_game;
 
-    var client = try Session.init(allocator, .client, .{ .limits = limits, .pool = &pool });
+    var client = try Session.init(.client, .{ .limits = limits, .pool = &pool });
     defer client.deinit();
     client.state = .in_game;
 

@@ -65,9 +65,9 @@ test "default and supplied profile sessions start independently" {
     var pool = try bedwire.BufferPool.init(std.testing.allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var current = try bedwire.Session.init(std.testing.allocator, .server, .{ .pool = &pool });
+    var current = try bedwire.Session.init(.server, .{ .pool = &pool });
     defer current.deinit();
-    var historical = try bedwire.SessionWithProfile(External).init(std.testing.allocator, .server, .{ .pool = &pool });
+    var historical = try bedwire.SessionWithProfile(External).init(.server, .{ .pool = &pool });
     defer historical.deinit();
     try std.testing.expectEqual(protocol.Current.protocol_number, current.version());
     try std.testing.expectEqual(@as(u32, 7), historical.version());
@@ -76,9 +76,9 @@ test "default and supplied profile sessions start independently" {
 test "current and external sessions decode different network settings wire layouts" {
     var pool = try bedwire.BufferPool.init(std.testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
-    var current = try bedwire.Session.init(std.testing.allocator, .client, .{ .pool = &pool });
+    var current = try bedwire.Session.init(.client, .{ .pool = &pool });
     defer current.deinit();
-    var external = try bedwire.SessionWithProfile(External).init(std.testing.allocator, .client, .{ .pool = &pool });
+    var external = try bedwire.SessionWithProfile(External).init(.client, .{ .pool = &pool });
     defer external.deinit();
     current.state = .network_settings;
     external.state = .network_settings;
@@ -143,7 +143,7 @@ fn frame(storage: []u8, packet: []const u8) []const u8 {
 test "session consumes normalized network settings from the selected profile" {
     var pool = try bedwire.BufferPool.init(std.testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
-    var session = try bedwire.Session.init(std.testing.allocator, .client, .{ .pool = &pool });
+    var session = try bedwire.Session.init(.client, .{ .pool = &pool });
     defer session.deinit();
     session.state = .network_settings;
     session.received.insert(.network_settings);
@@ -171,7 +171,7 @@ test "session consumes normalized network settings from the selected profile" {
 test "network settings accept none and reject unknown compression algorithms without changing state" {
     var pool = try bedwire.BufferPool.init(std.testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
-    var session = try bedwire.Session.init(std.testing.allocator, .client, .{ .pool = &pool });
+    var session = try bedwire.Session.init(.client, .{ .pool = &pool });
     defer session.deinit();
     session.state = .network_settings;
     session.received.insert(.network_settings);
@@ -207,7 +207,7 @@ test "malformed profile-decoded authentication packets close the session" {
     var pool = try bedwire.BufferPool.init(std.testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
 
-    var server = try support.Session.init(std.testing.allocator, .server, .{ .pool = &pool });
+    var server = try support.Session.init(.server, .{ .pool = &pool });
     defer server.deinit();
     server.state = .authenticating;
     server.received.insert(.login);
@@ -218,7 +218,7 @@ test "malformed profile-decoded authentication packets close the session" {
     try std.testing.expectError(error.EndOfStream, server.authenticateLoginPacket(std.testing.allocator, login_packet, .{ .certificate_chain = .{ .now = 0 } }));
     try std.testing.expectEqual(bedwire.State.disconnected, server.state);
 
-    var client = try bedwire.Session.init(std.testing.allocator, .client, .{ .pool = &pool });
+    var client = try bedwire.Session.init(.client, .{ .pool = &pool });
     defer client.deinit();
     client.state = .authenticating;
     client.received.insert(.server_to_client_handshake);
@@ -234,7 +234,7 @@ test "malformed profile-decoded authentication packets close the session" {
 test "malformed control payload cannot advance the session" {
     var pool = try bedwire.BufferPool.init(std.testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
-    var server = try bedwire.Session.init(std.testing.allocator, .server, .{ .pool = &pool });
+    var server = try bedwire.Session.init(.server, .{ .pool = &pool });
     defer server.deinit();
 
     var packet_storage: [8]u8 = undefined;
@@ -244,13 +244,13 @@ test "malformed control payload cannot advance the session" {
     try std.testing.expectEqual(bedwire.State.disconnected, server.state);
     try std.testing.expect(!server.didReceive(.request_network_settings));
 
-    var client = try bedwire.Session.init(std.testing.allocator, .client, .{ .pool = &pool });
+    var client = try bedwire.Session.init(.client, .{ .pool = &pool });
     defer client.deinit();
     try std.testing.expectError(error.EndOfStream, client.encodeOne(malformed));
     try std.testing.expectEqual(bedwire.State.transport_ready, client.state);
     try std.testing.expect(!client.didSend(.request_network_settings));
 
-    var external = try bedwire.SessionWithProfile(External).init(std.testing.allocator, .client, .{ .pool = &pool });
+    var external = try bedwire.SessionWithProfile(External).init(.client, .{ .pool = &pool });
     defer external.deinit();
     external.state = .network_settings;
     const malformed_external = support.packet(&packet_storage, External.packetId(.network_settings).?, "");
@@ -268,7 +268,7 @@ test "resource pack session packets require profile decoding on ingress and egre
     var pool = try bedwire.BufferPool.init(std.testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
     for (cases) |case| {
-        var sender = try bedwire.Session.init(std.testing.allocator, case.sender, .{ .pool = &pool });
+        var sender = try bedwire.Session.init(case.sender, .{ .pool = &pool });
         defer sender.deinit();
         sender.state = .resource_packs;
         var packet_storage: [16]u8 = undefined;
@@ -277,7 +277,7 @@ test "resource pack session packets require profile decoding on ingress and egre
         try std.testing.expectEqual(bedwire.State.resource_packs, sender.state);
         try std.testing.expect(!sender.didSend(case.kind));
 
-        var receiver = try bedwire.Session.init(std.testing.allocator, case.sender.peer(), .{ .pool = &pool });
+        var receiver = try bedwire.Session.init(case.sender.peer(), .{ .pool = &pool });
         defer receiver.deinit();
         receiver.state = .resource_packs;
         var frame_storage: [32]u8 = undefined;

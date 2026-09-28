@@ -3,7 +3,6 @@
 const std = @import("std");
 
 pub const Limits = @import("limits.zig").Limits;
-pub const errors = @import("errors.zig");
 
 pub const protocol = @import("bedrock_protocol");
 
@@ -52,7 +51,6 @@ pub const auth = struct {
     pub const Identity = @import("auth/identity.zig").Identity;
     pub const ChainPolicy = @import("auth/chain.zig").ChainPolicy;
     pub const OidcPolicy = @import("auth/oidc.zig").OidcPolicy;
-    pub const TrustPolicy = @import("session/session.zig").TrustPolicy;
     pub const KeySet = @import("auth/jwks.zig").KeySet;
     pub const KeyEntry = @import("auth/jwks.zig").KeyEntry;
     pub const ConnectionRequest = @import("auth/wire.zig").ConnectionRequest;

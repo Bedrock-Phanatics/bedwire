@@ -14,8 +14,7 @@ pub const AuthEnvelope = struct {
     certificate: ?[]const u8,
     is_legacy_chain: bool,
 
-    pub fn deinit(self: *AuthEnvelope, allocator: std.mem.Allocator) void {
-        _ = allocator;
+    pub fn deinit(self: *AuthEnvelope) void {
         self.parsed.deinit();
         self.* = undefined;
     }
@@ -52,10 +51,6 @@ pub fn decodeConnectionRequest(bytes: []const u8, limits: Limits) !ConnectionReq
 pub fn parseChainEnvelope(allocator: std.mem.Allocator, chain_json: []const u8, limits: Limits) !AuthEnvelope {
     const parsed = try jwt.parseJson(allocator, chain_json, limits);
     errdefer parsed.deinit();
-
-    if (parsed.value != .object) {
-        return error.InvalidClaims;
-    }
 
     if (parsed.value.object.contains("chain")) {
         return .{

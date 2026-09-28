@@ -10,7 +10,7 @@ Minecraft: Bedrock Edition session networking for Zig 0.16.0.
 ## Features
 
 - **Bounded Batch Framing**: `0xFE` prefix with VarInt packet length delimiters and exact consumption validation.
-- **Compression**: Raw DEFLATE and Snappy (S2 compatible) compression engines with reuse workspaces.
+- **Compression**: Raw DEFLATE and Snappy (S2 compatible) compression; Snappy output is cross-checked against Go S2.
 - **Session Cryptography**: P-384 ECDH key exchange and continuous AES-256-CTR session encryption with native Zig standard library primitives.
 - **Modern Bedrock Authentication (Protocols $\ge$ 898 / Minecraft $\ge$ 1.21.130)**:
   - RFC 7517 JWKS catalog parser (`bedwire.auth.KeySet`) for Microsoft's authentication keys.
@@ -21,7 +21,7 @@ Minecraft: Bedrock Edition session networking for Zig 0.16.0.
   - 3-link Mojang certificate chain verification against pinned Mojang root public key (`moj_root`).
 - **Strict Protocol Gating & Anti-Downgrade**:
   - Wire framing (`legacy_chain` vs `envelope`) is explicit session policy; login flow is supplied by the selected protocol profile.
-  - Atomic failure rollback: any verification or decoding error zeroes cryptographic state and resets session to `.disconnected`.
+  - A batch is admitted whole or not at all. Failed ingest or authentication closes the session and zeroes its key material.
 - **Zero-Allocation Steady State**:
   - Fixed-capacity shared `BufferPool` with generational slot recycling and zero heap allocations during steady-state packet I/O.
 - **Zero Network I/O**: Pure in-memory cryptographic and protocol engine. The host application retains full ownership over HTTP fetching, caching, and network carriers.
@@ -71,16 +71,12 @@ var pool = try bedwire.BufferPool.init(allocator, limits, bedwire.PoolConfig.con
 defer pool.deinit();
 
 // Create a session using protocol-zig's current profile
-var session = try bedwire.Session.init(
-    allocator,
-    .server,
-    .{ .pool = &pool, .limits = limits },
-);
+var session = try bedwire.Session.init(.server, .{ .pool = &pool, .limits = limits });
 defer session.deinit();
 ```
 
 For a third-party multiversion profile, use
-`bedwire.SessionWithProfile(MyProfile).init(allocator, .server, options)`.
+`bedwire.SessionWithProfile(MyProfile).init(.server, options)`.
 The profile must implement `bedrock_protocol.validateProfile`'s compile-time
 contract. Profiles are selected per session type; there is no global registry.
 Set `options.policy.connection_request_format = .legacy_chain` for a profile
@@ -107,7 +103,7 @@ while (packets.next()) |packet| {
 
 ```zig
 // Encode packets into an outbound wire frame (compressed and encrypted if enabled)
-var frame = try session.encode(&.{ packet_one_bytes, packet_two_bytes });
+const frame = try session.encode(&.{ packet_one_bytes, packet_two_bytes });
 defer frame.release();
 
 // Send frame.bytes over carrier (e.g. RakNet or NetherNet)
@@ -190,7 +186,7 @@ Once identity is verified, the server sends the `ServerToClientHandshake` packet
 
 ```zig
 // 1. Send ServerToClientHandshake packet to client (sent in the clear)
-// var frame = try session.encodeOne(server_handshake_packet);
+// const frame = try session.encodeOne(server_handshake_packet);
 // defer frame.release();
 // try carrier.send(frame.bytes);
 
@@ -240,7 +236,7 @@ zig build test -Doptimize=ReleaseFast
 Verify formatting across sources and tests:
 
 ```sh
-zig fmt --check build.zig build.zig.zon src tests tools/interop/export.zig
+zig fmt --check build.zig build.zig.zon src tests bench tools/interop/export.zig
 ```
 
 ### Cross-Language Interoperability
@@ -248,7 +244,7 @@ zig fmt --check build.zig build.zig.zon src tests tools/interop/export.zig
 The `tools/interop` suite provides standalone bidirectional verification against Go S2 (pinned via `tools/interop/go.mod`):
 
 1. Cross-decodes Zig Snappy frames using Go S2.
-2. Refreshes deterministic test fixtures (`tests/compression/interop.json`) for raw DEFLATE, Snappy, continuous AES-256-CTR, and P-384 ECDH.
+2. Fails if the Go-generated fixtures (`tests/compression/interop.json`) for raw DEFLATE, Snappy, continuous AES-256-CTR and P-384 ECDH are stale. Pass `--update` to rewrite them.
 
 Running the interoperability check requires Python 3 and Go 1.25+:
 

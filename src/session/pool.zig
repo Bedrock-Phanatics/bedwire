@@ -165,12 +165,6 @@ pub const BufferPool = struct {
         return slot;
     }
 
-    pub fn totalBytes(self: *const BufferPool) usize {
-        return self.rx_storage.len + self.tx_storage.len +
-            (self.rx_slots.len * @sizeOf(RxSlot)) +
-            (self.tx_slots.len * @sizeOf(TxSlot));
-    }
-
     pub fn storageBytes(self: *const BufferPool) usize {
         return self.rx_storage.len + self.tx_storage.len;
     }

@@ -10,7 +10,7 @@ test "deterministic malformed IO keeps commits and pool leases consistent" {
     var prng = std.Random.DefaultPrng.init(0xbed004);
     const random = prng.random();
     for (0..@import("build_options").fuzz_iterations) |_| {
-        var session = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
+        var session = try support.Session.init(.client, .{ .pool = &pool });
         defer session.deinit();
         session.state = .in_game;
         session.peer_key = bedwire.auth.moj_root.key();
@@ -76,7 +76,7 @@ test "held frame applies backpressure without changing bytes or crypto" {
 test "close retains held frame until release and clears peer identity" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
-    var session = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
+    var session = try support.Session.init(.client, .{ .pool = &pool });
     defer session.deinit();
     session.state = .in_game;
     session.peer_key = bedwire.auth.moj_root.key();
@@ -156,7 +156,7 @@ test "both adapters close on handler failure and preserve send borrows during re
         const Adapter = if (nether) bedwire.transport.NetherNetWithProfile(support.modern, Connection, Handler) else bedwire.transport.RakNetWithProfile(support.modern, Connection, Handler);
         var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
         defer pool.deinit();
-        var session = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
+        var session = try support.Session.init(.client, .{ .pool = &pool });
         defer session.deinit();
         session.state = .in_game;
         var connection: Connection = .{ .session = &session };
@@ -211,7 +211,7 @@ const PumpChannel = struct {
 test "pump rejects reentry before receive and closes if consumed data cannot be admitted" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
-    var session = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
+    var session = try support.Session.init(.client, .{ .pool = &pool });
     defer session.deinit();
     session.state = .in_game;
     var builder: support.Builder = .{};
@@ -282,7 +282,7 @@ test "shared RX backpressure preserves ciphertext for retry and held packets sur
     defer pool.deinit();
     var sessions: [3]support.Session = undefined;
     for (&sessions) |*session| {
-        session.* = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
+        session.* = try support.Session.init(.client, .{ .pool = &pool });
         session.state = .in_game;
         session.crypto = bedwire.crypto.SessionCrypto.init(@splat(0x42));
     }

@@ -205,10 +205,10 @@ pub fn PairFor(comptime profile: type) type {
             errdefer pool.deinit();
 
             const policy: bedwire.SessionPolicy = .{ .connection_request_format = if (profile == legacy) .legacy_chain else .envelope };
-            var server = try ProfileSession.init(allocator, .server, .{ .limits = limits, .pool = pool, .policy = policy });
+            var server = try ProfileSession.init(.server, .{ .limits = limits, .pool = pool, .policy = policy });
             errdefer server.deinit();
 
-            var client = try ProfileSession.init(allocator, .client, .{ .limits = limits, .pool = pool, .policy = policy });
+            var client = try ProfileSession.init(.client, .{ .limits = limits, .pool = pool, .policy = policy });
             errdefer client.deinit();
 
             return .{

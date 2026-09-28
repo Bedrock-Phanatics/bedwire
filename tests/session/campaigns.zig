@@ -18,9 +18,9 @@ test "deterministic session operation sequences preserve leases and commits" {
     const cycles = @max(32, @import("build_options").fuzz_iterations / 100);
 
     for (0..cycles) |_| {
-        var sender = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
+        var sender = try support.Session.init(.client, .{ .pool = &pool });
         defer sender.deinit();
-        var receiver = try support.Session.init(testing.allocator, .server, .{ .pool = &pool });
+        var receiver = try support.Session.init(.server, .{ .pool = &pool });
         defer receiver.deinit();
         sender.state = .in_game;
         receiver.state = .in_game;
@@ -119,7 +119,7 @@ test "mutated compressed frames release leases and keep commits atomic" {
     var prng = std.Random.DefaultPrng.init(0xf6a9e);
     const random = prng.random();
     for ([_]bedwire.compression.Algorithm{ .deflate, .snappy }) |algorithm| {
-        var sender = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
+        var sender = try support.Session.init(.client, .{ .pool = &pool });
         defer sender.deinit();
         sender.state = .in_game;
         try sender.compression.negotiate(algorithm, 0);
@@ -133,7 +133,7 @@ test "mutated compressed frames release leases and keep commits atomic" {
 
         const cases = @max(64, @import("build_options").fuzz_iterations / 40);
         for (0..cases) |i| {
-            var receiver = try support.Session.init(testing.allocator, .server, .{ .pool = &pool });
+            var receiver = try support.Session.init(.server, .{ .pool = &pool });
             defer receiver.deinit();
             receiver.state = .in_game;
             try receiver.compression.negotiate(algorithm, 0);
@@ -162,8 +162,8 @@ test "shared pool remains reusable after repeated session deinit" {
     const packet = support.packet(&storage, support.opaque_packet_id, "reuse");
 
     for (0..cycles) |_| {
-        var sender = try support.Session.init(testing.allocator, .client, .{ .pool = &pool });
-        var receiver = try support.Session.init(testing.allocator, .server, .{ .pool = &pool });
+        var sender = try support.Session.init(.client, .{ .pool = &pool });
+        var receiver = try support.Session.init(.server, .{ .pool = &pool });
         sender.state = .in_game;
         receiver.state = .in_game;
         const frame = try sender.encodeOne(packet);
@@ -192,7 +192,7 @@ test "deterministic malformed codec campaign" {
     var pool = try bedwire.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = limits });
+    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = limits });
     defer session.deinit();
 
     var flate_history: [bedwire.compression.flate.history_len]u8 = undefined;

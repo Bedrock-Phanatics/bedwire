@@ -81,7 +81,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
         /// invalidates every Packet slice from that lease. EOF and close retain storage.
         pub const Packets = struct {
             reader: batch.Reader,
-            len: usize,
             session: *Self,
             generation: u64,
             exhausted: bool = false,
@@ -131,7 +130,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
         /// Serialize access to each Session, including release. Independent Sessions
         /// may share a pool. Keep the Session at a stable address while leases exist.
-        allocator: std.mem.Allocator,
         policy: SessionPolicy,
         limits: Limits,
         role: Role,
@@ -149,11 +147,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
         generation: u64 = 0,
         active_generation: ?u64 = null,
 
-        pub fn init(
-            allocator: std.mem.Allocator,
-            role: Role,
-            options: Options,
-        ) !Self {
+        pub fn init(role: Role, options: Options) !Self {
             const limits = if (options.limits) |l| blk: {
                 try l.validate();
                 if (l.max_frame_bytes > options.pool.limits.max_frame_bytes) return error.IncompatibleLimits;
@@ -162,7 +156,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             } else options.pool.limits;
 
             return .{
-                .allocator = allocator,
                 .policy = options.policy,
                 .limits = limits,
                 .role = role,
@@ -253,7 +246,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
             return .{
                 .reader = reader,
-                .len = observed.count,
                 .session = self,
                 .generation = self.generation,
             };
@@ -429,7 +421,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             const req = try wire.decodeConnectionRequest(connection_request_bytes, self.limits);
 
             var envelope = try wire.parseChainEnvelope(allocator, req.chain_data, self.limits);
-            defer envelope.deinit(allocator);
+            defer envelope.deinit();
 
             switch (self.policy.connection_request_format) {
                 .legacy_chain => {

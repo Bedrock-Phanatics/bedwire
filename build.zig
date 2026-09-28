@@ -58,4 +58,13 @@ pub fn build(b: *std.Build) void {
         .dependOn(&b.addRunArtifact(bench).step);
     b.step("bench-build", "Build the benchmark binary without running it")
         .dependOn(&b.addInstallArtifact(bench, .{}).step);
+
+    const interop = b.addExecutable(.{ .name = "interop-export", .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/interop/export.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "bedwire", .module = bedwire }},
+    }) });
+    b.step("interop", "Build the Snappy exporter used by tools/interop/check.py")
+        .dependOn(&b.addInstallArtifact(interop, .{}).step);
 }

@@ -95,7 +95,7 @@ test "a version that does not support Snappy refuses to negotiate it" {
 
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
-    var session = try bedwire.SessionWithProfile(Profile).init(testing.allocator, .server, .{ .pool = &pool, .limits = support.limits });
+    var session = try bedwire.SessionWithProfile(Profile).init(.server, .{ .pool = &pool, .limits = support.limits });
     defer session.deinit();
 
     try testing.expectError(error.UnsupportedCompression, session.compression.negotiate(.snappy, 0));
@@ -146,7 +146,7 @@ test "a DEFLATE bomb is bounded by the batch limit, not by memory" {
 
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
-    var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = tight });
+    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
     try session.compression.negotiate(.deflate, 0);
@@ -165,7 +165,7 @@ test "a Snappy bomb is refused on its advertised length alone" {
 
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
-    var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = tight });
+    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
     try session.compression.negotiate(.snappy, 0);
@@ -181,7 +181,7 @@ test "compression that cannot beat the frame limit fails cleanly" {
     for ([_]Algorithm{ .deflate, .snappy }) |algorithm| {
         var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
         defer pool.deinit();
-        var session = try support.Session.init(testing.allocator, .server, .{ .pool = &pool, .limits = tight });
+        var session = try support.Session.init(.server, .{ .pool = &pool, .limits = tight });
         defer session.deinit();
         session.state = .in_game;
         try session.compression.negotiate(algorithm, 0);

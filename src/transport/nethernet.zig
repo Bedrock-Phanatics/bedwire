@@ -123,11 +123,11 @@ test "pump accepts reliable messages and refuses unreliable ones" {
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var peer_session = try Session.init(allocator, .server, .{ .limits = limits, .pool = &pool });
+    var peer_session = try Session.init(.server, .{ .limits = limits, .pool = &pool });
     defer peer_session.deinit();
     peer_session.state = .in_game;
 
-    var local = try Session.init(allocator, .client, .{ .limits = limits, .pool = &pool });
+    var local = try Session.init(.client, .{ .limits = limits, .pool = &pool });
     defer local.deinit();
     local.state = .in_game;
 
@@ -154,7 +154,7 @@ test "terminal connection failure in pump disconnects the session" {
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var local = try Session.init(allocator, .client, .{ .limits = limits, .pool = &pool });
+    var local = try Session.init(.client, .{ .limits = limits, .pool = &pool });
     defer local.deinit();
     local.state = .in_game;
 
@@ -170,7 +170,7 @@ test "pump closes on upstream terminal receive failures" {
     inline for (.{ error.ConnectionClosed, error.Timeout, error.ReassemblyTimeout }) |receive_error| {
         var pool = try session_mod.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 1, .tx_slots = 1 });
         defer pool.deinit();
-        var local = try Session.init(testing.allocator, .client, .{ .pool = &pool });
+        var local = try Session.init(.client, .{ .pool = &pool });
         defer local.deinit();
         local.state = .in_game;
         var channel: Channel = .{ .receive_error = receive_error };
@@ -186,7 +186,7 @@ test "pump closes on upstream terminal receive failures" {
 test "pump preserves session on canceled wait" {
     var pool = try session_mod.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
-    var local = try Session.init(testing.allocator, .client, .{ .pool = &pool });
+    var local = try Session.init(.client, .{ .pool = &pool });
     defer local.deinit();
     local.state = .in_game;
     var channel: Channel = .{ .receive_error = error.Canceled };
@@ -204,7 +204,7 @@ test "adapter sends reliable frames and stops once closed" {
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var local = try Session.init(allocator, .client, .{ .limits = limits, .pool = &pool });
+    var local = try Session.init(.client, .{ .limits = limits, .pool = &pool });
     defer local.deinit();
     local.state = .in_game;
 

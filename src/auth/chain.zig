@@ -4,8 +4,8 @@ const Limits = @import("../limits.zig").Limits;
 const jwt = @import("jwt.zig");
 const spki = @import("../crypto/spki.zig");
 
-pub const moj_root = @import("moj_root.zig");
-pub const identity_mod = @import("identity.zig");
+const moj_root = @import("moj_root.zig");
+const identity_mod = @import("identity.zig");
 pub const Identity = identity_mod.Identity;
 
 pub const ChainPolicy = struct {
