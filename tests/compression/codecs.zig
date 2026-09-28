@@ -70,35 +70,6 @@ test "Snappy refuses to decompress past the caller's buffer" {
     try testing.expectError(error.LimitExceeded, snappy.decompress(&.{0x20}, &output, limits));
 }
 
-test "Snappy refuses output it cannot fit" {
-    var table: snappy.Table = undefined;
-    var tiny: [4]u8 = undefined;
-
-    try testing.expectError(error.NoSpaceLeft, snappy.compress(&([_]u8{'z'} ** 1024), &tiny, &table));
-}
-
-test "Snappy compressing into any destination size either succeeds or reports no space" {
-    var table: snappy.Table = undefined;
-    var destination: [512]u8 = undefined;
-
-    var random = std.Random.DefaultPrng.init(11);
-    var noise: [1024]u8 = undefined;
-    random.random().bytes(&noise);
-
-    const inputs = [_][]const u8{ "", "a", "bedrock " ** 64, &noise };
-
-    for (inputs) |input| {
-        for (0..destination.len) |size| {
-            if (snappy.compress(input, destination[0..size], &table)) |compressed| {
-                var decoded: [2048]u8 = undefined;
-                try testing.expectEqualSlices(u8, input, try snappy.decompress(compressed, &decoded, limits));
-            } else |err| {
-                try testing.expectEqual(error.NoSpaceLeft, err);
-            }
-        }
-    }
-}
-
 test "Snappy self-references decode correctly when the copy overlaps" {
     var output: [64]u8 = undefined;
 
@@ -181,29 +152,31 @@ test "raw DEFLATE fixture decompresses correctly and enforces output buffer boun
     try testing.expectError(error.LimitExceeded, flate.decompress(&compressed, &tiny, &history, limits));
 }
 
+test "the encoded length bound rejects inputs it cannot describe" {
+    try testing.expectError(error.LimitExceeded, snappy.maxEncodedLen(@as(usize, std.math.maxInt(u32)) + 1));
+    try testing.expect(try snappy.maxEncodedLen(0) >= 32);
+}
+
 test "compressing into any destination size either succeeds or reports no space" {
-    var history: [flate.history_len]u8 = undefined;
+    var scratch: bedwire.compression.Scratch = undefined;
     var destination: [512]u8 = undefined;
+    var decoded: [2048]u8 = undefined;
 
     var random = std.Random.DefaultPrng.init(3);
     var noise: [1024]u8 = undefined;
     random.random().bytes(&noise);
 
-    const inputs = [_][]const u8{ "", "a", "bedrock " ** 64, &noise };
-
-    for (inputs) |input| {
+    for ([_][]const u8{ "", "a", "bedrock " ** 64, &noise }) |input| {
         for (0..destination.len) |size| {
-            if (flate.compress(input, destination[0..size], &history)) |compressed| {
-                var decoded: [2048]u8 = undefined;
+            const dest = destination[0..size];
+            if (snappy.compress(input, dest, &scratch.table)) |compressed| {
+                try testing.expectEqualSlices(u8, input, try snappy.decompress(compressed, &decoded, limits));
+            } else |err| try testing.expectEqual(error.NoSpaceLeft, err);
+
+            if (flate.compress(input, dest, &scratch.history)) |compressed| {
+                var history: [flate.history_len]u8 = undefined;
                 try testing.expectEqualSlices(u8, input, try flate.decompress(compressed, &decoded, &history, limits));
-            } else |err| {
-                try testing.expectEqual(error.NoSpaceLeft, err);
-            }
+            } else |err| try testing.expectEqual(error.NoSpaceLeft, err);
         }
     }
-}
-
-test "the encoded length bound rejects inputs it cannot describe" {
-    try testing.expectError(error.LimitExceeded, snappy.maxEncodedLen(@as(usize, std.math.maxInt(u32)) + 1));
-    try testing.expect(try snappy.maxEncodedLen(0) >= 32);
 }

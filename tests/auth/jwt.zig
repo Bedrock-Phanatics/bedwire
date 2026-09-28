@@ -272,18 +272,12 @@ test "RS256 token parses and verifies with valid RSA key" {
     try testing.expectError(error.ExpiredToken, token.validateTime(2500000000, true));
 }
 
-test "RS256 token rejects parse when parsed as ES384" {
+test "RS256 and ES384 tokens are never accepted as each other" {
     const allocator = testing.allocator;
     try testing.expectError(error.UnsupportedAlgorithm, jwt.Token.parse(allocator, support.rsa_valid_jwt, support.limits));
-}
 
-test "ES384 token rejects parse when parsed as RS256 and rejects verifyRsa" {
-    const allocator = testing.allocator;
-    const key = try support.deterministicKey(1);
-
-    const encoded = try support.signToken(allocator, key, "{\"alg\":\"ES384\"}", "{\"exp\":200}");
+    const encoded = try support.signToken(allocator, try support.deterministicKey(1), "{\"alg\":\"ES384\"}", "{\"exp\":200}");
     defer allocator.free(encoded);
-
     try testing.expectError(error.UnsupportedAlgorithm, jwt.Token.parseWithAlgorithm(allocator, encoded, support.limits, .RS256));
 
     var token = try jwt.Token.parse(allocator, encoded, support.limits);
