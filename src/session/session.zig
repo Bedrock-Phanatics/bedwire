@@ -525,7 +525,9 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             const allowed = switch (next) {
                 .resource_packs => switch (self.state) {
                     .encrypted_handshake => self.crypto != null and self.exchanged(.client_to_server_handshake, .client),
-                    .authenticating => self.policy.encryption == .optional and self.exchanged(.login, .client),
+                    // A server must hold an authenticated client key even without encryption.
+                    .authenticating => self.policy.encryption == .optional and self.exchanged(.login, .client) and
+                        (self.role == .client or self.peer_key != null),
                     else => false,
                 },
                 .waiting_for_start_game => self.state == .resource_packs,

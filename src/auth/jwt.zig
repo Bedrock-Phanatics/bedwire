@@ -43,9 +43,7 @@ pub const Token = struct {
         limits: Limits,
         expected_alg: Algorithm,
     ) !Token {
-        const json_limit = try std.math.add(usize, limits.max_jwt_header_bytes, limits.max_jwt_payload_bytes);
-        const encoded_limit = try std.math.mul(usize, json_limit, 2);
-        const max_size = try std.math.add(usize, encoded_limit, 350);
+        const max_size = (limits.max_jwt_header_bytes +| limits.max_jwt_payload_bytes) *| 2 +| 350;
         if (input.len > max_size) return error.LimitExceeded;
 
         var parts = std.mem.splitScalar(u8, input, '.');

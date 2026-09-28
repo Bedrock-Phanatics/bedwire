@@ -275,6 +275,8 @@ test "optional encryption lets a session skip the encrypted handshake" {
     try pair.client.negotiateCompression(.snappy, 0);
     try pair.clientToServerDiscard(&.{build.make(descriptor, .login)});
 
+    try testing.expectError(error.InvalidState, pair.server.advance(.resource_packs));
+    try pair.server.installVerifiedClientKey((try support.deterministicKey(1)).public_key);
     try pair.server.advance(.resource_packs);
     try testing.expect(!pair.server.encrypted());
     try pair.client.advance(.resource_packs);
