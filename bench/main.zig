@@ -1,5 +1,3 @@
-//! benchmarks for bedwire hot path (zig build bench)
-
 const std = @import("std");
 const bedwire = @import("bedwire");
 
@@ -73,7 +71,6 @@ const limits: bedwire.Limits = .{
     .max_packet_bytes = 1 << 20,
 };
 
-/// One packet of `len` bytes, header included
 fn makePacket(storage: []u8, id: u16, len: usize) []const u8 {
     const header = bedwire.framing.varint.writeU32(storage, id) catch unreachable;
     for (storage[header..len], 0..) |*byte, i| byte.* = @truncate(i *% 31 +% 7);
@@ -134,8 +131,7 @@ fn open(comptime Profile: type, allocator: std.mem.Allocator, pool: *bedwire.Buf
     var session = try bedwire.SessionWithProfile(Profile).init(allocator, role, .{ .pool = pool, .limits = limits });
     errdefer session.deinit();
 
-    try session.compression.negotiate(setup.algorithm orelse .deflate, 0);
-    if (setup.algorithm == null) session.compression.threshold = std.math.maxInt(u16);
+    try session.compression.negotiate(setup.algorithm orelse .none, 0);
     if (setup.encrypt) session.crypto = bedwire.crypto.SessionCrypto.init(@splat(0x42));
     session.state = .in_game;
 
@@ -333,9 +329,6 @@ fn benchState(comptime Profile: type, io: std.Io, name: []const u8, iterations: 
 }
 
 fn benchBatchSplit(io: std.Io, allocator: std.mem.Allocator, packets: []const []const u8, iterations: usize) !Result {
-    var assembled: std.ArrayList(u8) = .empty;
-    defer assembled.deinit(allocator);
-
     const storage = try allocator.alloc(u8, limits.max_batch_bytes);
     defer allocator.free(storage);
 
@@ -448,7 +441,6 @@ pub fn main(init: std.process.Init) !void {
     var stdout = std.Io.File.stdout().writerStreaming(init.io, &buffer);
     const out = &stdout.interface;
 
-    // a single small packet, a typical gameplay batch, and a chunk-sized batch
     var single_storage: [64]u8 = undefined;
     const single: []const []const u8 = &.{makePacket(&single_storage, 1020, 32)};
 
@@ -483,7 +475,7 @@ pub fn main(init: std.process.Init) !void {
         for (workloads) |workload| {
             var name_storage: [64]u8 = undefined;
             const name = try std.fmt.bufPrint(&name_storage, "  encode {s} / {s}", .{ workload.name, case.name });
-            (try benchSend(protocol.Current, init.io, allocator, &pool, name, case.setup, workload.packets, workload.iterations)).report(out) catch {};
+            try (try benchSend(protocol.Current, init.io, allocator, &pool, name, case.setup, workload.packets, workload.iterations)).report(out);
         }
     }
 
@@ -492,7 +484,7 @@ pub fn main(init: std.process.Init) !void {
         for (workloads) |workload| {
             var name_storage: [64]u8 = undefined;
             const name = try std.fmt.bufPrint(&name_storage, "  ingest {s} / {s}", .{ workload.name, case.name });
-            (try benchIngest(protocol.Current, init.io, allocator, &pool, name, case.setup, workload.packets, workload.iterations)).report(out) catch {};
+            try (try benchIngest(protocol.Current, init.io, allocator, &pool, name, case.setup, workload.packets, workload.iterations)).report(out);
         }
     }
 

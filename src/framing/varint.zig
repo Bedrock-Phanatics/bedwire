@@ -4,7 +4,7 @@ pub const max_u32_bytes = 5;
 
 pub const Decoded = struct { value: u32, len: usize };
 
-/// reads a u32 varint (leb128), rejects overlong sequences
+/// Rejects non-canonical encodings.
 pub fn readU32(input: []const u8) !Decoded {
     var value: u32 = 0;
     var shift: u5 = 0;
@@ -31,7 +31,6 @@ pub fn sizeU32(value: u32) usize {
     return len;
 }
 
-/// writes u32 as varint into dest, returns bytes written
 pub fn writeU32(dest: []u8, value: u32) !usize {
     const len = sizeU32(value);
     if (len > dest.len) return error.NoSpaceLeft;

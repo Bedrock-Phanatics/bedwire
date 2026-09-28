@@ -1,5 +1,3 @@
-//! tests integration between bedwire sessions and protocol-zig packet codecs
-
 const std = @import("std");
 const bedwire = @import("bedwire");
 const protocol = @import("bedrock_protocol");
@@ -23,7 +21,6 @@ test "a full handshake runs on packets encoded and decoded by protocol-zig" {
 
     var storage: [1024]u8 = undefined;
 
-    // client sends RequestNetworkSettings
     {
         const id = descriptor.packetId(.request_network_settings).?;
         const bytes = try encodePacket(&storage, .{ .request_network_settings = .{ .client_network_version = @intCast(protocol.Current.protocol_number) } }, id);
@@ -37,7 +34,6 @@ test "a full handshake runs on packets encoded and decoded by protocol-zig" {
         try testing.expectEqual(@as(i32, @intCast(protocol.Current.protocol_number)), envelope.value.typed.request_network_settings.client_network_version);
     }
 
-    // server responds with NetworkSettings
     {
         const id = descriptor.packetId(.network_settings).?;
         const settings: protocol.packets.network_settings.Packet = .{
@@ -63,7 +59,6 @@ test "a full handshake runs on packets encoded and decoded by protocol-zig" {
     try testing.expectEqual(bedwire.compression.Algorithm.snappy, pair.client.compression.algorithm);
     try testing.expectEqual(@as(u16, 256), pair.client.compression.threshold);
 
-    // client sends Login
     {
         const id = descriptor.packetId(.login).?;
         const bytes = try encodePacket(&storage, .{ .login = .{ .client_network_version = @intCast(protocol.Current.protocol_number), .connection_request = "blob" } }, id);
@@ -77,7 +72,6 @@ test "a full handshake runs on packets encoded and decoded by protocol-zig" {
         try testing.expectEqualStrings("blob", envelope.value.typed.login.connection_request);
     }
 
-    // server sends ServerToClientHandshake
     {
         const key = try support.deterministicKey(4);
         const token = try bedwire.auth.login.serverHandshake(allocator, key, @splat(9), support.limits);
@@ -98,7 +92,6 @@ test "a full handshake runs on packets encoded and decoded by protocol-zig" {
         try pair.server.installServerCrypto(key.secret_key, @splat(9));
     }
 
-    // client sends ClientToServerHandshake (now encrypted)
     {
         const id = descriptor.packetId(.client_to_server_handshake).?;
         const bytes = try encodePacket(&storage, .{ .client_to_server_handshake = .{} }, id);

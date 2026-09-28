@@ -29,7 +29,6 @@ fn completeHandshake(allocator: std.mem.Allocator, algorithm: bedwire.compressio
     const handshake_token = try bedwire.auth.login.serverHandshake(allocator, server_key, @splat(9), support.limits);
     defer allocator.free(handshake_token);
 
-    // Negotiation.
     try testing.expectEqual(State.transport_ready, pair.client.state);
     try pair.clientToServerDiscard(&.{build.make(descriptor, .request_network_settings)});
     try testing.expectEqual(State.network_settings, pair.client.state);
@@ -41,7 +40,6 @@ fn completeHandshake(allocator: std.mem.Allocator, algorithm: bedwire.compressio
     try testing.expectEqual(State.authenticating, pair.server.state);
     try testing.expectEqual(State.authenticating, pair.client.state);
 
-    // Authentication.
     try pair.clientToServerDiscard(&.{build.make(descriptor, .login)});
     var identity = try pair.server.authenticateChain(allocator, chain, client_data, .{
         .now = 100,
@@ -51,7 +49,6 @@ fn completeHandshake(allocator: std.mem.Allocator, algorithm: bedwire.compressio
     try testing.expectEqualStrings("Steve", identity.display_name);
     try testing.expect(identity.online);
 
-    // handshake packet travels in the clear before crypto kicks in
     try testing.expect(!pair.server.encrypted());
     try pair.serverToClientDiscard(&.{build.make(descriptor, .server_to_client_handshake)});
     try pair.server.installServerCrypto(server_key.secret_key, @splat(9));
@@ -65,7 +62,6 @@ fn completeHandshake(allocator: std.mem.Allocator, algorithm: bedwire.compressio
     try pair.client.advance(.resource_packs);
     try pair.server.advance(.resource_packs);
 
-    // Resource packs, then spawn.
     try pair.serverToClientDiscard(&.{build.make(descriptor, .resource_packs_info)});
     try pair.clientToServerDiscard(&.{build.make(descriptor, .resource_pack_client_response)});
     try pair.serverToClientDiscard(&.{build.make(descriptor, .resource_pack_stack)});
@@ -84,7 +80,6 @@ fn completeHandshake(allocator: std.mem.Allocator, algorithm: bedwire.compressio
     try pair.client.advance(.in_game);
     try pair.server.advance(.in_game);
 
-    // gameplay traffic encrypted in both directions
     var gameplay: [3][]const u8 = undefined;
     var storage: [3][64]u8 = undefined;
     for (&gameplay, 0..) |*slot, i| {
@@ -211,13 +206,11 @@ test "subclient IDs other than 0 are rejected" {
     pair.client.state = .in_game;
     pair.server.state = .in_game;
 
-    // primary subclient (0) is fine
     var normal_storage: [16]u8 = undefined;
     var packets = try pair.clientToServer(&.{support.subclientPacket(&normal_storage, 1020, 0, 0)});
     defer packets.deinit();
     try testing.expectEqual(null, packets.next().?.kind);
 
-    // non-zero subclients not supported yet
     var sender_storage: [16]u8 = undefined;
     const bad_sender = support.subclientPacket(&sender_storage, 1020, 1, 0);
     try testing.expectError(error.InvalidState, pair.client.encodeOne(bad_sender));
@@ -384,15 +377,12 @@ test "gameplay enforces known packet directions between client and server" {
     pair.client.state = .in_game;
     pair.server.state = .in_game;
 
-    // client -> server only
     var p1 = try pair.clientToServer(&.{build.make(descriptor, .server_bound_data_store)});
     try testing.expectEqual(bedwire.PacketKind.server_bound_data_store, p1.next().?.kind);
     p1.deinit();
 
-    // server can't send this
     try testing.expectError(error.InvalidState, pair.server.encodeOne(build.make(descriptor, .server_bound_data_store)));
 
-    // server -> client only
     var storage1: [16]u8 = undefined;
     var storage2: [16]u8 = undefined;
     const pkt_status = support.packet(&storage1, support.packetId(descriptor, .play_status), "\x00");
@@ -402,11 +392,9 @@ test "gameplay enforces known packet directions between client and server" {
     try testing.expectEqual(bedwire.PacketKind.chunk_radius_updated, p2.next().?.kind);
     p2.deinit();
 
-    // client can't send these
     try testing.expectError(error.InvalidState, pair.client.encodeOne(build.make(descriptor, .play_status)));
     try testing.expectError(error.InvalidState, pair.client.encodeOne(build.make(descriptor, .chunk_radius_updated)));
 
-    // .other is bidirectional
     var p3 = try pair.clientToServer(&.{build.makeId(1020)});
     try testing.expectEqual(null, p3.next().?.kind);
     p3.deinit();

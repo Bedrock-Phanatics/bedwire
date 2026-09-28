@@ -1,7 +1,4 @@
-//! bedrock session layer
-//!
-//! sits between transport (raknet, nethernet) and packet codecs.
-//! handles 0xfe framing, compression, encryption, auth and handshake state.
+//! Minecraft Bedrock session layer between transports and packet codecs.
 
 const std = @import("std");
 
@@ -32,7 +29,7 @@ pub const framing = struct {
 
 pub const compression = struct {
     pub const Compression = @import("compression/algorithm.zig").Compression;
-    pub const Workspace = @import("compression/algorithm.zig").Workspace;
+    pub const Scratch = @import("compression/algorithm.zig").Scratch;
     pub const Algorithm = @import("compression/algorithm.zig").Algorithm;
     pub const flate = @import("compression/flate.zig");
     pub const snappy = @import("compression/snappy.zig");
@@ -79,8 +76,7 @@ pub const resource_packs = struct {
     pub const serve = @import("resource_packs/transfer.zig").serve;
 };
 
-/// Optional, comptime-generic transport bindings. Neither imports its transport,
-/// so depending on Bedwire never pulls in RakNet or libdatachannel.
+/// Comptime-generic adapters; neither imports its transport library.
 pub const transport = struct {
     pub const RakNet = @import("transport/raknet.zig").RakNet;
     pub const RakNetWithProfile = @import("transport/raknet.zig").RakNetWithProfile;

@@ -3,7 +3,6 @@ const std = @import("std");
 const Limits = @import("../limits.zig").Limits;
 const spki = @import("../crypto/spki.zig");
 
-// bedrock uses es384 for legacy chains and client data, rs256 for modern oidc
 pub const algorithm = "ES384";
 
 pub const Algorithm = enum {
@@ -23,7 +22,6 @@ pub const Signature = union(Algorithm) {
     RS256: [256]u8,
 };
 
-/// parsed compact jwt (header.payload.signature)
 pub const Token = struct {
     allocator: std.mem.Allocator,
     header_bytes: []u8,
@@ -141,7 +139,6 @@ pub const Token = struct {
         }
     }
 
-    /// check exp and nbf timestamps
     pub fn validateTime(self: *const Token, now: i64, required: bool) !void {
         if (self.payload.value.object.get("exp")) |exp| {
             if (exp != .integer or exp.integer <= now) return error.ExpiredToken;
@@ -153,7 +150,7 @@ pub const Token = struct {
     }
 };
 
-/// checks json nesting depth before parsing so malicious tokens don't blow the stack
+/// Bounds nesting before std.json sees the input.
 pub fn parseJson(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) !std.json.Parsed(std.json.Value) {
     if (bytes.len > @max(limits.max_jwt_header_bytes, limits.max_jwt_payload_bytes)) return error.LimitExceeded;
     if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUtf8;

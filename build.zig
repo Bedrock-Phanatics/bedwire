@@ -41,11 +41,12 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
     test_step.dependOn(&b.addRunArtifact(suite).step);
 
-    const bench_bedwire = b.addModule("bedwire_bench_lib", .{
+    const bench_protocol = b.dependency("bedrock_protocol", .{ .target = target, .optimize = .ReleaseFast });
+    const bench_bedwire = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = .ReleaseFast,
-        .imports = &.{.{ .name = "bedrock_protocol", .module = protocol_module }},
+        .imports = &.{.{ .name = "bedrock_protocol", .module = bench_protocol.module("bedrock_protocol") }},
     });
     const bench = b.addExecutable(.{ .name = "bedwire-bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/main.zig"),

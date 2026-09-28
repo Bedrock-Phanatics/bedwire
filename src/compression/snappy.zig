@@ -3,19 +3,23 @@ const std = @import("std");
 const Limits = @import("../limits.zig").Limits;
 const varint = @import("../framing/varint.zig");
 
-// 16k entry lookup table for snappy matches
-pub const Table = [16384]u32;
+const max_table_bits = 14;
+pub const Table = [1 << max_table_bits]u32;
 
 pub fn maxEncodedLen(len: usize) !usize {
     if (len > std.math.maxInt(u32)) return error.LimitExceeded;
     return std.math.add(usize, try std.math.add(usize, len, len / 6), 32);
 }
 
-/// snappy raw block compressor
 pub fn compress(input: []const u8, output: []u8, table: *Table) ![]u8 {
     if (input.len > std.math.maxInt(u32)) return error.LimitExceeded;
 
-    if (input.len >= 4) @memset(table, std.math.maxInt(u32));
+    // Only the prefix sized to the input is hashed into, so only it needs clearing.
+    var table_bits: u5 = 8;
+    while (table_bits < max_table_bits and @as(usize, 1) << table_bits < input.len) table_bits += 1;
+    const shift: u5 = @intCast(32 - @as(u6, table_bits));
+    if (input.len >= 4) @memset(table[0 .. @as(usize, 1) << table_bits], std.math.maxInt(u32));
+
     var writer: Cursor = .{ .bytes = output };
     try writer.varInt(@intCast(input.len));
 
@@ -24,7 +28,7 @@ pub fn compress(input: []const u8, output: []u8, table: *Table) ![]u8 {
 
     while (input.len - cursor >= 4) {
         const word = std.mem.readInt(u32, input[cursor..][0..4], .little);
-        const slot = (word *% 0x1e35a7bd) >> 18;
+        const slot = (word *% 0x1e35a7bd) >> shift;
         const previous: usize = table[slot];
         table[slot] = @intCast(cursor);
 
@@ -59,12 +63,9 @@ pub fn compress(input: []const u8, output: []u8, table: *Table) ![]u8 {
     return output[0..writer.cursor];
 }
 
-/// two-pass snappy decompressor (first checks bounds and tokens, then writes output)
+/// Output contents are unspecified on error.
 pub fn decompress(input: []const u8, output: []u8, limits: Limits) ![]u8 {
-    const len = try decode(false, input, output, limits);
-    _ = decode(true, input, output, limits) catch unreachable;
-
-    return output[0..len];
+    return output[0..try decode(input, output, limits)];
 }
 
 const Cursor = struct {
@@ -138,7 +139,7 @@ const Scanner = struct {
     }
 };
 
-fn decode(comptime emit: bool, input: []const u8, output: []u8, limits: Limits) !usize {
+fn decode(input: []const u8, output: []u8, limits: Limits) !usize {
     if (input.len > limits.max_frame_bytes) return error.LimitExceeded;
 
     var scanner: Scanner = .{ .bytes = input };
@@ -167,7 +168,7 @@ fn decode(comptime emit: bool, input: []const u8, output: []u8, limits: Limits) 
                 }
                 if (len > expected - cursor) return error.MalformedCompressedData;
                 const bytes = try scanner.take(len);
-                if (emit) @memcpy(output[cursor..][0..len], bytes);
+                @memcpy(output[cursor..][0..len], bytes);
             },
             1 => {
                 len = 4 + ((tag >> 2) & 7);
@@ -187,12 +188,10 @@ fn decode(comptime emit: bool, input: []const u8, output: []u8, limits: Limits) 
         if (kind != 0) {
             const valid = offset > 0 and offset <= cursor and len <= expected - cursor;
             if (!valid) return error.MalformedCompressedData;
-            if (emit) {
-                if (offset >= len) {
-                    @memcpy(output[cursor..][0..len], output[cursor - offset ..][0..len]);
-                } else {
-                    for (0..len) |i| output[cursor + i] = output[cursor + i - offset];
-                }
+            if (offset >= len) {
+                @memcpy(output[cursor..][0..len], output[cursor - offset ..][0..len]);
+            } else {
+                for (0..len) |i| output[cursor + i] = output[cursor + i - offset];
             }
         }
 

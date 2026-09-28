@@ -5,16 +5,9 @@ const session_mod = @import("../session/session.zig");
 const Packet = session_mod.Packet;
 const Session = session_mod.Session;
 
-/// connects a bedwire session to nethernet (webrtc datachannel)
-///
-/// used for lan games, friend invites and xbox relay connections.
-/// Connection needs send(bytes, reliability) and receive() !Message.
-/// Handler needs onPacket(*Handler, *SessionWithProfile(Profile), Packet) !void.
-///
-/// can be driven push-style with deliver() when your loop gets data,
-/// or pull-style with pump() on a polling thread.
-/// minecraft bedrock drops the session if packets arrive out of order,
-/// so pump() will error out if an unreliable datagram slips through.
+/// Connection needs send(bytes, reliability) and receive() !Message; Handler needs
+/// onPacket(*Handler, *Session, Packet) !void. Bedrock needs ordered delivery, so
+/// pump() closes on an unreliable message.
 /// send must consume or copy bytes before returning. Message.data must remain
 /// valid through deliver; handlers must not retain borrowed packet bytes.
 pub fn NetherNet(comptime Connection: type, comptime Handler: type) type {
@@ -33,7 +26,6 @@ pub fn NetherNetWithProfile(comptime Profile: type, comptime Connection: type, c
 
         const Self = @This();
 
-        /// process a packet received from the datachannel
         pub fn deliver(self: *Self, payload: []const u8) !void {
             var packets = try self.session.ingest(payload);
             defer packets.deinit();
@@ -41,7 +33,6 @@ pub fn NetherNetWithProfile(comptime Profile: type, comptime Connection: type, c
             while (packets.next()) |packet| try self.handler.onPacket(self.session, packet);
         }
 
-        /// pull the next reliable message from NetherNet
         pub fn pump(self: *Self) !void {
             if (self.session.state == .disconnected) return error.TransportClosed;
             if (self.pumping or self.session.active_generation != null or self.session.rx_slot != null) return error.InvalidState;
@@ -87,7 +78,6 @@ fn validate(comptime Handler: type) void {
 
 const testing = std.testing;
 
-/// mock nethernet channel
 const Channel = struct {
     const Reliability = enum { unreliable, reliable };
     const Message = struct { reliability: Reliability, data: []const u8 };

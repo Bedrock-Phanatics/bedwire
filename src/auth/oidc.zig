@@ -15,8 +15,7 @@ pub const OidcPolicy = struct {
     audience: []const u8 = "api://auth-minecraft-services/multiplayer",
 };
 
-/// verifies a modern Bedrock OpenID Connect RS256 token and binds the client_data ES384 token
-/// using the ephemeral client public key (cpk)
+/// ClientData must be signed by the ID token's `cpk` key.
 pub fn verifyOidc(
     allocator: std.mem.Allocator,
     encoded: []const u8,
@@ -32,7 +31,6 @@ pub fn verifyOidc(
 
     token.verifyRsa(rsa_key) catch return error.InvalidSignature;
 
-    // time validation on RS256 ID token
     const exp_val = token.payload.value.object.get("exp") orelse return error.InvalidClaims;
     if (exp_val != .integer) return error.InvalidClaims;
     const exp = exp_val.integer;

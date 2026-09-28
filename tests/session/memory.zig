@@ -142,7 +142,6 @@ test "session max_frame_bytes is enforced when pool limits are larger" {
     defer client.deinit();
     client.state = .in_game;
 
-    // 1. TX frame limit: session frame > 256 and < 4096 fails on encode
     var small_buf: [128]u8 = undefined;
     const small_packet = support.packet(&small_buf, support.opaque_packet_id, &([_]u8{'s'} ** 50));
     const small_frame = try session.encodeOne(small_packet);
@@ -153,14 +152,12 @@ test "session max_frame_bytes is enforced when pool limits are larger" {
     const large_packet = support.packet(&large_buf, support.opaque_packet_id, &([_]u8{'l'} ** 300));
     try testing.expectError(error.NoSpaceLeft, session.encodeOne(large_packet));
 
-    // 2. RX frame limit: raw frame > 256 and < 4096 ingested by session fails and closes session
     const client_frame = try client.encodeOne(large_packet);
     defer client_frame.release();
     try testing.expect(client_frame.bytes.len > 256 and client_frame.bytes.len < 4096);
     try testing.expectError(error.LimitExceeded, session.ingest(client_frame.bytes));
     try testing.expectEqual(bedwire.State.disconnected, session.state);
 
-    // 3. Batch limits remain Session-scoped rather than using pool capacity
     var session_batch_limits = pool_limits;
     session_batch_limits.max_batch_bytes = 256;
     session_batch_limits.max_packet_bytes = 256;
@@ -172,14 +169,12 @@ test "session max_frame_bytes is enforced when pool limits are larger" {
     defer batch_session.deinit();
     batch_session.state = .in_game;
 
-    // TX batch limit: multi-packet batch > 256 and < 4096 fails encode
     var p1_buf: [160]u8 = undefined;
     var p2_buf: [160]u8 = undefined;
     const p1 = support.packet(&p1_buf, support.opaque_packet_id, &([_]u8{'a'} ** 140));
     const p2 = support.packet(&p2_buf, support.opaque_packet_id_2, &([_]u8{'b'} ** 140));
     try testing.expectError(error.LimitExceeded, batch_session.encode(&.{ p1, p2 }));
 
-    // RX batch limit: compressed frame fits in 256 bytes, but decompressed batch exceeds 256
     client_frame.release();
     try client.compression.negotiate(.deflate, 0);
     try batch_session.compression.negotiate(.deflate, 0);

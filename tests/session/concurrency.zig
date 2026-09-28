@@ -155,7 +155,6 @@ test "concurrent multi-threaded pool stress test" {
         t.join();
     }
 
-    // verify all slots returned to pool
     try testing.expectEqual(pool.rx_all_mask, pool.rx_free.load(.seq_cst));
     try testing.expectEqual(pool.tx_all_mask, pool.tx_free.load(.seq_cst));
 }

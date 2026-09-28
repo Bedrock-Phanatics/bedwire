@@ -16,7 +16,6 @@ test "parses valid Microsoft-style JWKS catalog and finds keys by kid" {
     const k1 = try set.find(support.rsa_key1_kid);
     const k2 = try set.find(support.rsa_key2_kid);
 
-    // Verify key 1 can verify valid token
     var token = try bedwire.auth.jwt.Token.parseWithAlgorithm(allocator, support.rsa_valid_jwt, support.limits, .RS256);
     defer token.deinit();
     try token.verifyRsa(k1);

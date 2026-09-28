@@ -15,8 +15,7 @@ import (
     "github.com/klauspost/compress/s2"
 )
 
-// pinned s2 compression dependency via local go.mod
-// All keys below are public, deterministic test fixtures, never production secrets.
+// Keys here are deterministic public test fixtures.
 func main() {
     plain := bytes.Repeat([]byte("Bedrock Snappy interoperability. "), 100)
     compressed := s2.EncodeSnappy(nil, plain)

@@ -27,8 +27,7 @@ pub const Claims = struct {
     online: bool,
 };
 
-// validates whether a given string is a standard 36-character hyphenated uuid
-// format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (8-4-4-4-12)
+/// Hyphenated 8-4-4-4-12 hex form.
 pub fn validateUuid(uuid: []const u8) bool {
     if (uuid.len != 36) return false;
     for (uuid, 0..) |byte, i| {
@@ -70,9 +69,7 @@ pub fn validateAndCreate(allocator: std.mem.Allocator, claims: Claims, limits: L
     };
 }
 
-// derives an RFC 4122 version 3 (MD5-based) UUID from an XUID string,
-// using the namespace prefix "pocket-auth-1-xuid:"
-// dest must be a pointer to a 36-byte array
+/// RFC 4122 v3 UUID of "pocket-auth-1-xuid:" ++ xuid, as vanilla derives it.
 pub fn deriveUuidV3(dest: *[36]u8, xuid: []const u8) void {
     var md5 = std.crypto.hash.Md5.init(.{});
     md5.update("pocket-auth-1-xuid:");
@@ -80,9 +77,7 @@ pub fn deriveUuidV3(dest: *[36]u8, xuid: []const u8) void {
     var digest: [16]u8 = undefined;
     md5.final(&digest);
 
-    // RFC 4122 section 4.3: version 3 (0x30)
     digest[6] = (digest[6] & 0x0f) | 0x30;
-    // RFC 4122 variant 1 (0x80)
     digest[8] = (digest[8] & 0x3f) | 0x80;
 
     const hex_digits = "0123456789abcdef";
@@ -108,9 +103,9 @@ test "deriveUuidV3 produces valid RFC 4122 v3 UUID matching test vector" {
 test "validateUuid accepts valid UUID and rejects malformed ones" {
     try std.testing.expect(validateUuid("fa207011-346c-3a82-8499-98ef4bf3e075"));
     try std.testing.expect(validateUuid("b1b01c3d-6df3-3635-b286-9a2cfbcf76be"));
-    try std.testing.expect(!validateUuid("b1b01c3d6df33635b2869a2cfbcf76be")); // no hyphens
-    try std.testing.expect(!validateUuid("b1b01c3d-6df3-3635-b286-9a2cfbcf76b")); // 35 chars
-    try std.testing.expect(!validateUuid("b1b01c3d-6df3-3635-b286-9a2cfbcf76bee")); // 37 chars
-    try std.testing.expect(!validateUuid("b1b01c3d-6df3-3635-b286-9a2cfbcf76bg")); // non-hex 'g'
-    try std.testing.expect(!validateUuid("b1b01c3d_6df3_3635_b286_9a2cfbcf76be")); // underscores
+    try std.testing.expect(!validateUuid("b1b01c3d6df33635b2869a2cfbcf76be"));
+    try std.testing.expect(!validateUuid("b1b01c3d-6df3-3635-b286-9a2cfbcf76b"));
+    try std.testing.expect(!validateUuid("b1b01c3d-6df3-3635-b286-9a2cfbcf76bee"));
+    try std.testing.expect(!validateUuid("b1b01c3d-6df3-3635-b286-9a2cfbcf76bg"));
+    try std.testing.expect(!validateUuid("b1b01c3d_6df3_3635_b286_9a2cfbcf76be"));
 }

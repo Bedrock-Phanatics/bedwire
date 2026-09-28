@@ -50,14 +50,12 @@ test "the threshold decides per batch and both sides agree" {
 
         var storage: [256]u8 = undefined;
 
-        // under threshold uses uncompressed marker 0xff
         const small = support.packet(&storage, support.opaque_packet_id, &([_]u8{'a'} ** 16));
         const small_frame = try pair.client.encode(&.{small});
         defer small_frame.release();
         try testing.expectEqual(@as(u8, 0xff), small_frame.bytes[1]);
         small_frame.release();
 
-        // at or above threshold uses negotiated algorithm marker
         var big_storage: [256]u8 = undefined;
         const big = support.packet(&big_storage, support.opaque_packet_id, &([_]u8{'a'} ** 96));
         const big_frame = try pair.client.encode(&.{big});
@@ -116,7 +114,6 @@ test "malformed compressed streams are rejected" {
         @memcpy(pair.relay[0..frame.bytes.len], frame.bytes);
         const captured = pair.relay[0..frame.bytes.len];
 
-        // corrupt compressed body without touching marker
         for (captured[2..]) |*byte| byte.* ^= 0xa5;
 
         const result = pair.server.ingest(captured);

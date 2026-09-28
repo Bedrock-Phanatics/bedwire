@@ -207,14 +207,3 @@ test "the encoded length bound rejects inputs it cannot describe" {
     try testing.expectError(error.LimitExceeded, snappy.maxEncodedLen(@as(usize, std.math.maxInt(u32)) + 1));
     try testing.expect(try snappy.maxEncodedLen(0) >= 32);
 }
-
-test "a workspace sizes itself to the batch limit" {
-    const workspace = try bedwire.compression.Workspace.create(testing.allocator, 4096);
-    defer workspace.destroy();
-
-    try testing.expectEqual(@as(usize, 4096), workspace.output.len);
-
-    const minimum = try bedwire.compression.Workspace.create(testing.allocator, 1);
-    defer minimum.destroy();
-    try testing.expect(minimum.output.len >= 64);
-}

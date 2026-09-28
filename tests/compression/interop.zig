@@ -1,5 +1,3 @@
-//! cross-language test fixtures generated from Go reference implementations
-
 const std = @import("std");
 const bedwire = @import("bedwire");
 

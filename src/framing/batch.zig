@@ -3,18 +3,15 @@ const std = @import("std");
 const Limits = @import("../limits.zig").Limits;
 const varint = @import("varint.zig");
 
-// bedrock batch frames always start with 0xfe
 pub const header: u8 = 0xfe;
 
-/// strip 0xfe header byte and verify frame size is within limits
 pub fn strip(frame: []const u8, limits: Limits) ![]const u8 {
     if (frame.len == 0 or frame[0] != header) return error.MalformedBatch;
     if (frame.len > limits.max_frame_bytes) return error.LimitExceeded;
     return frame[1..];
 }
 
-/// splits a batch payload into packets using varint length prefixes
-/// returned slices borrow directly from the input buffer
+/// Returned slices borrow the input.
 pub const Reader = struct {
     bytes: []const u8,
     cursor: usize = 0,
@@ -49,7 +46,6 @@ pub const Reader = struct {
     }
 };
 
-/// packs packets into a buffer, prefixing each with a varint length
 pub const Writer = struct {
     dest: []u8,
     cursor: usize = 0,

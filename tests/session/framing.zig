@@ -67,7 +67,6 @@ test "a batch that smuggles one illegal packet delivers none of them" {
     var illegal: [16]u8 = undefined;
     const login_id = support.packetId(support.modern, .login);
 
-    // encode a mixed batch while the state machine permits both
     pair.client.state = .spawn_ready;
     const frame = try pair.client.encode(&.{
         support.packet(&legal, 1020, "ok"),
@@ -176,7 +175,6 @@ test "packet iteration can be replayed and reports semantic identity" {
     try testing.expectEqual(bedwire.PacketKind.disconnect, disconnect.kind);
     try testing.expectEqual(disconnect_id, disconnect.id);
 
-    // reset while active rewinds to beginning
     packets.reset();
     try testing.expectEqual(null, packets.next().?.kind);
 }
@@ -202,17 +200,14 @@ test "exhaust -> deinit -> new ingest" {
     try testing.expectEqual(null, p1.kind);
     try testing.expectEqual(@as(?support.Session.Packet, null), iter1.next());
 
-    // EOF preserves RX storage and active ownership until deinit
     try testing.expect(session.active_generation != null);
     try testing.expectEqualStrings("p1", p1.bytes[p1.bytes.len - 2 ..]);
 
-    // new ingest rejected while EOF iterator still active
     frame1.release();
     const frame2 = try client.encode(&.{support.packet(&storage2, 1020, "p2")});
     defer frame2.release();
     try testing.expectError(error.InvalidState, session.ingest(frame2.bytes));
 
-    // deinit releases the RX lease
     iter1.deinit();
     try testing.expectEqual(@as(?u64, null), session.active_generation);
 
@@ -243,7 +238,6 @@ test "double deinit" {
     iter1.deinit();
     try testing.expectEqual(@as(?u64, null), session.active_generation);
 
-    // second deinit is safe no-op
     iter1.deinit();
     try testing.expectEqual(@as(?u64, null), session.active_generation);
 
@@ -254,7 +248,6 @@ test "double deinit" {
     defer iter2.deinit();
     const active_gen = session.active_generation.?;
 
-    // stale deinit must not touch newer iterator lease
     iter1.deinit();
     try testing.expectEqual(active_gen, session.active_generation.?);
 
@@ -290,14 +283,11 @@ test "old iterator vs newer ingest" {
     defer iter2.deinit();
     const gen2 = session.active_generation.?;
 
-    // old copy cannot read reused buffer
     try testing.expectEqual(@as(?support.Session.Packet, null), copy1.next());
 
-    // stale deinit cannot clear new lease
     copy1.deinit();
     try testing.expectEqual(gen2, session.active_generation.?);
 
-    // stale reset cannot reacquire either
     copy1.reset();
     try testing.expectEqual(gen2, session.active_generation.?);
     try testing.expectEqual(@as(?support.Session.Packet, null), copy1.next());
@@ -329,14 +319,12 @@ test "reset semantics" {
     var iter = try session.ingest(frame1.bytes);
     defer iter.deinit();
 
-    // reset while active rewinds to start
     try testing.expectEqual(null, iter.next().?.kind);
     iter.reset();
     try testing.expectEqual(null, iter.next().?.kind);
     try testing.expectEqual(null, iter.next().?.kind);
     try testing.expectEqual(@as(?support.Session.Packet, null), iter.next());
 
-    // reset after EOF is permanently disabled
     iter.reset();
     try testing.expectEqual(@as(?support.Session.Packet, null), iter.next());
 }
@@ -366,18 +354,15 @@ test "nested ingest rejection without disconnect" {
     const p1 = outer.next().?;
     try testing.expectEqual(null, p1.kind);
 
-    // nested ingest rejected while outer iterator still has the lease
     var storage3: [16]u8 = undefined;
     frame1.release();
     const frame2 = try client.encode(&.{support.packet(&storage3, 1020, "nested")});
     defer frame2.release();
     try testing.expectError(error.InvalidState, session.ingest(frame2.bytes));
 
-    // rejection does not tear down the session
     try testing.expectEqual(bedwire.State.in_game, session.state);
     try testing.expect(session.active_generation != null);
 
-    // outer iterator still works
     const p2 = outer.next().?;
     try testing.expectEqual(null, p2.kind);
     try testing.expectEqual(@as(u10, 1021), p2.id);
@@ -407,16 +392,13 @@ test "close with active Packets stops reads without prematurely freeing RX slot"
     const p1 = packets.next().?;
     try testing.expectEqualStrings("a", p1.bytes[p1.bytes.len - 1 ..]);
 
-    // close marks disconnected but retains RX lease
     session.close();
     try testing.expectEqual(bedwire.State.disconnected, session.state);
     try testing.expect(session.active_generation != null);
     try testing.expect(session.rx_slot != null);
 
-    // reads stopped after close
     try testing.expectEqual(@as(?support.Session.Packet, null), packets.next());
 
-    // reset disabled after close
     packets.reset();
     try testing.expectEqual(@as(?support.Session.Packet, null), packets.next());
 
@@ -432,15 +414,12 @@ test "fatal framing error consumes no pool slot and closes session" {
     var session = try gameSession(testing.allocator, &pool, .server);
     defer session.deinit();
 
-    // acquire one RX slot so only 1 remains free
     const token = try pool.acquireRx();
     defer pool.releaseRx(token);
 
-    // invalid frame rejected before pool acquisition
     try testing.expectError(error.MalformedBatch, session.ingest(&.{}));
     try testing.expectEqual(bedwire.State.disconnected, session.state);
 
-    // remaining slot still available
     const other_token = try pool.acquireRx();
     pool.releaseRx(other_token);
 }
@@ -455,7 +434,6 @@ test "PoolExhausted is non-fatal and leaves session state intact" {
     var client = try gameSession(testing.allocator, &pool, .client);
     defer client.deinit();
 
-    // exhaust RX pool
     const rx_token = try pool.acquireRx();
     defer pool.releaseRx(rx_token);
 
@@ -464,10 +442,8 @@ test "PoolExhausted is non-fatal and leaves session state intact" {
 
     try testing.expectError(error.PoolExhausted, session.ingest(frame.bytes));
     frame.release();
-    // session remains alive and connected
     try testing.expectEqual(bedwire.State.in_game, session.state);
 
-    // exhaust TX pool
     const tx_token = try pool.acquireTx();
     defer pool.releaseTx(tx_token);
 
@@ -516,7 +492,6 @@ test "held frame blocks a failing encode until explicitly released" {
     try testing.expectError(error.NoSpaceLeft, session.encodeOne(support.packet(&storage2, 1020, &oversized)));
     try testing.expect(session.tx_slot == null);
 
-    // frame1 release is safe no-op
     frame1.release();
 }
 
@@ -559,7 +534,6 @@ test "encode while Packets is active preserves uncorrupted data" {
     const server_frame = try server.encode(&.{server_packet});
     defer server_frame.release();
 
-    // incoming packet bytes are uncorrupted
     try testing.expectEqualSlices(u8, client_packet, p.bytes);
 }
 
@@ -627,13 +601,10 @@ test "post-acquisition ingest failure releases RX slot and disconnects session" 
     defer session.deinit();
     try session.compression.negotiate(.deflate, 0);
 
-    // valid framing header 0xfe + deflate marker + corrupt compressed body
-    // this passes batch.strip, acquires an rx slot, but fails in decompression
     const malformed = [_]u8{ 0xfe, @intFromEnum(bedwire.compression.Algorithm.deflate), 0x78, 0x9c, 0xff, 0xff };
     try testing.expectError(error.MalformedCompressedData, session.ingest(&malformed));
 
     try testing.expectEqual(bedwire.State.disconnected, session.state);
-    // rx slot released by errdefer, no slot leak
     try testing.expect(pool.isIdle());
 }
 

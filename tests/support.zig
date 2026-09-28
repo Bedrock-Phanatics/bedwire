@@ -297,7 +297,6 @@ pub fn signWithKeyHeader(allocator: std.mem.Allocator, key: Ecdsa.KeyPair, paylo
 
 pub const chain_uuid = "b1b01c3d-6df3-3635-b286-9a2cfbcf76be";
 
-/// builds a 3-link mojang auth chain for testing
 pub fn buildChain(allocator: std.mem.Allocator, keys: [3]Ecdsa.KeyPair) ![]u8 {
     var tokens: [3][]u8 = undefined;
     var built: usize = 0;
@@ -324,7 +323,6 @@ pub fn buildClientData(allocator: std.mem.Allocator, key: Ecdsa.KeyPair) ![]u8 {
     return signToken(allocator, key, "{\"alg\":\"ES384\"}", "{}");
 }
 
-// RSA Test Fixtures
 pub const rsa_key1_kid = "test-rsa-key-1";
 pub const rsa_key1_n_b64 = "T9r4QJ-eGbdqurV_UV4b_jE6H67RNeylU4417mlaPHY8NwuBXHyytEMPYevJhB90Ef6xSMtkkgQQm3LbggFUci10GteoNHqzv5E8s5xjvagnhAPh9w5KcZ7VsSfXaJQczENP9MtJVkwbgGTH9Eq-mdA5_thFteTpm5tCw15UwZ66GCbdJwcIQADxgroU4zHYqVQmYWBfhANJYap5jR6x5LZjiSe-2Y_xVO0emEUsNg_b7aKooKH6u7sQpegGN_2JjidD3rBbkOjr-vXLBwkfVPsVbsFYTu0jFidGC_WUDwKqJbFVIN40niStU7pqRxalC_M-vhz3xN_jCEJrJ_C3Bw";
 pub const rsa_key1_e_b64 = "AQAB";

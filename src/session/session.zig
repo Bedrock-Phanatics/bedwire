@@ -191,7 +191,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.peer_key = null;
         }
 
-        /// Set state to closing
         pub fn beginClose(self: *Self) void {
             if (self.state.active()) self.state = .closing;
         }
@@ -216,7 +215,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return self.received.contains(kind);
         }
 
-        /// Ingests a raw datagram using pooled RX storage
+        /// Admits the whole batch or none of it. Failures other than PoolExhausted close the Session.
         pub fn ingest(self: *Self, payload: []const u8) !Self.Packets {
             if (self.state == .disconnected) return error.TransportClosed;
             if (self.active_generation != null or self.rx_slot != null) return error.InvalidState;
@@ -238,7 +237,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             var session_payload: []const u8 = rx_slot.frame[0..body.len];
             if (self.crypto) |*crypto| session_payload = try crypto.open(rx_slot.frame[0..body.len]);
 
-            const raw = try self.compression.decodeWith(
+            const raw = try self.compression.decode(
                 session_payload,
                 rx_slot.batch,
                 &rx_slot.history,
@@ -271,7 +270,13 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
             const slot = self.pool.getTx(slot_token) orelse return error.InvalidState;
 
-            var writer = batch.Writer.init(slot.assembly, self.limits);
+            const max_egress = @min(slot.egress.len, self.limits.max_frame_bytes);
+            const reserve: usize = if (self.compression.marks()) 2 else 1;
+            const trailer: usize = if (self.crypto != null) 8 else 0;
+            if (reserve + trailer >= max_egress) return error.LimitExceeded;
+
+            // Assemble after the frame prefix so an uncompressed batch is already in place.
+            var writer = batch.Writer.init(slot.assembly[reserve..], self.limits);
             var observed: std.EnumSet(PacketKind) = .initEmpty();
 
             for (packets) |packet| {
@@ -286,32 +291,30 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             if (writer.count == 0) return error.MalformedBatch;
             if (self.state.singlePacketBatch() and writer.count != 1) return error.InvalidState;
 
-            const max_egress = @min(slot.egress.len, self.limits.max_frame_bytes);
-            const marker: usize = @intFromBool(self.compression.marks());
-            const reserve = 1 + marker;
-            const trailer: usize = if (self.crypto != null) 8 else 0;
-            if (reserve + trailer >= max_egress) return error.LimitExceeded;
-
+            const raw = writer.written();
             const room = max_egress - reserve - trailer;
-            const framed = try self.compression.encodeWith(
-                writer.written(),
-                slot.egress[reserve..][0..room],
-                &slot.history,
-                &slot.table,
-            );
+            var out = slot.assembly;
+            var algorithm: Algorithm = .none;
+            var len = reserve + raw.len;
+            if (self.compression.selected(raw.len) == .none) {
+                if (raw.len > room) return error.NoSpaceLeft;
+            } else {
+                const framed = try self.compression.encode(raw, slot.egress[reserve..][0..room], &slot.scratch);
+                out = slot.egress;
+                algorithm = framed.algorithm;
+                len = reserve + framed.bytes.len;
+            }
 
-            slot.egress[0] = batch.header;
-            if (marker != 0) slot.egress[1] = @intFromEnum(framed.algorithm);
-
-            var len = reserve + framed.bytes.len;
-            if (self.crypto) |*crypto| len = 1 + (try crypto.seal(slot.egress[1..max_egress], len - 1)).len;
+            out[0] = batch.header;
+            if (reserve == 2) out[1] = @intFromEnum(algorithm);
+            if (self.crypto) |*crypto| len = 1 + (try crypto.seal(out[1 .. len + trailer], len - 1)).len;
 
             self.tx_slot = slot_token;
             self.tx_token +%= 1;
             self.observe(observed, self.role);
 
             return Self.Frame{
-                .bytes = slot.egress[0..len],
+                .bytes = out[0..len],
                 .session = self,
                 .token = self.tx_token,
             };
@@ -374,7 +377,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             }
         }
 
-        /// apply compression settings negotiated in NetworkSettings
         pub fn negotiateCompression(self: *Self, algorithm: Algorithm, threshold: u16) !void {
             if (self.state != .network_settings) return error.InvalidState;
             if (!self.exchanged(.network_settings, .server)) return error.InvalidState;
@@ -383,7 +385,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.state = .authenticating;
         }
 
-        /// verify mojang auth chain and extract client public key for ecdh
         pub fn authenticateChain(
             self: *Self,
             allocator: std.mem.Allocator,
@@ -400,7 +401,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return identity;
         }
 
-        /// verify xbox oidc token and extract client public key
         pub fn authenticateOidc(
             self: *Self,
             allocator: std.mem.Allocator,
@@ -417,7 +417,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return identity;
         }
 
-        /// authenticates player login using unified TrustPolicy, enforcing wire format and flow
         pub fn authenticateLogin(
             self: *Self,
             allocator: std.mem.Allocator,
@@ -427,7 +426,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             try self.readyToAuthenticate(@as(LoginFlow, policy));
             errdefer self.close();
 
-            // decode binary connection_request wire format
             const req = try wire.decodeConnectionRequest(connection_request_bytes, self.limits);
 
             var envelope = try wire.parseChainEnvelope(allocator, req.chain_data, self.limits);
@@ -478,7 +476,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return identity;
         }
 
-        /// set client public key directly if auth was done upstream (e.g. by a proxy)
+        /// For hosts that authenticated the client upstream, e.g. a proxy.
         pub fn installVerifiedClientKey(self: *Self, key: spki.Ecdsa.PublicKey) !void {
             if (self.role != .server or self.state != .authenticating) return error.InvalidState;
             if (!self.didReceive(.login)) return error.InvalidState;
@@ -486,8 +484,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.peer_key = key;
         }
 
-        /// derive shared secret and turn on encryption on server
-        /// call after ServerToClientHandshake is sent (handshake itself goes in clear)
+        /// Call after ServerToClientHandshake is sent; that packet goes in the clear.
         pub fn installServerCrypto(self: *Self, secret: spki.Ecdsa.SecretKey, salt: [16]u8) !void {
             const ordered =
                 self.role == .server and
@@ -500,7 +497,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             try self.enableCrypto(secret, peer, salt);
         }
 
-        /// unpack server handshake token and turn on crypto on client side
         pub fn acceptServerHandshake(
             self: *Self,
             allocator: std.mem.Allocator,
@@ -520,7 +516,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.peer_key = handshake.peer_key;
         }
 
-        /// advance state machine to next phase
         pub fn advance(self: *Self, next: State) !void {
             const allowed = switch (next) {
                 .resource_packs => switch (self.state) {
@@ -541,7 +536,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.state = next;
         }
 
-        // Tracks observed packets and auto-transitions transport_ready -> network_settings
         fn observe(self: *Self, kinds: std.EnumSet(PacketKind), sender: Role) void {
             if (sender == self.role) {
                 self.sent = self.sent.unionWith(kinds);
@@ -580,7 +574,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
         const Observed = struct { kinds: std.EnumSet(PacketKind), count: usize };
 
-        // make sure all packets in this batch are valid for current state
         fn admit(self: *const Self, raw: []const u8, sender: Role) !Observed {
             var reader = try batch.Reader.init(raw, self.limits);
             var result: Observed = .{ .kinds = .initEmpty(), .count = 0 };

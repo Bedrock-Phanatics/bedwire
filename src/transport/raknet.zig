@@ -5,14 +5,8 @@ const session_mod = @import("../session/session.zig");
 const Packet = session_mod.Packet;
 const Session = session_mod.Session;
 
-/// hooks a bedwire session up to a raknet peer
-///
-/// Peer can be anything that has send(bytes, reliability, channel), like raknet.Session or raknet.Client.
-/// Handler gets called once per parsed packet. Note that packet.bytes is borrowed straight from the
-/// session buffer and goes away when deliver returns, so don't hang onto it without copying first.
-///
-/// Bedwire doesn't touch transport level stuff like acks, packet loss, resends or MTU splits,
-/// that's all left up to raknet.
+/// Peer needs send(bytes, reliability, channel); Handler needs
+/// onPacket(*Handler, *Session, Packet) !void. Packet bytes only live for the callback.
 /// send must consume or copy bytes before returning. Handlers may send or close,
 /// but must not destroy the session or retain borrowed packet bytes.
 pub fn RakNet(comptime Peer: type, comptime Handler: type) type {
@@ -27,12 +21,10 @@ pub fn RakNetWithProfile(comptime Profile: type, comptime Peer: type, comptime H
         session: *ProfileSession,
         peer: *Peer,
         handler: *Handler,
-        // bedrock traffic uses channel 0
         channel: u8 = 0,
 
         const Self = @This();
 
-        /// feeds a payload from raknet into the session and dispatches each decoded packet to handler
         pub fn deliver(self: *Self, payload: []const u8) !void {
             var packets = try self.session.ingest(payload);
             defer packets.deinit();
@@ -40,7 +32,6 @@ pub fn RakNetWithProfile(comptime Profile: type, comptime Peer: type, comptime H
             while (packets.next()) |packet| try self.handler.onPacket(self.session, packet);
         }
 
-        /// encodes packets into a 0xfe batch and sends reliable ordered
         pub fn send(self: *Self, packets: []const []const u8) !void {
             const frame = try self.session.encode(packets);
             defer frame.release();
@@ -64,7 +55,6 @@ fn validate(comptime Handler: type) void {
 
 const testing = std.testing;
 
-/// mock raknet peer that records sent frames
 const FakePeer = struct {
     frames: std.ArrayList([]u8) = .empty,
     allocator: std.mem.Allocator,

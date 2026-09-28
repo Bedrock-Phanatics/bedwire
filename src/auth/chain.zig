@@ -8,16 +8,14 @@ pub const moj_root = @import("moj_root.zig");
 pub const identity_mod = @import("identity.zig");
 pub const Identity = identity_mod.Identity;
 
-/// trust policy for mojang cert chain
 pub const ChainPolicy = struct {
     now: i64,
-    // allow self-signed chains for offline/lan mode
+    /// Accept single-link self-signed chains (offline/LAN).
     allow_offline: bool = false,
-    // custom root key, or pinned mojang root if null
+    /// Defaults to the pinned Mojang root.
     root: ?spki.Ecdsa.PublicKey = null,
 };
 
-/// verifies the mojang cert chain and unpacks the player's identity
 pub fn verifyChain(
     allocator: std.mem.Allocator,
     chain_json: []const u8,

@@ -1,7 +1,10 @@
 const std = @import("std");
 const Limits = @import("../limits.zig").Limits;
 const flate = @import("../compression/flate.zig");
-const snappy = @import("../compression/snappy.zig");
+const Scratch = @import("../compression/algorithm.zig").Scratch;
+
+/// Header, compression marker and MAC around an uncompressed batch built in place.
+pub const frame_overhead = 1 + 1 + 8;
 
 pub const PoolConfig = struct {
     rx_slots: u8,
@@ -23,8 +26,7 @@ pub const TxSlot = struct {
     epoch: std.atomic.Value(u64) = .init(0),
     assembly: []u8,
     egress: []u8,
-    history: [flate.history_len]u8 = undefined,
-    table: snappy.Table = undefined,
+    scratch: Scratch = undefined,
 };
 
 /// Shared bounded RX/TX pool. Keep its address stable and destroy it after all
@@ -53,7 +55,8 @@ pub const BufferPool = struct {
         const per_rx_storage = std.math.add(usize, limits.max_frame_bytes, limits.max_batch_bytes) catch return error.LimitExceeded;
         const total_rx_storage = std.math.mul(usize, per_rx_storage, config.rx_slots) catch return error.LimitExceeded;
 
-        const per_tx_storage = std.math.add(usize, limits.max_frame_bytes, limits.max_batch_bytes) catch return error.LimitExceeded;
+        const assembly_len = std.math.add(usize, limits.max_batch_bytes, frame_overhead) catch return error.LimitExceeded;
+        const per_tx_storage = std.math.add(usize, limits.max_frame_bytes, assembly_len) catch return error.LimitExceeded;
         const total_tx_storage = std.math.mul(usize, per_tx_storage, config.tx_slots) catch return error.LimitExceeded;
 
         const rx_slots = try allocator.alloc(RxSlot, config.rx_slots);
@@ -81,8 +84,8 @@ pub const BufferPool = struct {
             const offset = i * per_tx_storage;
             slot.* = .{
                 .epoch = .init(0),
-                .assembly = tx_storage[offset .. offset + limits.max_batch_bytes],
-                .egress = tx_storage[offset + limits.max_batch_bytes .. offset + per_tx_storage],
+                .assembly = tx_storage[offset .. offset + assembly_len],
+                .egress = tx_storage[offset + assembly_len .. offset + per_tx_storage],
             };
         }
 

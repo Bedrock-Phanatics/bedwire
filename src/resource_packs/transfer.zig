@@ -3,7 +3,6 @@ const std = @import("std");
 const Limits = @import("../limits.zig").Limits;
 const negotiation = @import("negotiation.zig");
 
-/// metadata from ResourcePackDataInfo
 pub const Metadata = struct {
     pack_id: []const u8,
     chunk_size: u32,
@@ -11,7 +10,6 @@ pub const Metadata = struct {
     size: u64,
     hash: [32]u8,
 
-    // check chunk count matches total pack size
     pub fn validate(self: Metadata, limits: Limits) !void {
         try negotiation.validateId(self.pack_id, limits);
         if (self.size > limits.max_resource_pack_bytes) return error.LimitExceeded;
@@ -23,7 +21,7 @@ pub const Metadata = struct {
     }
 };
 
-/// one chunk from ResourcePackChunkData (data borrowed from packet)
+/// `data` borrows the packet.
 pub const Chunk = struct {
     pack_id: []const u8,
     index: u32,
@@ -31,13 +29,12 @@ pub const Chunk = struct {
     data: []const u8,
 };
 
-/// chunk request from client
 pub const Request = struct {
     pack_id: []const u8,
     index: u32,
 };
 
-/// streams and hashes incoming chunks with sha256 so we don't have to buffer the whole pack in ram
+/// Hashes chunks as they arrive instead of buffering the pack.
 pub const Transfer = struct {
     allocator: std.mem.Allocator,
     metadata: Metadata,
@@ -66,7 +63,7 @@ pub const Transfer = struct {
         return .{ .pack_id = self.metadata.pack_id, .index = self.next_index };
     }
 
-    /// consume the next sequential chunk and update running sha256 hash
+    /// Any rejected chunk fails the transfer for good.
     pub fn accept(self: *Transfer, chunk: Chunk) !void {
         if (self.failed or self.complete) return error.InvalidState;
         errdefer self.failed = true;
@@ -98,7 +95,6 @@ pub const Transfer = struct {
     }
 };
 
-/// slices out a chunk from an in-memory pack archive to respond to a client request
 pub fn serve(metadata: Metadata, archive: []const u8, request: Request, limits: Limits) !Chunk {
     try metadata.validate(limits);
 

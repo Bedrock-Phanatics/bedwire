@@ -17,17 +17,6 @@ pub const Role = enum {
     }
 };
 
-/// bedrock connection phases
-///
-/// sequence of handshake packets
-/// transport_ready -> RequestNetworkSettings
-/// network_settings -> NetworkSettings (compression algo/threshold)
-/// authenticating -> Login (mojang cert chain or xbox oidc)
-/// encrypted_handshake -> ServerToClientHandshake / ClientToServerHandshake
-/// resource_packs -> ResourcePacksInfo, Stack, etc
-/// waiting_for_start_game -> StartGame
-/// spawn_ready -> RequestChunkRadius, SetLocalPlayerAsInitialised
-/// in_game -> gameplay traffic
 pub const State = enum {
     transport_ready,
     network_settings,
@@ -40,7 +29,6 @@ pub const State = enum {
     closing,
     disconnected,
 
-    /// older versions without network settings start directly at auth
     pub fn initial(session_features: SessionFeatures) State {
         return if (session_features.uses_request_network_settings) .transport_ready else .authenticating;
     }
@@ -49,7 +37,7 @@ pub const State = enum {
         return self != .closing and self != .disconnected;
     }
 
-    // early handshake only allows 1 packet per batch to prevent smuggling or cipher desync
+    // One packet per batch until encryption settles, so nothing rides along with a key change.
     pub fn singlePacketBatch(self: State) bool {
         return switch (self) {
             .transport_ready, .network_settings, .authenticating, .encrypted_handshake => true,
@@ -57,13 +45,12 @@ pub const State = enum {
         };
     }
 
-    /// whether a given packet type can be sent in the current phase
     pub fn permits(self: State, session_features: SessionFeatures, sender: Role, kind: ?PacketKind) bool {
         const packet_direction = if (kind) |known| protocol.Current.packetDirection(known) else .bidirectional;
         return self.permitsWithDirection(session_features, sender, kind, packet_direction);
     }
 
-    /// Profile-aware state admission; unknown packet IDs remain application-owned.
+    /// Unknown packet IDs are left to the application.
     pub fn permitsWithDirection(self: State, session_features: SessionFeatures, sender: Role, kind: ?PacketKind, packet_direction: PacketDirection) bool {
         if (self == .disconnected) return false;
         if (kind == .disconnect) return true;

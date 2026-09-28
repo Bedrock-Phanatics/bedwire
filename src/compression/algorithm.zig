@@ -21,33 +21,14 @@ pub const Algorithm = enum(u8) {
 pub const CompressionMode = @FieldType(SessionFeatures, "compression_mode");
 pub const SessionFeatures = @import("bedrock_protocol").SessionFeatures;
 
-/// reusable buffers for deflate window and snappy tables so we don't alloc per packet
-pub const Workspace = struct {
-    allocator: std.mem.Allocator,
-    output: []u8,
-    history: [flate.history_len]u8 = undefined,
-    table: snappy.Table = undefined,
-
-    pub fn create(allocator: std.mem.Allocator, capacity: usize) !*Workspace {
-        const self = try allocator.create(Workspace);
-        errdefer allocator.destroy(self);
-
-        self.* = .{ .allocator = allocator, .output = try allocator.alloc(u8, @max(capacity, 64)) };
-
-        return self;
-    }
-
-    pub fn destroy(self: *Workspace) void {
-        const allocator = self.allocator;
-        allocator.free(self.output);
-        allocator.destroy(self);
-    }
+/// Encode scratch: a single encode uses either the DEFLATE window or the Snappy table.
+pub const Scratch = extern union {
+    history: [flate.history_len]u8,
+    table: snappy.Table,
 };
 
 pub const Framed = struct { algorithm: Algorithm, bytes: []const u8 };
 
-/// negotiated compression algorithm and threshold
-/// modern versions start uncompressed until NetworkSettings is received
 pub const Compression = struct {
     mode: CompressionMode,
     supports_deflate: bool,
@@ -70,7 +51,6 @@ pub const Compression = struct {
         };
     }
 
-    /// apply algorithm and threshold chosen in NetworkSettings
     pub fn negotiate(self: *Compression, algorithm: Algorithm, threshold: u16) !void {
         if (self.mode != .marked or self.negotiated) return error.InvalidState;
         if (!self.supports(algorithm)) return error.UnsupportedCompression;
@@ -88,7 +68,6 @@ pub const Compression = struct {
         };
     }
 
-    /// whether frames need the 1-byte compression algorithm prefix
     pub fn marks(self: Compression) bool {
         return self.mode == .marked and self.negotiated;
     }
@@ -101,32 +80,18 @@ pub const Compression = struct {
         };
     }
 
-    /// compresses input into dest if above threshold, otherwise copies verbatim
-    pub fn encode(self: Compression, input: []const u8, dest: []u8, workspace: *Workspace) !Framed {
-        return self.encodeWith(input, dest, &workspace.history, &workspace.table);
-    }
-
-    pub fn encodeWith(
-        self: Compression,
-        input: []const u8,
-        dest: []u8,
-        history: *[flate.history_len]u8,
-        table: *snappy.Table,
-    ) !Framed {
+    /// Compresses input into dest, or copies it verbatim below the threshold.
+    pub fn encode(self: Compression, input: []const u8, dest: []u8, scratch: *Scratch) !Framed {
         const algorithm = self.selected(input.len);
         return .{ .algorithm = algorithm, .bytes = switch (algorithm) {
             .none => try copy(input, dest),
-            .deflate => try flate.compress(input, dest, history),
-            .snappy => try snappy.compress(input, dest, table),
+            .deflate => try flate.compress(input, dest, &scratch.history),
+            .snappy => try snappy.compress(input, dest, &scratch.table),
         } };
     }
 
-    /// decompress decrypted payload into workspace buffer, or pass through as-is if uncompressed
-    pub fn decode(self: Compression, input: []const u8, workspace: *Workspace, limits: Limits) ![]const u8 {
-        return self.decodeWith(input, workspace.output, &workspace.history, limits);
-    }
-
-    pub fn decodeWith(
+    /// Returns input itself when uncompressed, otherwise decompresses into dest.
+    pub fn decode(
         self: Compression,
         input: []const u8,
         dest: []u8,
@@ -149,7 +114,6 @@ pub const Compression = struct {
         return dest[0..input.len];
     }
 
-    // peel off the 1-byte algorithm marker if present
     fn split(self: Compression, input: []const u8) !Framed {
         if (!self.marks()) return .{ .algorithm = self.algorithm, .bytes = input };
         if (input.len == 0) return error.MalformedCompressedData;

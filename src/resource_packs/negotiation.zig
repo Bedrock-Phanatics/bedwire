@@ -2,18 +2,15 @@ const std = @import("std");
 
 const Limits = @import("../limits.zig").Limits;
 
-/// one pack offered in ResourcePacksInfo
 pub const Offer = struct {
     id: []const u8,
     size: u64,
 };
 
-/// client response status
 pub const Response = enum { refused, send_packs, all_packs_downloaded, completed };
 
 pub const Phase = enum { offered, downloading, stack, complete, refused };
 
-/// tracks resource pack downloads between client and server
 pub const Negotiation = struct {
     allocator: std.mem.Allocator,
     packs: []Pack,
@@ -26,7 +23,6 @@ pub const Negotiation = struct {
         verified: bool = false,
     };
 
-    // validates total pack count, size limits, and checks for duplicate ids
     pub fn init(allocator: std.mem.Allocator, offers: []const Offer, limits: Limits) !Negotiation {
         if (offers.len > limits.max_resource_packs) return error.LimitExceeded;
 
@@ -68,7 +64,6 @@ pub const Negotiation = struct {
         return null;
     }
 
-    /// marks pack as verified once sha256 matches
     pub fn markVerified(self: *Negotiation, id: []const u8) !void {
         if (self.phase != .downloading) return error.InvalidState;
 
@@ -78,7 +73,6 @@ pub const Negotiation = struct {
         pack.verified = true;
     }
 
-    /// process client pack response packet
     pub fn respond(self: *Negotiation, response: Response, requested: []const []const u8) !void {
         if (response != .send_packs and requested.len != 0) return error.InvalidState;
         if (requested.len > self.packs.len) return error.LimitExceeded;
@@ -111,7 +105,6 @@ pub const Negotiation = struct {
         return self.phase == .complete or self.phase == .refused;
     }
 
-    // validate requested pack list before mutating state
     fn request(self: *Negotiation, requested: []const []const u8) !void {
         for (requested, 0..) |id, i| {
             if (self.find(id) == null) return error.UnknownPack;

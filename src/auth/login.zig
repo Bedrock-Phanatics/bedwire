@@ -4,7 +4,6 @@ const Limits = @import("../limits.zig").Limits;
 const jwt = @import("jwt.zig");
 const spki = @import("../crypto/spki.zig");
 
-/// signs header.payload with p384 ecdsa and returns compact jwt
 pub fn sign(allocator: std.mem.Allocator, key: spki.Ecdsa.KeyPair, header: []const u8, payload: []const u8, limits: Limits) ![]u8 {
     if (header.len > limits.max_jwt_header_bytes or payload.len > limits.max_jwt_payload_bytes) return error.LimitExceeded;
 
@@ -28,14 +27,12 @@ pub fn sign(allocator: std.mem.Allocator, key: spki.Ecdsa.KeyPair, header: []con
     return bytes;
 }
 
-// base64 spki encoding for jwt x5u header
 pub fn encodedPublicKey(key: spki.Ecdsa.PublicKey) [160]u8 {
     var encoded: [160]u8 = undefined;
     _ = std.base64.standard.Encoder.encode(&encoded, &spki.encode(key));
     return encoded;
 }
 
-/// builds and signs the ServerToClientHandshake jwt with server pubkey and salt
 pub fn serverHandshake(allocator: std.mem.Allocator, key: spki.Ecdsa.KeyPair, salt: [16]u8, limits: Limits) ![]u8 {
     var salt_text: [24]u8 = undefined;
     _ = std.base64.standard.Encoder.encode(&salt_text, &salt);
@@ -49,7 +46,6 @@ pub fn serverHandshake(allocator: std.mem.Allocator, key: spki.Ecdsa.KeyPair, sa
     return sign(allocator, key, header, payload, limits);
 }
 
-/// verified ServerToClientHandshake token
 pub const Handshake = struct {
     peer_key: spki.Ecdsa.PublicKey,
     salt: [16]u8,

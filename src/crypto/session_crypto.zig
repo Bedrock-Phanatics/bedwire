@@ -1,11 +1,8 @@
 const std = @import("std");
 const Aes = std.crypto.core.aes.Aes256;
 
-/// continuous aes-256-ctr stream cipher with 8-byte sha256 mac trailer
-///
-/// keystream is continuous across packet batches for the lifetime of the session.
-/// mac is first 8 bytes of sha256(le_u64(counter) ++ payload ++ key).
-/// counter increments after every batch sealed or opened.
+/// The AES-256-CTR keystream continues across batches for the whole session.
+/// MAC is sha256(le_u64(counter) ++ payload ++ key)[0..8].
 pub const SessionCrypto = struct {
     key: [32]u8,
     inbound: Stream,
@@ -23,8 +20,7 @@ pub const SessionCrypto = struct {
         self.closed = true;
     }
 
-    /// encrypts storage[0..payload_len] in place and appends the 8-byte mac
-    /// caller must slice past the 0xfe header byte before passing storage here
+    /// Encrypts storage[0..payload_len] in place and appends the MAC.
     pub fn seal(self: *SessionCrypto, storage: []u8, payload_len: usize) ![]u8 {
         if (self.closed) return error.SessionClosed;
         if (payload_len > storage.len or storage.len - payload_len < 8) return error.NoSpaceLeft;
@@ -40,8 +36,7 @@ pub const SessionCrypto = struct {
         return bytes;
     }
 
-    /// decrypts in place and checks the 8-byte mac trailer
-    /// if the mac doesn't match we roll back ciphertext and kill the crypto context
+    /// Any failure closes the context; a bad MAC also restores the ciphertext.
     pub fn open(self: *SessionCrypto, bytes: []u8) ![]u8 {
         if (self.closed) return error.SessionClosed;
         errdefer self.closed = true;
