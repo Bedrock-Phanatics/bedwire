@@ -4,6 +4,18 @@ const protocol = @import("bedrock_protocol");
 const support = @import("../support.zig");
 const testing = std.testing;
 
+const ReadOnlyLoginProfile = struct {
+    pub const protocol_number = support.modern.protocol_number;
+    pub const features = support.modern.features;
+    pub const packetKind = support.modern.packetKind;
+    pub fn packetId(kind: protocol.PacketKind) ?u10 {
+        return if (kind == .login) null else support.modern.packetId(kind);
+    }
+    pub const packetDirection = support.modern.packetDirection;
+    pub const decodeBorrowed = support.modern.decodeBorrowed;
+    pub const encode = support.modern.encode;
+};
+
 fn plain(dest: []u8, packet: []const u8) ![]const u8 {
     dest[0] = bedwire.framing.batch.header;
     var writer = bedwire.framing.batch.Writer.init(dest[1..], support.limits);
@@ -11,12 +23,12 @@ fn plain(dest: []u8, packet: []const u8) ![]const u8 {
     return dest[0 .. 1 + writer.written().len];
 }
 
-fn compressed(dest: []u8, packet: []const u8, algorithm: bedwire.compression.Algorithm) ![]const u8 {
+fn compressed(dest: []u8, packet: []const u8, algorithm: bedwire.compression.Algorithm, threshold: u16) ![]const u8 {
     var raw: [support.limits.max_batch_bytes]u8 = undefined;
     var writer = bedwire.framing.batch.Writer.init(&raw, support.limits);
     try writer.append(packet);
     var codec = bedwire.compression.Compression.init(support.modern.features);
-    try codec.negotiate(algorithm, 0);
+    try codec.negotiate(algorithm, threshold);
     var scratch: bedwire.compression.Scratch = undefined;
     const framed = try codec.encode(writer.written(), dest[2..], &scratch);
     dest[0] = bedwire.framing.batch.header;
@@ -57,13 +69,13 @@ test "tap observes both directions, preserves forwarding bytes, and stops at enc
     settings_packets.deinit();
     try testing.expectEqual(bedwire.TapPhase.awaiting_login, tap.phase());
 
-    const login = try compressed(&storage, builder.make(support.modern, .login), .snappy);
+    const login = try compressed(&storage, builder.make(support.modern, .login), .snappy, 0);
     var login_packets = try tap.observe(.client_to_server, login);
     try testing.expectEqual(bedwire.PacketKind.login, login_packets.next().?.kind);
     login_packets.deinit();
     try testing.expectEqual(bedwire.TapPhase.awaiting_handshake, tap.phase());
 
-    const handshake = try compressed(&storage, builder.make(support.modern, .server_to_client_handshake), .snappy);
+    const handshake = try compressed(&storage, builder.make(support.modern, .server_to_client_handshake), .snappy, 0);
     var handshake_packets = try tap.observe(.server_to_client, handshake);
     try testing.expectEqual(bedwire.PacketKind.server_to_client_handshake, handshake_packets.next().?.kind);
     try testing.expectEqual(bedwire.TapPhase.encrypted, tap.phase());
@@ -97,18 +109,18 @@ test "tap rejects wrong direction, order and malformed input without losing pool
     try testing.expectError(error.InvalidState, tap.observe(.client_to_server, settings));
     packets = try tap.observe(.server_to_client, settings);
     packets.deinit();
-    const handshake = try compressed(&storage, builder.make(support.modern, .server_to_client_handshake), .snappy);
+    const handshake = try compressed(&storage, builder.make(support.modern, .server_to_client_handshake), .snappy, 0);
     try testing.expectError(error.InvalidState, tap.observe(.server_to_client, handshake));
     try testing.expectError(error.UnsupportedCompression, tap.observe(.client_to_server, &.{ 0xfe, 2, 0 }));
     try testing.expectError(error.MalformedCompressedData, tap.observe(.client_to_server, &.{ 0xfe, 1, 0x80 }));
     try testing.expect(pool.isIdle());
 }
 
-test "tap authenticates only the observed Login lease" {
+test "tap authenticates observed Login with a receive-only profile" {
     const allocator = testing.allocator;
     var pool = try bedwire.BufferPool.init(allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
-    var tap = try bedwire.TapWithProfile(support.modern).init(.{ .pool = &pool });
+    var tap = try bedwire.TapWithProfile(ReadOnlyLoginProfile).init(.{ .pool = &pool });
     defer tap.deinit();
     var builder: support.Builder = .{};
     var storage: [support.limits.max_frame_bytes]u8 = undefined;
@@ -134,7 +146,7 @@ test "tap authenticates only the observed Login lease" {
         .header = .{ .packet_id = support.modern.packetId(.login).? },
         .packet = .{ .login = .{ .client_network_version = support.modern.protocol_number, .connection_request = request } },
     });
-    const login = try compressed(&storage, writer.written(), .snappy);
+    const login = try compressed(&storage, writer.written(), .snappy, 0);
     packets = try tap.observe(.client_to_server, login);
     const observed = packets.next().?;
     var identity = try tap.authenticateLoginPacket(allocator, observed, .{ .certificate_chain = .{ .now = 100, .root = keys[1].public_key } });
@@ -162,4 +174,62 @@ test "legacy TapWithProfile starts at Login with implicit DEFLATE" {
     defer packets.deinit();
     try testing.expectEqual(bedwire.PacketKind.login, packets.next().?.kind);
     try testing.expectEqual(bedwire.TapPhase.awaiting_handshake, tap.phase());
+}
+
+test "tap follows DEFLATE and marked uncompressed negotiation" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, bedwire.PoolConfig.observer());
+    defer pool.deinit();
+    const WireAlgorithm = @FieldType(protocol.packets.network_settings.Packet, "compression_algorithm");
+    const cases = .{
+        .{ .wire = WireAlgorithm.zlib, .algorithm = bedwire.compression.Algorithm.deflate, .threshold = @as(u16, 0) },
+        .{ .wire = WireAlgorithm.snappy, .algorithm = bedwire.compression.Algorithm.snappy, .threshold = @as(u16, 512) },
+        .{ .wire = WireAlgorithm.none, .algorithm = bedwire.compression.Algorithm.none, .threshold = @as(u16, 0) },
+    };
+    inline for (cases) |case| {
+        var tap = try bedwire.TapWithProfile(support.modern).init(.{ .pool = &pool });
+        defer tap.deinit();
+        var builder: support.Builder = .{};
+        var storage: [support.limits.max_frame_bytes]u8 = undefined;
+        var packets = try tap.observe(.client_to_server, try plain(&storage, builder.make(support.modern, .request_network_settings)));
+        packets.deinit();
+
+        var settings_storage: [128]u8 = undefined;
+        var writer = protocol.Writer.init(&settings_storage);
+        try protocol.typed.encode(&writer, .{
+            .header = .{ .packet_id = support.modern.packetId(.network_settings).? },
+            .packet = .{ .network_settings = .{
+                .compression_threshold = case.threshold,
+                .compression_algorithm = case.wire,
+                .client_throttle_enabled = false,
+                .client_throttle_threshold = 0,
+                .client_throttle_scalar = 0,
+            } },
+        });
+        packets = try tap.observe(.server_to_client, try plain(&storage, writer.written()));
+        packets.deinit();
+
+        const login = try compressed(&storage, builder.make(support.modern, .login), case.algorithm, case.threshold);
+        if (case.threshold != 0 or case.algorithm == .none) try testing.expectEqual(@as(u8, 0xff), login[1]);
+        packets = try tap.observe(.client_to_server, login);
+        try testing.expectEqual(bedwire.PacketKind.login, packets.next().?.kind);
+        packets.deinit();
+        const handshake = try compressed(&storage, builder.make(support.modern, .server_to_client_handshake), case.algorithm, case.threshold);
+        packets = try tap.observe(.server_to_client, handshake);
+        try testing.expectEqual(bedwire.PacketKind.server_to_client_handshake, packets.next().?.kind);
+        packets.deinit();
+        try testing.expectEqual(bedwire.TapPhase.encrypted, tap.phase());
+        try testing.expect(pool.isIdle());
+    }
+}
+
+test "tap deinit releases a held packet lease" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, bedwire.PoolConfig.observer());
+    defer pool.deinit();
+    var tap = try bedwire.TapWithProfile(support.modern).init(.{ .pool = &pool });
+    var builder: support.Builder = .{};
+    var storage: [128]u8 = undefined;
+    _ = try tap.observe(.client_to_server, try plain(&storage, builder.make(support.modern, .request_network_settings)));
+    try testing.expect(!pool.isIdle());
+    tap.deinit();
+    try testing.expect(pool.isIdle());
 }

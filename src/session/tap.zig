@@ -182,10 +182,11 @@ pub fn TapWithProfile(comptime Profile: type) type {
             if (self.current_phase != .awaiting_handshake or self.active_generation == null or packet.kind != .login) return error.InvalidState;
             const observed = self.login_bytes orelse return error.InvalidState;
             if (packet.bytes.ptr != observed.ptr or packet.bytes.len != observed.len or
-                packet.id != Profile.packetId(.login).?) return error.InvalidState;
+                Profile.packetKind(packet.id) != .login) return error.InvalidState;
             if (Profile.features.login_flow != @as(session.LoginFlow, policy)) return error.UnsupportedProtocol;
             const decoded = try Profile.decodeBorrowed(packet.bytes, protocolLimits(self.limits));
-            if (decoded.kind != .login or decoded.value != .typed or decoded.value.typed != .login) return error.InvalidProfile;
+            if (decoded.header.packet_id != packet.id or decoded.kind != .login or
+                decoded.value != .typed or decoded.value.typed != .login) return error.InvalidProfile;
             return session.verifyLoginRequest(allocator, decoded.value.typed.login.connection_request, policy, self.policy, self.limits);
         }
 
