@@ -137,7 +137,7 @@ test "malformed base64 segments are refused" {
     const mutated = try allocator.dupe(u8, encoded);
     defer allocator.free(mutated);
 
-    // Characters outside the url-safe alphabet, in each of the three segments.
+    // Check the header, payload, and signature segments.
     for ([_]usize{ 1, 12, encoded.len - 2 }) |index| {
         @memcpy(mutated, encoded);
         mutated[index] = '!';

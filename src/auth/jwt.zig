@@ -150,7 +150,7 @@ pub const Token = struct {
     }
 };
 
-/// Bounds nesting before std.json sees the input.
+/// Check nesting before parsing JSON.
 pub fn parseJson(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) !std.json.Parsed(std.json.Value) {
     if (bytes.len > @max(limits.max_jwt_header_bytes, limits.max_jwt_payload_bytes)) return error.LimitExceeded;
     if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUtf8;

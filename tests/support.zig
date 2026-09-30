@@ -8,8 +8,7 @@ pub const PacketKind = bedwire.PacketKind;
 pub const opaque_packet_id: u16 = 1020;
 pub const opaque_packet_id_2: u16 = 1021;
 
-/// Small enough that a session fits comfortably in a test, large enough to
-/// exercise compression and multi-packet batches.
+/// Small limits that still exercise compression and multi-packet batches.
 pub const limits: bedwire.Limits = .{
     .max_frame_bytes = 16 * 1024,
     .max_batch_bytes = 64 * 1024,
@@ -20,11 +19,8 @@ pub const limits: bedwire.Limits = .{
     .max_resource_pack_chunk_bytes = 4096,
 };
 
-/// A version with envelope framing and OIDC login flow.
 pub const modern_oidc = Profile(944, .{ .login_flow = .oidc });
-/// A version that negotiates compression and uses the validation step.
 pub const modern = Profile(818, .{ .login_flow = .certificate_chain });
-/// A version whose batches are implicitly DEFLATE with no marker byte.
 pub const legacy = Profile(440, .{
     .uses_request_network_settings = false,
     .compression_mode = .implicit,
@@ -76,21 +72,18 @@ pub fn packetId(comptime profile: type, kind: PacketKind) u16 {
     return profile.packetId(kind).?;
 }
 
-/// Writes `header ++ payload` for one packet.
 pub fn packet(dest: []u8, id: u16, payload: []const u8) []u8 {
     const len = bedwire.framing.varint.writeU32(dest, id) catch unreachable;
     @memcpy(dest[len..][0..payload.len], payload);
     return dest[0 .. len + payload.len];
 }
 
-/// Same, with explicit split-screen subclient fields.
 pub fn subclientPacket(dest: []u8, id: u16, sender: u2, target: u2) []u8 {
     const wire = @as(u32, id) | (@as(u32, sender) << 10) | (@as(u32, target) << 12);
     const len = bedwire.framing.varint.writeU32(dest, wire) catch unreachable;
     return dest[0..len];
 }
 
-/// One packet buffer per test, so callers do not juggle scratch arrays.
 pub const Builder = struct {
     storage: [4096]u8 = undefined,
 
@@ -180,8 +173,7 @@ pub const Builder = struct {
     }
 };
 
-/// A connected server and client using one profile, plus a copy buffer so
-/// a frame survives the encode that produced it.
+/// A client/server pair with a copy buffer for encoded frames.
 pub const Pair = struct {
     pub fn init(allocator: std.mem.Allocator, comptime profile: type) !PairFor(profile) {
         return PairFor(profile).init(allocator);
@@ -229,7 +221,6 @@ pub fn PairFor(comptime profile: type) type {
             self.* = undefined;
         }
 
-        /// Encodes on `from`, copies the frame, and ingests it on `to`
         pub fn relayFrom(self: *Self, from: *ProfileSession, to: *ProfileSession, packets: []const []const u8) !ProfileSession.Packets {
             const frame = try from.encode(packets);
             defer frame.release();
@@ -266,8 +257,7 @@ pub fn encodedKey(key: Ecdsa.PublicKey) [160]u8 {
     return bedwire.auth.login.encodedPublicKey(key);
 }
 
-/// Minimal ES384 signer, independent of Bedwire's own so a broken signer cannot
-/// validate itself.
+/// Signs independently so a Bedwire signing bug cannot validate itself.
 pub fn signToken(allocator: std.mem.Allocator, key: Ecdsa.KeyPair, header: []const u8, payload: []const u8) ![]u8 {
     const encoder = std.base64.url_safe_no_pad.Encoder;
     const header_len = encoder.calcSize(header.len);
@@ -318,7 +308,6 @@ pub fn buildChain(allocator: std.mem.Allocator, keys: [3]Ecdsa.KeyPair) ![]u8 {
     return std.fmt.allocPrint(allocator, "{{\"chain\":[\"{s}\",\"{s}\",\"{s}\"]}}", .{ tokens[0], tokens[1], tokens[2] });
 }
 
-/// The client-data token the last chain link must have signed.
 pub fn buildClientData(allocator: std.mem.Allocator, key: Ecdsa.KeyPair) ![]u8 {
     return signToken(allocator, key, "{\"alg\":\"ES384\"}", "{}");
 }

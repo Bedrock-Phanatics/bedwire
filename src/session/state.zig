@@ -37,7 +37,7 @@ pub const State = enum {
         return self != .closing and self != .disconnected;
     }
 
-    // One packet per batch until encryption settles, so nothing rides along with a key change.
+    // Keep key changes in their own batches.
     pub fn singlePacketBatch(self: State) bool {
         return switch (self) {
             .transport_ready, .network_settings, .authenticating, .encrypted_handshake => true,

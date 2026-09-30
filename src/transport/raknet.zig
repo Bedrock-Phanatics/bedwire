@@ -5,10 +5,10 @@ const session_mod = @import("../session/session.zig");
 const Packet = session_mod.Packet;
 const Session = session_mod.Session;
 
-/// Peer needs send(bytes, reliability, channel); Handler needs
-/// onPacket(*Handler, *Session, Packet) !void. Packet bytes only live for the callback.
-/// send must consume or copy bytes before returning. Handlers may send or close,
-/// but must not destroy the session or retain borrowed packet bytes.
+/// Peer needs send(bytes, reliability, channel). Handler needs
+/// onPacket(*Handler, *Session, Packet) !void.
+/// Send must consume or copy bytes. Handlers must not retain packet bytes
+/// or destroy the Session during a callback.
 pub fn RakNet(comptime Peer: type, comptime Handler: type) type {
     return RakNetWithProfile(@import("bedrock_protocol").Current, Peer, Handler);
 }

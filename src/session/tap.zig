@@ -28,7 +28,7 @@ pub fn TapWithProfile(comptime Profile: type) type {
             bytes: []const u8,
         };
 
-        /// Packet bytes expire when any copy of this lease is released.
+        /// Releasing any iterator copy invalidates its packet bytes.
         pub const Packets = struct {
             reader: batch.Reader,
             tap: *Self,
@@ -79,7 +79,7 @@ pub fn TapWithProfile(comptime Profile: type) type {
         generation: u64 = 0,
         login_bytes: ?[]const u8 = null,
 
-        /// Serialize calls on one Tap; independent taps may share a pool.
+        /// Serialize calls on one Tap. Taps may share a pool.
         pub fn init(options: Options) !Self {
             const limits = if (options.limits) |l| blk: {
                 try l.validate();
@@ -105,7 +105,7 @@ pub fn TapWithProfile(comptime Profile: type) type {
             return self.current_phase;
         }
 
-        /// Decoded packets borrow the pool lease; the caller's payload stays untouched.
+        /// Packet bytes borrow the pool; input stays untouched.
         pub fn observe(self: *Self, direction: Direction, payload: []const u8) !Packets {
             if (self.active_generation != null) return error.InvalidState;
             if (self.current_phase == .encrypted) return error.Opaque;

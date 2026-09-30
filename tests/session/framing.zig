@@ -149,7 +149,7 @@ test "invalid packet headers are refused on both paths" {
     pair.client.state = .in_game;
     pair.server.state = .in_game;
 
-    // 0x4000 and above does not fit the 14-bit header
+    // 0x4000 exceeds the 14-bit header field.
     try testing.expectError(error.MalformedBatch, pair.client.encodeOne(&.{ 0x80, 0x80, 0x02 }));
     try testing.expectError(error.MalformedBatch, pair.server.ingest(&.{ 0xfe, 3, 0x80, 0x80, 0x02 }));
 }
@@ -198,7 +198,6 @@ const Link = struct {
         self.client.deinit();
     }
 
-    /// Encodes one opaque packet per payload on the client; the frame is held until released.
     fn frame(self: *Link, payloads: []const []const u8) !support.Session.Frame {
         var packets: [4][]const u8 = undefined;
         for (payloads, 0..) |payload, i| packets[i] = support.packet(&self.storage[i], 1020 + @as(u16, @intCast(i)), payload);

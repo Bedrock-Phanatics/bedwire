@@ -66,14 +66,14 @@ test "Snappy rejects malformed streams without writing output" {
 
 test "Snappy refuses to decompress past the caller's buffer" {
     var output: [4]u8 = undefined;
-    // The stream advertises 32 bytes; the caller offered 4.
+    // Advertises 32 bytes with room for only 4.
     try testing.expectError(error.LimitExceeded, snappy.decompress(&.{0x20}, &output, limits));
 }
 
 test "Snappy self-references decode correctly when the copy overlaps" {
     var output: [64]u8 = undefined;
 
-    // Length 8, one literal byte, then a copy of length 7 at offset 1.
+    // One literal followed by a seven-byte back-reference.
     const input = [_]u8{ 0x08, 0x00, 'a', (3 << 2) | 1, 0x01 };
     try testing.expectEqualSlices(u8, "aaaaaaaa", try snappy.decompress(&input, &output, limits));
 }

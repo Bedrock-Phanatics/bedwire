@@ -47,7 +47,6 @@ pub const Frame = Session.Frame;
 pub const Packets = Session.Packets;
 pub const Packet = Session.Packet;
 
-/// Bedwire policy that is independent of a profile's wire capabilities.
 pub const SessionPolicy = struct {
     encryption: enum { required, optional } = .required,
     connection_request_format: enum { legacy_chain, envelope } = .envelope,
@@ -58,8 +57,8 @@ pub fn SessionWithProfile(comptime Profile: type) type {
     return struct {
         const Self = @This();
 
-        /// Outbound bytes remain valid until release or Session.deinit, including across close.
-        /// Copies share one lease; the Session must stay at a stable address.
+        /// Bytes survive close, but expire on release or Session.deinit.
+        /// Copies share a lease; keep the Session at a stable address.
         pub const Frame = struct {
             bytes: []const u8,
             session: *Self,
@@ -70,15 +69,15 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             }
         };
 
-        /// Packet bytes borrow the RX lease until Packets.deinit or Session.deinit.
+        /// Bytes expire on Packets.deinit or Session.deinit.
         pub const Packet = struct {
             kind: ?PacketKind,
             id: PacketId,
             bytes: []const u8,
         };
 
-        /// Copies have separate cursors but share one RX lease; deinit of any copy
-        /// invalidates every Packet slice from that lease. EOF and close retain storage.
+        /// Copies share a lease, so deinit of any copy invalidates all packet slices.
+        /// EOF and close keep the lease alive.
         pub const Packets = struct {
             reader: batch.Reader,
             session: *Self,
@@ -128,8 +127,8 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             }
         };
 
-        /// Serialize access to each Session, including release. Independent Sessions
-        /// may share a pool. Keep the Session at a stable address while leases exist.
+        /// Serialize calls, including release. Sessions may share a pool.
+        /// Keep the Session at a stable address while leases exist.
         policy: SessionPolicy,
         limits: Limits,
         role: Role,
@@ -176,7 +175,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.* = undefined;
         }
 
-        /// Closes the Session without invalidating borrowed RX or TX storage.
+        /// Close keeps borrowed buffers alive.
         pub fn close(self: *Self) void {
             self.state = .disconnected;
             if (self.crypto) |*crypto| crypto.deinit();
@@ -208,7 +207,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return self.received.contains(kind);
         }
 
-        /// Admits the whole batch or none of it. Failures other than PoolExhausted close the Session.
+        /// Admits whole batches. Errors other than PoolExhausted close the Session.
         pub fn ingest(self: *Self, payload: []const u8) !Self.Packets {
             if (self.state == .disconnected) return error.TransportClosed;
             if (self.active_generation != null or self.rx_slot != null) return error.InvalidState;
@@ -251,8 +250,8 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             };
         }
 
-        /// A held Frame returns PoolExhausted. Send successful frames in order;
-        /// close the Session if a committed frame is abandoned or sending fails.
+        /// A held Frame returns PoolExhausted. Send frames in order and close
+        /// the Session if a frame is abandoned or sending fails.
         pub fn encode(self: *Self, packets: []const []const u8) !Self.Frame {
             if (self.state == .disconnected) return error.TransportClosed;
             if (self.tx_slot != null) return error.PoolExhausted;
@@ -316,8 +315,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return self.encode(&.{packet});
         }
 
-        /// Decode a packet through this session's profile. Returned slices borrow
-        /// the packet lease and expire when Packets.deinit is called.
+        /// Decoded slices expire when Packets.deinit is called.
         pub fn decodePacket(self: *const Self, packet: Self.Packet) !protocol.BorrowedEnvelope {
             if (packet.bytes.len > self.limits.max_packet_bytes) return error.LimitExceeded;
             if (Profile.packetKind(packet.id) != packet.kind) return error.InvalidProfile;
@@ -326,7 +324,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return decoded;
         }
 
-        /// Apply normalized NetworkSettings, leaving the state unchanged on failure.
+        /// Failed settings leave the state unchanged.
         pub fn negotiateFromSettings(self: *Self, packet: Self.Packet) !void {
             if (packet.kind != .network_settings) return error.InvalidState;
             const decoded = try self.decodePacket(packet);
@@ -425,7 +423,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return identity;
         }
 
-        /// For hosts that authenticated the client upstream, e.g. a proxy.
+        /// Use when the host already authenticated the client.
         pub fn installVerifiedClientKey(self: *Self, key: spki.Ecdsa.PublicKey) !void {
             if (self.role != .server or self.state != .authenticating) return error.InvalidState;
             if (!self.didReceive(.login)) return error.InvalidState;
@@ -433,7 +431,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.peer_key = key;
         }
 
-        /// Call after ServerToClientHandshake is sent; that packet goes in the clear.
+        /// Call after sending the cleartext ServerToClientHandshake.
         pub fn installServerCrypto(self: *Self, secret: spki.Ecdsa.SecretKey, salt: [16]u8) !void {
             const ordered =
                 self.role == .server and
@@ -469,7 +467,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             const allowed = switch (next) {
                 .resource_packs => switch (self.state) {
                     .encrypted_handshake => self.crypto != null and self.exchanged(.client_to_server_handshake, .client),
-                    // A server must hold an authenticated client key even without encryption.
+                    // The client key must be authenticated even without encryption.
                     .authenticating => self.policy.encryption == .optional and self.exchanged(.login, .client) and
                         (self.role == .client or self.peer_key != null),
                     else => false,
@@ -579,7 +577,7 @@ fn parseHeader(packet: []const u8) !protocol.packet.Header {
     return decoded.header;
 }
 
-/// Shared by endpoint sessions and passive observers after stage validation.
+/// Shared by sessions and taps after stage validation.
 pub fn verifyLoginRequest(allocator: std.mem.Allocator, bytes: []const u8, policy: TrustPolicy, session_policy: SessionPolicy, limits: Limits) !identity_mod.Identity {
     const req = try wire.decodeConnectionRequest(bytes, limits);
     var envelope = try wire.parseChainEnvelope(allocator, req.chain_data, limits);

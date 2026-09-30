@@ -3,7 +3,7 @@ const Limits = @import("../limits.zig").Limits;
 const flate = @import("../compression/flate.zig");
 const Scratch = @import("../compression/algorithm.zig").Scratch;
 
-/// Header, compression marker and MAC around an uncompressed batch built in place.
+/// Space for the header, compression marker, and MAC.
 pub const frame_overhead = 1 + 1 + 8;
 
 pub const PoolConfig = struct {
@@ -33,8 +33,8 @@ pub const TxSlot = struct {
     scratch: Scratch = undefined,
 };
 
-/// Shared bounded RX/TX pool. Keep its address stable and destroy it after all
-/// sessions, taps, and leases; releasing a token invalidates slices into its slot.
+/// Keep the pool at a stable address and destroy it after its users and leases.
+/// Releasing a token invalidates slices into that slot.
 pub const BufferPool = struct {
     allocator: std.mem.Allocator,
     limits: Limits,

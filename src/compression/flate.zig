@@ -6,10 +6,9 @@ pub const history_len = std.compress.flate.max_window_len;
 
 pub const minimum_output_bytes = 64;
 
-/// Raw DEFLATE. Kept out of line: std's compressor is a ~230 KiB stack local
-/// that would otherwise inflate every caller's frame.
+/// Keep std's large compressor stack frame out of callers.
 pub noinline fn compress(input: []const u8, output: []u8, history: *[history_len]u8) ![]u8 {
-    // std's compressor asserts instead of erroring below 64 bytes.
+    // std's compressor asserts when given less than 64 bytes.
     if (output.len < minimum_output_bytes) return error.NoSpaceLeft;
 
     var writer: std.Io.Writer = .fixed(output);

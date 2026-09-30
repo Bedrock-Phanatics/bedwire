@@ -50,7 +50,6 @@ pub const Limits = struct {
         if (self.max_json_nesting > max_supported_json_nesting) return error.InvalidLimits;
         if (self.max_packet_bytes > self.max_batch_bytes) return error.InvalidLimits;
 
-        // Buffer sizing multiplies these during init, reject inputs that would overflow.
         _ = std.math.add(usize, self.max_jwt_header_bytes, self.max_jwt_payload_bytes) catch return error.InvalidLimits;
         _ = std.math.mul(usize, self.max_batch_bytes, 2) catch return error.InvalidLimits;
     }

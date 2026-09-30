@@ -5,11 +5,10 @@ const session_mod = @import("../session/session.zig");
 const Packet = session_mod.Packet;
 const Session = session_mod.Session;
 
-/// Connection needs send(bytes, reliability) and receive() !Message; Handler needs
-/// onPacket(*Handler, *Session, Packet) !void. Bedrock needs ordered delivery, so
-/// pump() closes on an unreliable message.
-/// send must consume or copy bytes before returning. Message.data must remain
-/// valid through deliver; handlers must not retain borrowed packet bytes.
+/// Connection needs send(bytes, reliability) and receive() !Message.
+/// Handler needs onPacket(*Handler, *Session, Packet) !void.
+/// Send must consume or copy bytes; received data must live through delivery.
+/// Handlers must not retain packet bytes. Unreliable delivery closes the Session.
 pub fn NetherNet(comptime Connection: type, comptime Handler: type) type {
     return NetherNetWithProfile(@import("bedrock_protocol").Current, Connection, Handler);
 }
@@ -40,12 +39,11 @@ pub fn NetherNetWithProfile(comptime Profile: type, comptime Connection: type, c
             defer self.pumping = false;
 
             const message = self.connection.receive() catch |err| {
-                // NetherNet poll closes on error; Canceled and UnexpectedSignal
-                // come from receive after a successful poll.
+                // Receive can return Canceled or UnexpectedSignal after a successful poll.
                 if (err != error.Canceled and err != error.UnexpectedSignal) self.session.close();
                 return err;
             };
-            // The message has been consumed. Admission failure cannot be retried here.
+            // A consumed message cannot be retried after admission fails.
             errdefer self.session.close();
             if (message.reliability != .reliable) {
                 self.session.close();

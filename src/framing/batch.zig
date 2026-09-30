@@ -11,7 +11,7 @@ pub fn strip(frame: []const u8, limits: Limits) ![]const u8 {
     return frame[1..];
 }
 
-/// Returned slices borrow the input.
+/// Packet slices borrow the input.
 pub const Reader = struct {
     bytes: []const u8,
     cursor: usize = 0,

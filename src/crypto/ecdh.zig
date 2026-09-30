@@ -1,7 +1,7 @@
 const std = @import("std");
 const Ecdsa = @import("spki.zig").Ecdsa;
 
-/// sha256(salt ++ x) of the P-384 shared point.
+/// SHA-256 of the salt and P-384 shared point's X coordinate.
 pub fn derive(secret: Ecdsa.SecretKey, peer: Ecdsa.PublicKey, salt: [16]u8) ![32]u8 {
     const point = try std.crypto.ecc.P384.fromSec1(&peer.toUncompressedSec1());
     const shared = try point.mul(secret.toBytes(), .big);

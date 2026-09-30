@@ -69,7 +69,6 @@ test "a download list may only name offered packs, once each" {
     try testing.expectError(error.DuplicatePack, negotiation.respond(.send_packs, &.{ "alpha", "alpha" }));
     try testing.expectError(error.LimitExceeded, negotiation.respond(.send_packs, &.{ "alpha", "beta", "alpha" }));
 
-    // A rejected list leaves nothing marked.
     try testing.expectEqual(packs.Phase.offered, negotiation.phase);
     for (negotiation.packs) |pack| try testing.expect(!pack.requested);
 }
@@ -113,12 +112,10 @@ test "offer count, per-pack size and aggregate size are all bounded" {
     tight.max_resource_pack_bytes = 1500;
     try testing.expectError(error.LimitExceeded, packs.Negotiation.init(testing.allocator, offers, tight));
 
-    // Each pack fits, but together they do not.
     tight = support.limits;
     tight.max_resource_pack_bytes = 2500;
     try testing.expectError(error.LimitExceeded, packs.Negotiation.init(testing.allocator, offers, tight));
 
-    // A size that would overflow the running total.
     const huge: []const packs.Offer = &.{
         .{ .id = "alpha", .size = std.math.maxInt(u64) },
     };

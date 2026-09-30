@@ -1,50 +1,21 @@
-# bedwire
+# Bedwire
 
-Minecraft: Bedrock Edition session networking for Zig 0.16.0.
-<p align="center">
-    Join our <a href="https://discord.gg/Yv9qPRQNc3">Discord</a>!
-</p>
+Minecraft Bedrock session networking for Zig 0.16.0. Bedwire sits between a transport such as RakNet or NetherNet and the `bedrock_protocol` packet codec. It handles batch framing, compression, login authentication, encryption, and session state. Your application owns network I/O and trust-key fetching.
 
-`bedwire` bridges transport carriers (such as RakNet or NetherNet) and packet codecs (`bedrock_protocol`). It handles batch framing, compression, ECDH key exchange, continuous AES-256-CTR session encryption, modern OpenID Connect (OIDC / RS256 / JWKS) and legacy Mojang certificate chain (ES384) authentication, and protocol-gated session state enforcement.
+## Add Bedwire to a project
 
-## Features
-
-- **Bounded Batch Framing**: `0xFE` prefix with VarInt packet length delimiters and exact consumption validation.
-- **Compression**: Raw DEFLATE and Snappy (S2 compatible) compression; Snappy output is cross-checked against Go S2.
-- **Session Cryptography**: P-384 ECDH key exchange and continuous AES-256-CTR session encryption with native Zig standard library primitives.
-- **Modern Bedrock Authentication (Protocols $\ge$ 898 / Minecraft $\ge$ 1.21.130)**:
-  - RFC 7517 JWKS catalog parser (`bedwire.auth.KeySet`) for Microsoft's authentication keys.
-  - Strict RS256 verification of OpenID Connect ID tokens against trusted RSA-2048 public keys.
-  - Ephemeral client public key (`cpk`) claim binding to ES384 `ClientData` tokens.
-  - Canonical player `Identity` resolution: `displayName`, `XUID`, and UUIDv3 derivation (`pocket-auth-1-xuid:<xuid>`).
-- **Legacy Authentication (Protocols $<$ 898 / Minecraft $<$ 1.21.130)**:
-  - 3-link Mojang certificate chain verification against pinned Mojang root public key (`moj_root`).
-- **Strict Protocol Gating & Anti-Downgrade**:
-  - Wire framing (`legacy_chain` vs `envelope`) is explicit session policy; login flow is supplied by the selected protocol profile.
-  - A batch is admitted whole or not at all. Failed ingest or authentication closes the session and zeroes its key material.
-- **Zero-Allocation Steady State**:
-  - Fixed-capacity shared `BufferPool` with generational slot recycling and zero heap allocations during steady-state packet I/O.
-- **Zero Network I/O**: Pure in-memory cryptographic and protocol engine. The host application retains full ownership over HTTP fetching, caching, and network carriers.
-
-## Requirements
-
-- Zig 0.16.0
-- `bedrock_protocol`
-
-## Installation
-
-Add `bedwire` to `build.zig.zon`:
+In `build.zig.zon`, pin a commit and use the hash Zig reports for that archive:
 
 ```zig
 .dependencies = .{
     .bedwire = .{
         .url = "https://github.com/Bedrock-Phanatics/bedwire/archive/<commit>.tar.gz",
-        .hash = "...",
+        .hash = "<hash>",
     },
 },
 ```
 
-Add the module dependency in `build.zig`:
+In `build.zig`:
 
 ```zig
 const bedwire = b.dependency("bedwire", .{
@@ -54,242 +25,103 @@ const bedwire = b.dependency("bedwire", .{
 exe.root_module.addImport("bedwire", bedwire.module("bedwire"));
 ```
 
-## Quick Start
+## Use a session
 
-### 1. Initialize Buffer Pool and Session
+Create a shared pool, then a session for each connection. `Session` uses the current `bedrock_protocol` profile:
 
 ```zig
 const std = @import("std");
 const bedwire = @import("bedwire");
 
-// Define session limits
-const limits = bedwire.Limits{};
-try limits.validate();
-
-// Initialize shared buffer pool across sessions
-var pool = try bedwire.BufferPool.init(allocator, limits, bedwire.PoolConfig.conservative());
+var pool = try bedwire.BufferPool.init(
+    allocator,
+    .{},
+    bedwire.PoolConfig.conservative(),
+);
 defer pool.deinit();
 
-// Create a session using protocol-zig's current profile
-var session = try bedwire.Session.init(.server, .{ .pool = &pool, .limits = limits });
+var session = try bedwire.Session.init(.server, .{ .pool = &pool });
 defer session.deinit();
+
+var packets = try session.ingest(incoming_frame);
+defer packets.deinit();
+
+while (packets.next()) |packet| {
+    std.log.info("packet {d}: {d} bytes", .{ packet.id, packet.bytes.len });
+}
+
+const frame = try session.encodeOne(outgoing_packet);
+defer frame.release();
+carrier.send(frame.bytes) catch |err| {
+    session.close();
+    return err;
+};
 ```
 
-For a third-party multiversion profile, use
-`bedwire.SessionWithProfile(MyProfile).init(.server, options)`.
-The profile must implement `bedrock_protocol.validateProfile`'s compile-time
-contract. Profiles are selected per session type; there is no global registry.
-Set `options.policy.connection_request_format = .legacy_chain` for a profile
-whose login uses that Bedwire authentication envelope.
-For profile-specific adapters, use `bedwire.transport.RakNetWithProfile` or
-`bedwire.transport.NetherNetWithProfile` with the same profile type.
+`incoming_frame` is a complete Bedrock batch from the transport; `outgoing_packet` is an encoded packet from your selected profile. Send frames in encode order. The transport must consume or copy `frame.bytes` before `send` returns.
 
-### Passive observation for transparent proxies
+Packet bytes are borrowed until `packets.deinit()`; frame bytes are borrowed until `frame.release()`. A session allows one outstanding packet iterator and one outgoing frame. Keep the session and pool at stable addresses, serialize calls on each session, and destroy the pool last.
 
-Create one Tap per proxied connection and feed it both directions. Forward the
-original carrier payload unchanged; Tap only borrows decoded packets from its
-pool lease. Release each iterator before the next `observe` call.
+## Observe a proxied connection
+
+A `Tap` reads both directions without changing the bytes you forward. Call it for each cleartext batch with its actual direction:
 
 ```zig
-var tap = try bedwire.Tap.init(.{ .pool = &pool, .limits = limits });
+var pool = try bedwire.BufferPool.init(
+    allocator,
+    .{},
+    bedwire.PoolConfig.observer(),
+);
+defer pool.deinit();
+
+var tap = try bedwire.Tap.init(.{ .pool = &pool });
 defer tap.deinit();
 
-var packets = try tap.observe(.client_to_server, original_payload);
-defer packets.deinit();
-while (packets.next()) |packet| {
-    if (packet.kind == .login) {
-        var identity = try tap.authenticateLoginPacket(allocator, packet, trust_policy);
-        defer identity.deinit();
+if (tap.phase() != .encrypted) {
+    var packets = try tap.observe(direction, original_payload);
+    defer packets.deinit();
+
+    while (packets.next()) |packet| {
+        std.log.info("observed packet {d}", .{packet.id});
     }
 }
 try carrier.forward(original_payload);
 ```
 
-Use `TapWithProfile(Profile)` for a version selected by the application. Tap
-tracks RequestNetworkSettings, NetworkSettings, Login, then the cleartext
-ServerToClientHandshake. `tap.phase()` becomes `.encrypted` as soon as that
-handshake is observed; stop observing and pass subsequent ciphertext through.
-An observe call after that point returns `error.Opaque`. Authentication accepts
-only the Login packet from its active iterator and uses the same trust policy
-and verification as `Session`. For legacy chain framing, set
-`options.policy.connection_request_format = .legacy_chain`.
+Release the iterator before the next `observe`. After the server handshake, `tap.phase()` becomes `.encrypted`; pass later ciphertext through without observing it. To verify an observed Login, call `tap.authenticateLoginPacket(allocator, packet, trust_policy)` while that packet's iterator is active. A Tap does not create a replacement Login or authenticate a proxy to the backend.
 
-Bedwire does not construct a proxy-signed downstream Login. A self-signed
-certificate is suitable only when the backend explicitly trusts that proxy;
-it does not convey Microsoft/Xbox authentication to a normal backend.
+## Authenticate a Login
 
-### 2. Ingest and Process Packets
+The host fetches and caches Microsoft's JWKS. For an OIDC profile, parse the keys and verify the Login packet while its iterator is active:
 
 ```zig
-// Ingest incoming raw batch frame (0xfe prefixed wire buffer)
-var packets = try session.ingest(batch_bytes);
-defer packets.deinit();
+var keys = try bedwire.auth.KeySet.parse(allocator, jwks_json, .{});
+defer keys.deinit();
 
+const trust: bedwire.TrustPolicy = .{
+    .oidc = .{ .now = now_unix_seconds, .keys = &keys },
+};
+
+var packets = try session.ingest(login_frame);
+defer packets.deinit();
 while (packets.next()) |packet| {
-    // packet.kind: ?bedrock_protocol.PacketKind
-    // packet.id: PacketId
-    // packet.bytes: []const u8 (borrows from internal pool buffer)
-    // session.decodePacket(packet) uses the selected profile's borrowed codec
+    if (packet.kind != .login) continue;
+    var identity = try session.authenticateLoginPacket(allocator, packet, trust);
+    defer identity.deinit();
+    std.log.info("authenticated {s}", .{identity.display_name});
 }
 ```
 
-### 3. Send Framed Packets
+For a legacy profile, use `.{ .certificate_chain = .{ .now = now_unix_seconds } }` and set `options.policy.connection_request_format = .legacy_chain`. Use `SessionWithProfile(Profile)` or `TapWithProfile(Profile)` for another `bedrock_protocol` profile; the selected profile defines packet layouts and login flow. The host sends the cleartext server handshake before calling `session.installServerCrypto(...)`.
 
-```zig
-// Encode packets into an outbound wire frame (compressed and encrypted if enabled)
-const frame = try session.encode(&.{ packet_one_bytes, packet_two_bytes });
-defer frame.release();
+## Limits and checks
 
-// Send frame.bytes over carrier (e.g. RakNet or NetherNet)
-try carrier.send(frame.bytes);
-```
-
-Each session permits one outstanding `Frame` and one `Packets` iterator.
-Release the frame before another encode (`PoolExhausted`) and deinit the iterator
-before another ingest (`InvalidState`). Shared pool exhaustion also returns
-`PoolExhausted`; there is no fallback allocation or queue.
-
-Frame and packet bytes survive `Session.close()`. Release/deinit ends the borrow
-for all copies; `Session.deinit()` ends any remaining borrows. Keep sessions and
-pools at stable addresses, and serialize access to each session.
-
-Send frames in encode order. If sending fails or a frame is abandoned, close the
-session. Transport send hooks must consume or copy bytes before returning.
-NetherNet `pump` closes after a consumed message fails admission; push-style
-callers may retry backpressure if they retain the input.
-
-## Authentication
-
-Bedwire provides `session.authenticateLoginPacket(...)` for a profile-decoded Login packet, or `session.authenticateLogin(...)` for an already extracted connection request. Both enforce the selected login flow, wire format policy, and failure atomicity.
-
-### Modern OIDC Authentication (Protocols $\ge$ 898, e.g. 944)
-
-The host application fetches Microsoft's JWKS catalog (e.g., from `https://authorization.franchise.minecraft-services.net/.well-known/keys`), parses it once into a `KeySet`, and supplies an `OidcPolicy`:
-
-```zig
-// 1. Host application parses cached JWKS keys
-var key_set = try bedwire.auth.jwks.KeySet.parse(allocator, jwks_json, limits);
-defer key_set.deinit();
-
-// 2. Configure OIDC trust policy
-const now_unix_seconds: i64 = /* supplied by host */;
-const oidc_policy = bedwire.auth.OidcPolicy{
-    .now = now_unix_seconds,
-    .clock_skew = 60,
-    .keys = &key_set,
-    // .issuer defaults to "https://authorization.franchise.minecraft-services.net/"
-    // .audience defaults to "api://auth-minecraft-services/multiplayer"
-};
-
-// 3. Authenticate Login packet connection_request payload
-var identity = try session.authenticateLogin(
-    allocator,
-    connection_request_bytes,
-    .{ .oidc = oidc_policy },
-);
-defer identity.deinit();
-
-std.debug.print("Authenticated player: {s} (UUID: {s}, XUID: {s})\n", .{
-    identity.display_name,
-    identity.uuid,
-    identity.xuid,
-});
-```
-
-### Legacy Certificate Chain (Protocols $<$ 898)
-
-For older Bedrock versions, configure a `ChainPolicy` to verify Mojang's 3-link certificate chain:
-
-```zig
-const now_unix_seconds: i64 = /* supplied by host */;
-const chain_policy = bedwire.auth.ChainPolicy{
-    .now = now_unix_seconds,
-};
-
-var identity = try session.authenticateLogin(
-    allocator,
-    connection_request_bytes,
-    .{ .certificate_chain = chain_policy },
-);
-defer identity.deinit();
-```
-
-### Enabling Session Encryption
-
-Once identity is verified, the server sends the `ServerToClientHandshake` packet in the clear, and then derives the continuous AES-256-CTR encryption keys using the client's public key (stored in `session.peer_key`):
-
-```zig
-// 1. Send ServerToClientHandshake packet to client (sent in the clear)
-// const frame = try session.encodeOne(server_handshake_packet);
-// defer frame.release();
-// try carrier.send(frame.bytes);
-
-// 2. Derive shared secrets from session.peer_key.? and enable encryption
-try session.installServerCrypto(server_ecdh_key.secret_key, salt);
-
-// On client side:
-// try session.acceptServerHandshake(allocator, handshake_jwt, client_ecdh_key.secret_key);
-```
-
-## Memory and Limits
-
-Share one `BufferPool` per serialized worker or event loop, not one per player.
-The default limits reserve large buffers when a pool is created. An observer
-can use `PoolConfig.observer()` (one RX and one required TX slot) with validated
-application limits sized for its expected Login packet. This saves one RX slot
-relative to `conservative()`; it does not remove TX storage. Use separate pools
-only when workers access them independently, and keep each Tap at a stable
-address while a packet lease exists.
-
-Session limits and memory bounds are configured via `bedwire.Limits`:
-
-```zig
-var limits: bedwire.Limits = .{};
-limits.max_frame_bytes = 4 * 1024 * 1024;
-limits.max_batch_bytes = 16 * 1024 * 1024;
-limits.max_packet_bytes = 4 * 1024 * 1024;
-limits.max_packets_per_batch = 1024;
-
-limits.max_jwt_header_bytes = 8 * 1024;
-limits.max_jwt_payload_bytes = 1024 * 1024;
-limits.max_jwks_bytes = 64 * 1024;
-limits.max_jwks_keys = 16;
-limits.max_connection_request_bytes = 2 * 1024 * 1024;
-limits.max_identity_bytes = 1024;
-
-try limits.validate();
-```
-
-## Testing and Validation
-
-Run the test suite across optimization modes:
+`bedwire.Limits` bounds frames, decompressed batches, packets, authentication data, and JSON nesting. Set limits before creating the pool; pool allocation scales with them. Sessions and taps may use lower limits than their pool.
 
 ```sh
-# Debug mode
 zig build test
-
-# ReleaseSafe mode
 zig build test -Doptimize=ReleaseSafe
-
-# ReleaseFast mode
-zig build test -Doptimize=ReleaseFast
-```
-
-Verify formatting across sources and tests:
-
-```sh
-zig fmt --check build.zig build.zig.zon src tests bench tools/interop/export.zig
-```
-
-### Cross-Language Interoperability
-
-The `tools/interop` suite provides standalone bidirectional verification against Go S2 (pinned via `tools/interop/go.mod`):
-
-1. Cross-decodes Zig Snappy frames using Go S2.
-2. Fails if the Go-generated fixtures (`tests/compression/interop.json`) for raw DEFLATE, Snappy, continuous AES-256-CTR and P-384 ECDH are stale. Pass `--update` to rewrite them.
-
-Running the interoperability check requires Python 3 and Go 1.25+:
-
-```sh
 python tools/interop/check.py
 ```
+
+The interoperability check requires Python 3 and Go 1.25+.

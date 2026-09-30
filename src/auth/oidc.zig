@@ -15,7 +15,7 @@ pub const OidcPolicy = struct {
     audience: []const u8 = "api://auth-minecraft-services/multiplayer",
 };
 
-/// ClientData must be signed by the ID token's `cpk` key.
+/// The ID token's `cpk` key must sign ClientData.
 pub fn verifyOidc(
     allocator: std.mem.Allocator,
     encoded: []const u8,

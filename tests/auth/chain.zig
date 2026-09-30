@@ -49,7 +49,7 @@ test "an untrusted root is refused" {
     const client_data = try support.buildClientData(allocator, k[0]);
     defer allocator.free(client_data);
 
-    // The pinned Mojang root does not sign this chain.
+    // This chain is not signed by the pinned Mojang root.
     try testing.expectError(error.UntrustedChain, auth.verifyChain(allocator, chain, client_data, .{ .now = 100 }, support.limits));
 
     const wrong = try support.deterministicKey(9);
@@ -99,7 +99,6 @@ test "a tampered chain link is refused" {
     const mutated = try allocator.dupe(u8, chain);
     defer allocator.free(mutated);
 
-    // Flip a byte inside the first link's payload segment.
     const start = (std.mem.indexOf(u8, mutated, ".").? + 1);
     mutated[start + 4] = if (mutated[start + 4] == 'A') 'B' else 'A';
 

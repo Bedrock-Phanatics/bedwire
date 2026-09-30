@@ -5,7 +5,6 @@ const support = @import("../support.zig");
 const testing = std.testing;
 const SessionCrypto = bedwire.crypto.SessionCrypto;
 
-/// An encrypted pair in gameplay, both sides holding the same session key.
 fn encrypted(allocator: std.mem.Allocator, key: [32]u8) !support.PairFor(support.modern) {
     var pair = try support.Pair.init(allocator, support.modern);
     errdefer pair.deinit();
@@ -166,7 +165,6 @@ test "handshake tokens carry a 16-byte salt and reject malformed ones" {
     const header = try std.fmt.allocPrint(allocator, "{{\"alg\":\"ES384\",\"x5u\":\"{s}\"}}", .{support.encodedKey(key.public_key)});
     defer allocator.free(header);
 
-    // Padded, unpadded, over-padded, invalid alphabet, wrong length.
     const salts = [_][]const u8{
         "CQkJCQkJCQkJCQkJCQkJCQ",
         "CQkJCQkJCQkJCQkJCQkJCQ==",

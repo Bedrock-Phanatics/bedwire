@@ -27,7 +27,6 @@ pub const Claims = struct {
     online: bool,
 };
 
-/// Hyphenated 8-4-4-4-12 hex form.
 pub fn validateUuid(uuid: []const u8) bool {
     if (uuid.len != 36) return false;
     for (uuid, 0..) |byte, i| {
@@ -69,7 +68,7 @@ pub fn validateAndCreate(allocator: std.mem.Allocator, claims: Claims, limits: L
     };
 }
 
-/// RFC 4122 v3 UUID of "pocket-auth-1-xuid:" ++ xuid, as vanilla derives it.
+/// Bedrock's UUIDv3 uses "pocket-auth-1-xuid:" followed by the XUID.
 pub fn deriveUuidV3(dest: *[36]u8, xuid: []const u8) void {
     var md5 = std.crypto.hash.Md5.init(.{});
     md5.update("pocket-auth-1-xuid:");

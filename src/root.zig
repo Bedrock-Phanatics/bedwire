@@ -78,7 +78,6 @@ pub const resource_packs = struct {
     pub const serve = @import("resource_packs/transfer.zig").serve;
 };
 
-/// Comptime-generic adapters; neither imports its transport library.
 pub const transport = struct {
     pub const RakNet = @import("transport/raknet.zig").RakNet;
     pub const RakNetWithProfile = @import("transport/raknet.zig").RakNetWithProfile;

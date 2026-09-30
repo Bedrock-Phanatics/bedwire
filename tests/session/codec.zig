@@ -5,7 +5,6 @@ const support = @import("../support.zig");
 
 const testing = std.testing;
 
-/// Encodes one semantic packet with protocol-zig, for Bedwire to carry.
 fn encodePacket(storage: []u8, packet: protocol.typed.Packet, id: u10) ![]const u8 {
     var writer = protocol.Writer.init(storage);
     try protocol.typed.encode(&writer, .{ .header = .{ .packet_id = id }, .packet = packet });

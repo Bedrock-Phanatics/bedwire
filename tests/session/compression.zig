@@ -5,7 +5,6 @@ const support = @import("../support.zig");
 const testing = std.testing;
 const Algorithm = bedwire.compression.Algorithm;
 
-/// A negotiated pair already in gameplay, so only compression is under test
 fn negotiated(allocator: std.mem.Allocator, algorithm: Algorithm, threshold: u16) !support.PairFor(support.modern) {
     var pair = try support.Pair.init(allocator, support.modern);
     errdefer pair.deinit();
@@ -170,7 +169,7 @@ test "a Snappy bomb is refused on its advertised length alone" {
     session.state = .in_game;
     try session.compression.negotiate(.snappy, 0);
 
-    // a varint advertising 16 MiB followed by a single literal token
+    // Advertises 16 MiB, then provides one literal byte.
     const frame = [_]u8{ 0xfe, @intFromEnum(Algorithm.snappy), 0x80, 0x80, 0x80, 0x08, 0x00, 0x41 };
     try testing.expectError(error.LimitExceeded, session.ingest(&frame));
 }

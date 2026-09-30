@@ -19,7 +19,6 @@ const Options = struct {
     tamper: bool = false,
 };
 
-/// Signs `payload` (with `$cpk` bound to key 10) and verifies it against the test JWKS.
 fn verify(allocator: std.mem.Allocator, payload: []const u8, options: Options) !oidc.Identity {
     var key_set = try bedwire.auth.KeySet.parse(allocator, support.test_jwks_json, support.limits);
     defer key_set.deinit();

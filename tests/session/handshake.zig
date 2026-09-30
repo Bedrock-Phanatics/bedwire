@@ -5,7 +5,6 @@ const support = @import("../support.zig");
 const testing = std.testing;
 const State = bedwire.State;
 
-/// Drives the whole modern handshake, checking both sides at every stage.
 fn completeHandshake(allocator: std.mem.Allocator, algorithm: bedwire.compression.Algorithm) !void {
     var pair = try support.Pair.init(allocator, support.modern);
     defer pair.deinit();
@@ -95,7 +94,6 @@ fn completeHandshake(allocator: std.mem.Allocator, algorithm: bedwire.compressio
     try testing.expectEqual(@as(usize, 3), seen);
     packets.deinit();
 
-    // Either side may disconnect at any time.
     try pair.serverToClientDiscard(&.{build.make(descriptor, .disconnect)});
     try testing.expectEqual(State.closing, pair.server.state);
     try testing.expectEqual(State.closing, pair.client.state);
@@ -117,12 +115,11 @@ test "legacy profile skips negotiation and starts authenticating" {
     try testing.expectEqual(State.authenticating, pair.server.state);
     try testing.expectError(error.InvalidState, pair.client.negotiateCompression(.deflate, 0));
 
-    // legacy mode compresses with deflate without marker bytes
+    // Legacy batches use implicit DEFLATE without a marker.
     var packets = try pair.clientToServer(&.{build.make(descriptor, .login)});
     defer packets.deinit();
     try testing.expectEqual(bedwire.PacketKind.login, packets.next().?.kind);
 
-    // RequestNetworkSettings does not exist in this profile.
     try testing.expect(!descriptor.features.uses_request_network_settings);
     try testing.expectError(error.InvalidState, pair.client.encodeOne(build.make(descriptor, .request_network_settings)));
 }
@@ -149,7 +146,6 @@ test "sessions on different versions run side by side" {
 test "out-of-stage packets are refused and close the session" {
     var build: support.Builder = .{};
 
-    // Login before negotiation.
     {
         var pair = try support.Pair.init(testing.allocator, support.modern);
         defer pair.deinit();
@@ -157,7 +153,7 @@ test "out-of-stage packets are refused and close the session" {
         try testing.expectEqual(State.transport_ready, pair.client.state);
     }
 
-    // A peer sending a stage-appropriate packet from the wrong side.
+    // Right stage, wrong sender.
     {
         var pair = try support.Pair.init(testing.allocator, support.modern);
         defer pair.deinit();
@@ -168,7 +164,7 @@ test "out-of-stage packets are refused and close the session" {
         try testing.expectEqual(State.disconnected, pair.client.state);
     }
 
-    // Handshake packets are gone for good once in game.
+    // Handshake packets are invalid once in game.
     {
         var pair = try support.Pair.init(testing.allocator, support.modern);
         defer pair.deinit();
@@ -239,7 +235,7 @@ test "every invalid advance is refused" {
         }
     }
 
-    // Reachable targets still need their stage and their packet exchange.
+    // Reachable states still require their packet exchange.
     pair.server.state = .resource_packs;
     try testing.expectError(error.InvalidState, pair.server.advance(.spawn_ready));
     try testing.expectError(error.InvalidState, pair.server.advance(.in_game));
@@ -293,19 +289,17 @@ test "crypto installation refuses to run out of order" {
     try pair.client.negotiateCompression(.deflate, 0);
     try pair.clientToServerDiscard(&.{build.make(support.modern, .login)});
 
-    // Before the handshake packet has been sent.
     try testing.expectError(error.InvalidState, pair.server.installServerCrypto(server_key.secret_key, @splat(9)));
 
-    // Sent, but no verified client key.
+    // Sending the handshake alone does not authenticate the client key.
     try pair.serverToClientDiscard(&.{build.make(support.modern, .server_to_client_handshake)});
     try testing.expectError(error.Unauthenticated, pair.server.installServerCrypto(server_key.secret_key, @splat(9)));
 
-    // A proxy may vouch for the key itself.
+    // A proxy can supply an already verified client key.
     try pair.server.installVerifiedClientKey(client_key.public_key);
     try pair.server.installServerCrypto(server_key.secret_key, @splat(9));
     try testing.expectError(error.InvalidState, pair.server.installServerCrypto(server_key.secret_key, @splat(9)));
 
-    // The client side is role-gated the same way.
     try testing.expectError(error.InvalidState, pair.server.acceptServerHandshake(testing.allocator, token, server_key.secret_key));
     try pair.client.acceptServerHandshake(testing.allocator, token, client_key.secret_key);
     try testing.expectError(error.InvalidState, pair.client.acceptServerHandshake(testing.allocator, token, client_key.secret_key));
@@ -406,7 +400,6 @@ test "gameplay enforces known packet directions between client and server" {
 
 const oidc_payload = "{\"iss\":\"https://authorization.franchise.minecraft-services.net/\",\"aud\":\"api://auth-minecraft-services/multiplayer\",\"exp\":2000,\"cpk\":\"$cpk\",\"xname\":\"Alex\",\"xid\":\"987654321\"}";
 
-/// A connection request carrying an RS256 envelope bound to key 10.
 fn oidcRequest(allocator: std.mem.Allocator, tamper: bool) ![]u8 {
     const client = try support.deterministicKey(10);
     const payload = try std.mem.replaceOwned(u8, allocator, oidc_payload, "$cpk", &support.encodedKey(client.public_key));

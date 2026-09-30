@@ -34,7 +34,7 @@ pub const Request = struct {
     index: u32,
 };
 
-/// Hashes chunks as they arrive instead of buffering the pack.
+/// Hashes chunks without buffering the whole pack.
 pub const Transfer = struct {
     allocator: std.mem.Allocator,
     metadata: Metadata,
