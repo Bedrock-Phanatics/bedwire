@@ -84,6 +84,40 @@ whose login uses that Bedwire authentication envelope.
 For profile-specific adapters, use `bedwire.transport.RakNetWithProfile` or
 `bedwire.transport.NetherNetWithProfile` with the same profile type.
 
+### Passive observation for transparent proxies
+
+Create one Tap per proxied connection and feed it both directions. Forward the
+original carrier payload unchanged; Tap only borrows decoded packets from its
+pool lease. Release each iterator before the next `observe` call.
+
+```zig
+var tap = try bedwire.Tap.init(.{ .pool = &pool, .limits = limits });
+defer tap.deinit();
+
+var packets = try tap.observe(.client_to_server, original_payload);
+defer packets.deinit();
+while (packets.next()) |packet| {
+    if (packet.kind == .login) {
+        var identity = try tap.authenticateLoginPacket(allocator, packet, trust_policy);
+        defer identity.deinit();
+    }
+}
+try carrier.forward(original_payload);
+```
+
+Use `TapWithProfile(Profile)` for a version selected by the application. Tap
+tracks RequestNetworkSettings, NetworkSettings, Login, then the cleartext
+ServerToClientHandshake. `tap.phase()` becomes `.encrypted` as soon as that
+handshake is observed; stop observing and pass subsequent ciphertext through.
+An observe call after that point returns `error.Opaque`. Authentication accepts
+only the Login packet from its active iterator and uses the same trust policy
+and verification as `Session`. For legacy chain framing, set
+`options.policy.connection_request_format = .legacy_chain`.
+
+Bedwire does not construct a proxy-signed downstream Login. A self-signed
+certificate is suitable only when the backend explicitly trusts that proxy;
+it does not convey Microsoft/Xbox authentication to a normal backend.
+
 ### 2. Ingest and Process Packets
 
 ```zig
@@ -198,6 +232,14 @@ try session.installServerCrypto(server_ecdh_key.secret_key, salt);
 ```
 
 ## Memory and Limits
+
+Share one `BufferPool` per serialized worker or event loop, not one per player.
+The default limits reserve large buffers when a pool is created. An observer
+can use `PoolConfig.observer()` (one RX and one required TX slot) with validated
+application limits sized for its expected Login packet. This saves one RX slot
+relative to `conservative()`; it does not remove TX storage. Use separate pools
+only when workers access them independently, and keep each Tap at a stable
+address while a packet lease exists.
 
 Session limits and memory bounds are configured via `bedwire.Limits`:
 

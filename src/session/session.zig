@@ -418,50 +418,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             try self.readyToAuthenticate(@as(LoginFlow, policy));
             errdefer self.close();
 
-            const req = try wire.decodeConnectionRequest(connection_request_bytes, self.limits);
-
-            var envelope = try wire.parseChainEnvelope(allocator, req.chain_data, self.limits);
-            defer envelope.deinit();
-
-            switch (self.policy.connection_request_format) {
-                .legacy_chain => {
-                    if (!envelope.is_legacy_chain) return error.UnsupportedProtocol;
-                },
-                .envelope => {
-                    if (envelope.is_legacy_chain) return error.UnsupportedProtocol;
-                },
-            }
-
-            const identity = switch (policy) {
-                .oidc => |oidc_policy| blk: {
-                    if (envelope.authentication_type == 1 or envelope.authentication_type > 2) {
-                        return error.UnsupportedAuthenticationType;
-                    }
-                    if (envelope.authentication_type == 2) {
-                        return error.UntrustedChain;
-                    }
-
-                    const id_token = envelope.token orelse return error.InvalidClaims;
-                    break :blk try oidc.verifyOidc(allocator, id_token, req.client_data, oidc_policy, self.limits);
-                },
-                .certificate_chain => |chain_policy| blk: {
-                    if (!envelope.is_legacy_chain) {
-                        if (envelope.authentication_type == 1 or envelope.authentication_type > 2) {
-                            return error.UnsupportedAuthenticationType;
-                        }
-                        if (envelope.authentication_type == 2 and !chain_policy.allow_offline) {
-                            return error.UntrustedChain;
-                        }
-                    }
-
-                    const chain_json = if (envelope.is_legacy_chain)
-                        req.chain_data
-                    else
-                        (envelope.certificate orelse return error.InvalidClaims);
-
-                    break :blk try chain.verifyChain(allocator, chain_json, req.client_data, chain_policy, self.limits);
-                },
-            };
+            const identity = try verifyLoginRequest(allocator, connection_request_bytes, policy, self.policy, self.limits);
 
             self.peer_key = identity.public_key;
 
@@ -620,6 +577,32 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 fn parseHeader(packet: []const u8) !protocol.packet.Header {
     const decoded = protocol.packet.decode(packet, .{ .max_packet_bytes = @max(packet.len, 1) }) catch return error.MalformedBatch;
     return decoded.header;
+}
+
+/// Shared by endpoint sessions and passive observers after stage validation.
+pub fn verifyLoginRequest(allocator: std.mem.Allocator, bytes: []const u8, policy: TrustPolicy, session_policy: SessionPolicy, limits: Limits) !identity_mod.Identity {
+    const req = try wire.decodeConnectionRequest(bytes, limits);
+    var envelope = try wire.parseChainEnvelope(allocator, req.chain_data, limits);
+    defer envelope.deinit();
+
+    if (envelope.is_legacy_chain != (session_policy.connection_request_format == .legacy_chain)) return error.UnsupportedProtocol;
+
+    return switch (policy) {
+        .oidc => |oidc_policy| blk: {
+            if (envelope.authentication_type == 1 or envelope.authentication_type > 2) return error.UnsupportedAuthenticationType;
+            if (envelope.authentication_type == 2) return error.UntrustedChain;
+            const id_token = envelope.token orelse return error.InvalidClaims;
+            break :blk try oidc.verifyOidc(allocator, id_token, req.client_data, oidc_policy, limits);
+        },
+        .certificate_chain => |chain_policy| blk: {
+            if (!envelope.is_legacy_chain) {
+                if (envelope.authentication_type == 1 or envelope.authentication_type > 2) return error.UnsupportedAuthenticationType;
+                if (envelope.authentication_type == 2 and !chain_policy.allow_offline) return error.UntrustedChain;
+            }
+            const chain_json = if (envelope.is_legacy_chain) req.chain_data else (envelope.certificate orelse return error.InvalidClaims);
+            break :blk try chain.verifyChain(allocator, chain_json, req.client_data, chain_policy, limits);
+        },
+    };
 }
 
 fn protocolLimits(limits: Limits) protocol.DecodeLimits {

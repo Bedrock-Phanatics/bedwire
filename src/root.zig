@@ -8,6 +8,10 @@ pub const protocol = @import("bedrock_protocol");
 
 pub const Session = @import("session/session.zig").Session;
 pub const SessionWithProfile = @import("session/session.zig").SessionWithProfile;
+pub const Tap = @import("session/tap.zig").Tap;
+pub const TapWithProfile = @import("session/tap.zig").TapWithProfile;
+pub const TapDirection = @import("session/tap.zig").Direction;
+pub const TapPhase = @import("session/tap.zig").Phase;
 pub const SessionPolicy = @import("session/session.zig").SessionPolicy;
 pub const TrustPolicy = @import("session/session.zig").TrustPolicy;
 pub const Identity = @import("auth/identity.zig").Identity;
@@ -91,6 +95,7 @@ test {
     _ = @import("session/state.zig");
     _ = @import("session/pool.zig");
     _ = @import("session/session.zig");
+    _ = @import("session/tap.zig");
     _ = @import("auth/wire.zig");
     _ = @import("auth/jwks.zig");
     _ = @import("auth/identity.zig");

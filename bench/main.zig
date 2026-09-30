@@ -385,6 +385,64 @@ fn reportFootprint(pool: *bedwire.BufferPool, pool_counting: Counting, out: *std
     try out.print("  struct: {d} B (Session), {d} B (BufferPool), {d} B (Packets), {d} B (Frame)\n", .{ @sizeOf(Session), @sizeOf(bedwire.BufferPool), @sizeOf(bedwire.Packets), @sizeOf(bedwire.Frame) });
 }
 
+fn tapFrame(dest: []u8, packet: []const u8, compressed: bool) ![]const u8 {
+    var raw: [4096]u8 = undefined;
+    var writer = bedwire.framing.batch.Writer.init(&raw, limits);
+    try writer.append(packet);
+    dest[0] = bedwire.framing.batch.header;
+    if (!compressed) {
+        @memcpy(dest[1 .. 1 + writer.written().len], writer.written());
+        return dest[0 .. 1 + writer.written().len];
+    }
+    var codec = bedwire.compression.Compression.init(protocol.Current.features);
+    try codec.negotiate(.snappy, 0);
+    var scratch: bedwire.compression.Scratch = undefined;
+    const framed = try codec.encode(writer.written(), dest[2..], &scratch);
+    dest[1] = @intFromEnum(framed.algorithm);
+    return dest[0 .. 2 + framed.bytes.len];
+}
+
+fn benchTap(io: std.Io, pool: *bedwire.BufferPool, iterations: usize) !Result {
+    var packet_storage: [4][4096]u8 = undefined;
+    var frame_storage: [4][4096]u8 = undefined;
+    var frames: [4][]const u8 = undefined;
+
+    for (0..4) |i| {
+        var writer = protocol.Writer.init(&packet_storage[i]);
+        const kind: protocol.PacketKind = switch (i) {
+            0 => .request_network_settings,
+            1 => .network_settings,
+            2 => .login,
+            else => .server_to_client_handshake,
+        };
+        const packet: protocol.typed.Packet = switch (i) {
+            0 => .{ .request_network_settings = .{ .client_network_version = protocol.Current.protocol_number } },
+            1 => .{ .network_settings = .{ .compression_threshold = 0, .compression_algorithm = .snappy, .client_throttle_enabled = false, .client_throttle_threshold = 0, .client_throttle_scalar = 0 } },
+            2 => .{ .login = .{ .client_network_version = protocol.Current.protocol_number, .connection_request = "fixture" } },
+            else => .{ .server_to_client_handshake = .{ .handshake_web_token = "fixture" } },
+        };
+        try protocol.typed.encode(&writer, .{ .header = .{ .packet_id = protocol.Current.packetId(kind).? }, .packet = packet });
+        frames[i] = try tapFrame(&frame_storage[i], writer.written(), i >= 2);
+    }
+
+    const directions: [4]bedwire.TapDirection = .{ .client_to_server, .server_to_client, .client_to_server, .server_to_client };
+    var timer = Timer.start(io);
+    for (0..iterations) |_| {
+        var tap = try bedwire.Tap.init(.{ .pool = pool, .limits = limits });
+        for (frames, directions) |frame, direction| {
+            var packets = try tap.observe(direction, frame);
+            std.mem.doNotOptimizeAway(packets.next().?.bytes.ptr);
+            packets.deinit();
+        }
+        std.debug.assert(tap.phase() == .encrypted);
+        tap.deinit();
+    }
+    const elapsed = timer.read();
+    var payload: usize = 0;
+    for (frames) |frame| payload += frame.len;
+    return .{ .name = "Tap handshake / shared pool", .operations = iterations, .nanoseconds = elapsed, .payload_bytes = payload * iterations };
+}
+
 pub fn main(init: std.process.Init) !void {
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_state.deinit();
@@ -468,6 +526,17 @@ pub fn main(init: std.process.Init) !void {
     try (try benchSend(MockProfile, init.io, &pool, "encode 1-packet / external", .{ .algorithm = null, .encrypt = false }, single, 200_000)).report(out);
     try (try benchIngest(MockProfile, init.io, allocator, &pool, "ingest 1-packet / external", .{ .algorithm = null, .encrypt = false }, single, 200_000)).report(out);
     try out.print("  external Session struct: {d} B\n", .{@sizeOf(bedwire.SessionWithProfile(MockProfile))});
+
+    try out.print("\npassive observer (request, settings, compressed Login, clear handshake)\n", .{});
+    const before_tap = pool_counting.allocations;
+    try (try benchTap(init.io, &pool, 200_000)).report(out);
+    try out.print("  steady allocations: {d}; Tap struct: {d} B\n", .{ pool_counting.allocations - before_tap, @sizeOf(bedwire.Tap) });
+    var observer_counting: Counting = .{ .backing = allocator };
+    var observer_pool = try bedwire.BufferPool.init(observer_counting.allocator(), limits, bedwire.PoolConfig.observer());
+    try out.print("  observer pool: {d} B backing; {d} B allocated in {d} calls\n", .{
+        observer_pool.storageBytes(), observer_counting.bytes, observer_counting.allocations,
+    });
+    observer_pool.deinit();
 
     try reportFootprint(&pool, pool_counting, out);
     try out.flush();

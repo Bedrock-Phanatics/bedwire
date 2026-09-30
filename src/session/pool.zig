@@ -13,6 +13,10 @@ pub const PoolConfig = struct {
     pub fn conservative() PoolConfig {
         return .{ .rx_slots = 2, .tx_slots = 1 };
     }
+
+    pub fn observer() PoolConfig {
+        return .{ .rx_slots = 1, .tx_slots = 1 };
+    }
 };
 
 pub const RxSlot = struct {
@@ -30,7 +34,7 @@ pub const TxSlot = struct {
 };
 
 /// Shared bounded RX/TX pool. Keep its address stable and destroy it after all
-/// sessions and leases; releasing a token invalidates slices into its slot.
+/// sessions, taps, and leases; releasing a token invalidates slices into its slot.
 pub const BufferPool = struct {
     allocator: std.mem.Allocator,
     limits: Limits,
