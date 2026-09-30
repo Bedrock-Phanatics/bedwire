@@ -233,3 +233,37 @@ test "tap deinit releases a held packet lease" {
     tap.deinit();
     try testing.expect(pool.isIdle());
 }
+
+test "mutated compressed Login leaves Tap state and pool reusable" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, bedwire.PoolConfig.observer());
+    defer pool.deinit();
+    var builder: support.Builder = .{};
+    var storage: [support.limits.max_frame_bytes]u8 = undefined;
+    const login = try compressed(&storage, builder.make(support.modern, .login), .snappy, 0);
+    var valid: [support.limits.max_frame_bytes]u8 = undefined;
+    @memcpy(valid[0..login.len], login);
+
+    var prng = std.Random.DefaultPrng.init(0x7a91);
+    const random = prng.random();
+    const cases = @max(64, @import("build_options").fuzz_iterations / 40);
+    for (0..cases) |i| {
+        var tap = try bedwire.TapWithProfile(support.modern).init(.{ .pool = &pool });
+        var packets = try tap.observe(.client_to_server, try plain(&storage, builder.make(support.modern, .request_network_settings)));
+        packets.deinit();
+        packets = try tap.observe(.server_to_client, try plain(&storage, builder.make(support.modern, .network_settings)));
+        packets.deinit();
+
+        var mutated = valid;
+        const cut = if (i % 3 == 0) random.uintLessThan(usize, login.len + 1) else login.len;
+        if (i % 3 != 0) mutated[random.uintLessThan(usize, login.len)] ^= @as(u8, 1) << @intCast(random.uintLessThan(u8, 8));
+        if (tap.observe(.client_to_server, mutated[0..cut])) |admitted| {
+            packets = admitted;
+            while (packets.next()) |packet| try testing.expect(packet.bytes.len <= support.limits.max_packet_bytes);
+            packets.deinit();
+        } else |_| {
+            try testing.expectEqual(bedwire.TapPhase.awaiting_login, tap.phase());
+        }
+        try testing.expect(pool.isIdle());
+        tap.deinit();
+    }
+}
