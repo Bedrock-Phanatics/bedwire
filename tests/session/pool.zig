@@ -32,6 +32,27 @@ test "acquire release exhaustion and reuse for RX and TX" {
     pool.releaseTx(tx3);
 }
 
+test "receive-only pool has no TX allocation and rejects TX operations" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, bedwire.PoolConfig.observer());
+    defer pool.deinit();
+
+    try testing.expectEqual(@as(usize, 0), pool.tx_slots.len);
+    try testing.expectEqual(@as(usize, 0), pool.tx_storage.len);
+    try testing.expectEqual(pool.rx_storage.len, pool.storageBytes());
+    try testing.expect(pool.isIdle());
+    try testing.expectError(error.PoolExhausted, pool.acquireTx());
+    const invalid_tx: bedwire.BufferPool.TxToken = .{ .slot_index = 0, .epoch = 0 };
+    try testing.expect(pool.getTx(invalid_tx) == null);
+    pool.releaseTx(invalid_tx);
+    try testing.expect(pool.isIdle());
+
+    const rx = try pool.acquireRx();
+    try testing.expect(pool.getRx(rx) != null);
+    try testing.expect(!pool.isIdle());
+    pool.releaseRx(rx);
+    try testing.expect(pool.isIdle());
+}
+
 test "stale and duplicate token release are rejected via epoch CAS" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
@@ -110,7 +131,7 @@ test "stale and out-of-bounds tokens are inert" {
 test "invalid slot counts and overflowing storage sizes are rejected" {
     try testing.expectError(error.InvalidLimits, bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 0, .tx_slots = 1 }));
     try testing.expectError(error.InvalidLimits, bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 65, .tx_slots = 1 }));
-    try testing.expectError(error.InvalidLimits, bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 0 }));
+    try testing.expectError(error.InvalidLimits, bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 0, .tx_slots = 0 }));
     try testing.expectError(error.InvalidLimits, bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 65 }));
 
     const huge: bedwire.Limits = .{ .max_frame_bytes = std.math.maxInt(usize), .max_batch_bytes = 1024, .max_packet_bytes = 1024 };

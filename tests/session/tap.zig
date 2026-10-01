@@ -39,6 +39,7 @@ fn compressed(dest: []u8, packet: []const u8, algorithm: bedwire.compression.Alg
 test "tap observes both directions, preserves forwarding bytes, and stops at encryption" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, bedwire.PoolConfig.observer());
     defer pool.deinit();
+    try testing.expectEqual(@as(usize, 0), pool.tx_storage.len);
     var tap = try bedwire.TapWithProfile(support.modern).init(.{ .pool = &pool });
     defer tap.deinit();
     var other = try bedwire.TapWithProfile(support.modern).init(.{ .pool = &pool });

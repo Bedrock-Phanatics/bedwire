@@ -15,7 +15,7 @@ pub const PoolConfig = struct {
     }
 
     pub fn observer() PoolConfig {
-        return .{ .rx_slots = 1, .tx_slots = 1 };
+        return .{ .rx_slots = 1, .tx_slots = 0 };
     }
 };
 
@@ -54,26 +54,26 @@ pub const BufferPool = struct {
         try limits.validate();
 
         if (config.rx_slots < 1 or config.rx_slots > 64) return error.InvalidLimits;
-        if (config.tx_slots < 1 or config.tx_slots > 64) return error.InvalidLimits;
+        if (config.tx_slots > 64) return error.InvalidLimits;
 
         const per_rx_storage = std.math.add(usize, limits.max_frame_bytes, limits.max_batch_bytes) catch return error.LimitExceeded;
         const total_rx_storage = std.math.mul(usize, per_rx_storage, config.rx_slots) catch return error.LimitExceeded;
 
-        const assembly_len = std.math.add(usize, limits.max_batch_bytes, frame_overhead) catch return error.LimitExceeded;
-        const per_tx_storage = std.math.add(usize, limits.max_frame_bytes, assembly_len) catch return error.LimitExceeded;
+        const assembly_len = if (config.tx_slots == 0) 0 else std.math.add(usize, limits.max_batch_bytes, frame_overhead) catch return error.LimitExceeded;
+        const per_tx_storage = if (config.tx_slots == 0) 0 else std.math.add(usize, limits.max_frame_bytes, assembly_len) catch return error.LimitExceeded;
         const total_tx_storage = std.math.mul(usize, per_tx_storage, config.tx_slots) catch return error.LimitExceeded;
 
         const rx_slots = try allocator.alloc(RxSlot, config.rx_slots);
         errdefer allocator.free(rx_slots);
 
-        const tx_slots = try allocator.alloc(TxSlot, config.tx_slots);
-        errdefer allocator.free(tx_slots);
+        const tx_slots: []TxSlot = if (config.tx_slots == 0) &.{} else try allocator.alloc(TxSlot, config.tx_slots);
+        errdefer if (tx_slots.len != 0) allocator.free(tx_slots);
 
         const rx_storage = try allocator.alloc(u8, total_rx_storage);
         errdefer allocator.free(rx_storage);
 
-        const tx_storage = try allocator.alloc(u8, total_tx_storage);
-        errdefer allocator.free(tx_storage);
+        const tx_storage: []u8 = if (config.tx_slots == 0) &.{} else try allocator.alloc(u8, total_tx_storage);
+        errdefer if (tx_storage.len != 0) allocator.free(tx_storage);
 
         for (rx_slots, 0..) |*slot, i| {
             const offset = i * per_rx_storage;
@@ -126,9 +126,9 @@ pub const BufferPool = struct {
         std.debug.assert(self.tx_free.load(.acquire) == self.tx_all_mask);
 
         self.allocator.free(self.rx_storage);
-        self.allocator.free(self.tx_storage);
+        if (self.tx_storage.len != 0) self.allocator.free(self.tx_storage);
         self.allocator.free(self.rx_slots);
-        self.allocator.free(self.tx_slots);
+        if (self.tx_slots.len != 0) self.allocator.free(self.tx_slots);
         self.* = undefined;
     }
 
