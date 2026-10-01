@@ -13,6 +13,7 @@ test {
     _ = @import("session/campaigns.zig");
 
     _ = @import("auth/jwt.zig");
+    _ = @import("auth/login.zig");
     _ = @import("auth/chain.zig");
     _ = @import("auth/wire.zig");
     _ = @import("auth/jwks.zig");

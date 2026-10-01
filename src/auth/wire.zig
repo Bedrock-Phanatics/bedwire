@@ -7,6 +7,25 @@ pub const ConnectionRequest = struct {
     client_data: []const u8,
 };
 
+pub const ConnectionRequestFormat = enum { legacy_chain, envelope };
+
+pub fn encodeConnectionRequest(allocator: std.mem.Allocator, request: ConnectionRequest, limits: Limits) ![]u8 {
+    const chain_len = std.math.cast(i32, request.chain_data.len) orelse return error.LimitExceeded;
+    const client_len = std.math.cast(i32, request.client_data.len) orelse return error.LimitExceeded;
+    if (chain_len == 0 or client_len == 0) return error.MalformedConnectionRequest;
+    const data_len = std.math.add(usize, request.chain_data.len, request.client_data.len) catch return error.LimitExceeded;
+    const size = std.math.add(usize, data_len, 8) catch return error.LimitExceeded;
+    if (size > limits.max_connection_request_bytes) return error.LimitExceeded;
+
+    const bytes = try allocator.alloc(u8, size);
+    std.mem.writeInt(i32, bytes[0..4], chain_len, .little);
+    @memcpy(bytes[4 .. 4 + request.chain_data.len], request.chain_data);
+    const client_offset = 4 + request.chain_data.len;
+    std.mem.writeInt(i32, bytes[client_offset..][0..4], client_len, .little);
+    @memcpy(bytes[client_offset + 4 ..], request.client_data);
+    return bytes;
+}
+
 pub const AuthEnvelope = struct {
     parsed: std.json.Parsed(std.json.Value),
     authentication_type: u8,

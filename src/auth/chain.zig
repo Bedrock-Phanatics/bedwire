@@ -12,6 +12,7 @@ pub const ChainPolicy = struct {
     now: i64,
     /// Accept single-link self-signed chains (offline/LAN).
     allow_offline: bool = false,
+    trusted_issuer_key: ?spki.Ecdsa.PublicKey = null,
     /// Defaults to the pinned Mojang root.
     root: ?spki.Ecdsa.PublicKey = null,
 };
@@ -35,7 +36,7 @@ pub fn verifyChain(
     if (links.len > limits.max_chain_length) return error.LimitExceeded;
 
     const online = links.len == 3;
-    if (!online and (links.len != 1 or !policy.allow_offline)) return error.UntrustedChain;
+    if (!online and (links.len != 1 or (!policy.allow_offline and policy.trusted_issuer_key == null))) return error.UntrustedChain;
 
     var first: ?spki.Ecdsa.PublicKey = null;
     var next_key: ?spki.Ecdsa.PublicKey = null;
@@ -47,6 +48,11 @@ pub fn verifyChain(
         defer token.deinit();
 
         const header_key = try spki.fromBase64(try jwt.string(token.header.value, "x5u"));
+        if (!online) {
+            if (policy.trusted_issuer_key) |trusted| {
+                if (!sameKey(header_key, trusted)) return error.UntrustedChain;
+            }
+        }
         if (i == 0) {
             first = header_key;
         } else if (!sameKey(header_key, next_key.?)) {

@@ -49,7 +49,7 @@ pub const Packet = Session.Packet;
 
 pub const SessionPolicy = struct {
     encryption: enum { required, optional } = .required,
-    connection_request_format: enum { legacy_chain, envelope } = .envelope,
+    connection_request_format: wire.ConnectionRequestFormat = .envelope,
 };
 
 pub fn SessionWithProfile(comptime Profile: type) type {
@@ -595,10 +595,17 @@ pub fn verifyLoginRequest(allocator: std.mem.Allocator, bytes: []const u8, polic
         .certificate_chain => |chain_policy| blk: {
             if (!envelope.is_legacy_chain) {
                 if (envelope.authentication_type == 1 or envelope.authentication_type > 2) return error.UnsupportedAuthenticationType;
-                if (envelope.authentication_type == 2 and !chain_policy.allow_offline) return error.UntrustedChain;
+                if (envelope.authentication_type == 2 and !chain_policy.allow_offline and chain_policy.trusted_issuer_key == null) return error.UntrustedChain;
             }
             const chain_json = if (envelope.is_legacy_chain) req.chain_data else (envelope.certificate orelse return error.InvalidClaims);
-            break :blk try chain.verifyChain(allocator, chain_json, req.client_data, chain_policy, limits);
+            var identity = try chain.verifyChain(allocator, chain_json, req.client_data, chain_policy, limits);
+            if (!envelope.is_legacy_chain and !identity.online and
+                chain_policy.trusted_issuer_key != null and envelope.authentication_type != 2)
+            {
+                identity.deinit();
+                return error.InvalidClaims;
+            }
+            break :blk identity;
         },
     };
 }

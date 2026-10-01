@@ -88,7 +88,7 @@ if (tap.phase() != .encrypted) {
 try carrier.forward(original_payload);
 ```
 
-Release the iterator before the next `observe`. After the server handshake, `tap.phase()` becomes `.encrypted`; pass later ciphertext through without observing it. To verify an observed Login, call `tap.authenticateLoginPacket(allocator, packet, trust_policy)` while that packet's iterator is active. A Tap does not create a replacement Login or authenticate a proxy to the backend.
+Release the iterator before the next `observe`. After the server handshake, `tap.phase()` becomes `.encrypted`; pass later ciphertext through without observing it. To verify an observed Login, call `tap.authenticateLoginPacket(allocator, packet, trust_policy)` while that packet's iterator is active.
 
 ## Authenticate a Login
 
@@ -113,6 +113,8 @@ while (packets.next()) |packet| {
 ```
 
 For a legacy profile, use `.{ .certificate_chain = .{ .now = now_unix_seconds } }` and set `options.policy.connection_request_format = .legacy_chain`. Use `SessionWithProfile(Profile)` or `TapWithProfile(Profile)` for another `bedrock_protocol` profile; the selected profile defines packet layouts and login flow. The host sends the cleartext server handshake before calling `session.installServerCrypto(...)`.
+
+For a terminating proxy, `bedwire.auth.login.buildProxyConnectionRequest(Profile, allocator, proxy_key, &authenticated_identity, client_data_json, expires_at, .envelope, limits)` returns an owned connection request; free it with the same allocator. `bedwire.auth.login.encodeLoginPacket(Profile, &packet_storage, request, limits)` writes the typed Login packet into caller-owned storage. Use `.legacy_chain` for a backend configured for legacy framing. This builder supports certificate-chain profiles and signs both the identity link and caller-provided JSON client data with the proxy key. The backend must explicitly set `certificate_chain.trusted_issuer_key` to that public key and keep `allow_offline` disabled. The resulting identity is proxy-issued, with `online == false` and no Microsoft XUID; it does not claim Microsoft authentication.
 
 ## Limits and checks
 
