@@ -62,6 +62,12 @@ carrier.send(frame.bytes) catch |err| {
 
 Packet bytes are borrowed until `packets.deinit()`; frame bytes are borrowed until `frame.release()`. A session allows one outstanding packet iterator and one outgoing frame. Keep the session and pool at stable addresses, serialize calls on each session, and destroy the pool last.
 
+Sessions are thread-confined. A networking worker can own many sessions and share one pool between them. Pool slots bound simultaneous leases, not the number of sessions; release each iterator and frame promptly. `PoolExhausted` leaves a session unchanged, so the host may retry the same inbound frame. The host owns queues, backpressure, and ordered transport delivery. Pool acquisition and release support concurrent users, but each session and each leased slot needs exclusive access.
+
+`close()` stops traffic and clears crypto while preserving held buffers. Release leases before `session.deinit()`; destruction invalidates every outstanding handle and slice. Destroy all sessions and taps before their pool, even when `pool.isIdle()` is true. Authentication results own their strings and need their own `identity.deinit()`.
+
+Use `bedwire.protocol` for packet types and codecs to share Bedwire's pinned `protocol-zig` revision. If the host also declares that dependency, keep both pins identical.
+
 ## Observe a proxied connection
 
 A `Tap` reads both directions without changing the bytes you forward. Call it for each cleartext batch with its actual direction:

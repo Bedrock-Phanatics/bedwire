@@ -202,3 +202,29 @@ test "a handshake token signed by another key is refused" {
 
     try testing.expectError(error.InvalidSignature, bedwire.auth.login.Handshake.verify(allocator, forged, support.limits));
 }
+
+fn acceptHandshakeWithAllocationFailure(allocator: std.mem.Allocator, token: []const u8, secret: support.Ecdsa.SecretKey) !void {
+    var pool = try bedwire.BufferPool.init(allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
+    defer pool.deinit();
+    var client = try support.Session.init(.client, .{ .pool = &pool });
+    defer client.deinit();
+    client.state = .authenticating;
+    client.received.insert(.server_to_client_handshake);
+    client.acceptServerHandshake(allocator, token, secret) catch |err| {
+        try testing.expectEqual(bedwire.State.disconnected, client.state);
+        try testing.expect(client.crypto == null);
+        try testing.expect(client.peer_key == null);
+        try testing.expect(pool.isIdle());
+        return err;
+    };
+    try testing.expectEqual(bedwire.State.encrypted_handshake, client.state);
+    try testing.expect(client.encrypted());
+}
+
+test "crypto installation unwinds every handshake allocation failure" {
+    const server = try support.deterministicKey(6);
+    const client = try support.deterministicKey(8);
+    const token = try bedwire.auth.login.serverHandshake(testing.allocator, server, @splat(7), support.limits);
+    defer testing.allocator.free(token);
+    try testing.checkAllAllocationFailures(testing.allocator, acceptHandshakeWithAllocationFailure, .{ token, client.secret_key });
+}

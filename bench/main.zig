@@ -278,6 +278,27 @@ fn benchIngest(comptime Profile: type, io: std.Io, allocator: std.mem.Allocator,
     };
 }
 
+fn benchSessionLifecycle(io: std.Io, pool: *bedwire.BufferPool, iterations: usize) !Result {
+    var storage: [64]u8 = undefined;
+    const packet = makePacket(&storage, 1020, 32);
+    var timer = Timer.start(io);
+    for (0..iterations) |_| {
+        var sender = try open(protocol.Current, pool, .client, .{ .algorithm = .snappy, .encrypt = true });
+        defer sender.deinit();
+        var receiver = try open(protocol.Current, pool, .server, .{ .algorithm = .snappy, .encrypt = true });
+        defer receiver.deinit();
+        const frame = try sender.encodeOne(packet);
+        defer frame.release();
+        var packets = try receiver.ingest(frame.bytes);
+        defer packets.deinit();
+        std.mem.doNotOptimizeAway(packets.next().?.bytes.ptr);
+        sender.close();
+        receiver.close();
+    }
+    std.debug.assert(pool.isIdle());
+    return .{ .name = "Session pair / shared pool", .operations = iterations, .nanoseconds = timer.read(), .payload_bytes = packet.len * iterations };
+}
+
 fn benchClassification(comptime Profile: type, io: std.Io, name: []const u8, iterations: usize) Result {
     var timer = Timer.start(io);
     for (0..iterations) |i| {
@@ -502,6 +523,11 @@ pub fn main(init: std.process.Init) !void {
             try (try benchIngest(protocol.Current, init.io, allocator, &pool, name, case.setup, workload.packets, workload.iterations)).report(out);
         }
     }
+
+    try out.print("\nsession create, encrypted exchange, close, destroy\n", .{});
+    const before_sessions = pool_counting.allocations;
+    try (try benchSessionLifecycle(init.io, &pool, 200_000)).report(out);
+    try out.print("  steady allocations: {d}\n", .{pool_counting.allocations - before_sessions});
 
     try out.print("\nprimitives\n", .{});
     try (try benchBatchSplit(init.io, allocator, gameplay, 200_000)).report(out);

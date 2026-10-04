@@ -104,6 +104,13 @@ test "modern handshake completes over DEFLATE and Snappy" {
     try completeHandshake(testing.allocator, .snappy);
 }
 
+test "repeated login and disconnect cycles release all resources" {
+    for (0..16) |_| {
+        try completeHandshake(testing.allocator, .deflate);
+        try completeHandshake(testing.allocator, .snappy);
+    }
+}
+
 test "legacy profile skips negotiation and starts authenticating" {
     var pair = try support.Pair.init(testing.allocator, support.legacy);
     defer pair.deinit();
