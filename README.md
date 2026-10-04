@@ -1,6 +1,6 @@
 # Bedwire
 
-Minecraft Bedrock session networking for Zig 0.16.0. Bedwire sits between a transport such as RakNet or NetherNet and the `bedrock_protocol` packet codec. It handles batch framing, compression, login authentication, encryption, and session state. Your application owns network I/O and trust-key fetching.
+Minecraft Bedrock session networking for Zig 0.17.0. Bedwire sits between a transport such as RakNet or NetherNet and the `bedrock_protocol` packet codec. It handles batch framing, compression, login authentication, encryption, and session state. Your application owns network I/O and trust-key fetching.
 
 ## Add Bedwire to a project
 

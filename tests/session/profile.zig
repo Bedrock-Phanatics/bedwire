@@ -35,7 +35,7 @@ const External = struct {
             .kind = .network_settings,
             .payload = raw.payload,
             .value = .{ .typed = .{ .network_settings = .{
-                .compression_algorithm = @enumFromInt(algorithm),
+                .compression_algorithm = @fromBackingInt(@intCast(algorithm)),
                 .compression_threshold = threshold,
                 .client_throttle_enabled = false,
                 .client_throttle_threshold = 0,
@@ -48,10 +48,10 @@ const External = struct {
         if (envelope.kind != .network_settings) return protocol.Current.encode(writer, envelope);
         if (envelope.header.packet_id != 1000 or envelope.value != .typed or envelope.value.typed != .network_settings) return error.InvalidValue;
         const settings = envelope.value.typed.network_settings;
-        if (@intFromEnum(settings.compression_algorithm) > 255) return error.InvalidValue;
+        if (@backingInt(settings.compression_algorithm) > 255) return error.InvalidValue;
         if (writer.remainingCapacity() < 5) return error.NoSpaceLeft;
         try writer.writeVarU32(envelope.header.toWire());
-        try writer.writeU8(@intCast(@intFromEnum(settings.compression_algorithm)));
+        try writer.writeU8(@intCast(@backingInt(settings.compression_algorithm)));
         try writer.writeU16(settings.compression_threshold);
     }
 };
@@ -184,7 +184,7 @@ test "network settings accept none and reject unknown compression algorithms wit
             .header = .{ .packet_id = id },
             .packet = .{ .network_settings = .{
                 .compression_threshold = 0,
-                .compression_algorithm = @enumFromInt(algorithm),
+                .compression_algorithm = @fromBackingInt(@intCast(algorithm)),
                 .client_throttle_enabled = false,
                 .client_throttle_threshold = 0,
                 .client_throttle_scalar = 0,

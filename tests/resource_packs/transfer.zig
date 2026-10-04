@@ -5,7 +5,7 @@ const support = @import("../support.zig");
 const testing = std.testing;
 const packs = bedwire.resource_packs;
 
-const archive = [_]u8{'p'} ** 700;
+const archive = @as([700]u8, @splat('p'));
 
 fn metadata() packs.Metadata {
     var hash: [32]u8 = undefined;
@@ -84,7 +84,7 @@ test "substituted chunk contents are caught by the hash, not by length" {
     var transfer = try packs.Transfer.init(testing.allocator, metadata(), support.limits);
     defer transfer.deinit();
 
-    const forged = [_]u8{'x'} ** 256;
+    const forged = @as([256]u8, @splat('x'));
     try transfer.accept(.{ .pack_id = "alpha", .index = 0, .offset = 0, .data = &forged });
     try transfer.accept(.{ .pack_id = "alpha", .index = 1, .offset = 256, .data = archive[256..512] });
     try testing.expectError(error.IntegrityMismatch, transfer.accept(.{

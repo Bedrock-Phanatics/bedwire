@@ -124,7 +124,7 @@ test "mutated compressed frames release leases and keep commits atomic" {
         sender.state = .in_game;
         try sender.compression.negotiate(algorithm, 0);
         var storage: [128]u8 = undefined;
-        const packet = support.packet(&storage, support.opaque_packet_id, &([_]u8{'a'} ** 96));
+        const packet = support.packet(&storage, support.opaque_packet_id, &@as([96]u8, @splat('a')));
         const frame = try sender.encodeOne(packet);
         var valid: [256]u8 = undefined;
         @memcpy(valid[0..frame.bytes.len], frame.bytes);

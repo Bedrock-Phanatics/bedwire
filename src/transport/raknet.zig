@@ -80,7 +80,7 @@ const Collector = struct {
     kinds: std.ArrayList(?session_mod.PacketKind) = .empty,
     copies: std.ArrayList([]u8) = .empty,
 
-    fn onPacket(self: *Collector, s: *Session, packet: Packet) !void {
+    pub fn onPacket(self: *Collector, s: *Session, packet: Packet) !void {
         try testing.expect(s.state != .disconnected);
         try self.kinds.append(self.allocator, packet.kind);
         try self.copies.append(self.allocator, try self.allocator.dupe(u8, packet.bytes));

@@ -71,7 +71,7 @@ test "varint rejects overlong, truncated and overflowing encodings" {
 }
 
 test "varint writer leaves destination untouched when it cannot fit" {
-    var storage = [_]u8{0xaa} ** 2;
+    var storage = @as([2]u8, @splat(0xaa));
     try testing.expectError(error.NoSpaceLeft, writeU32(&storage, 16384));
     try testing.expectEqualSlices(u8, &.{ 0xaa, 0xaa }, &storage);
 }

@@ -134,7 +134,7 @@ test "Bedwire carries shared semantic identity for gameplay packets" {
     pair.server.state = .in_game;
 
     var storage: [256]u8 = undefined;
-    const id = @intFromEnum(protocol.PacketId.set_time);
+    const id = @backingInt(protocol.PacketId.set_time);
     const bytes = try encodePacket(&storage, .{ .set_time = .{ .time = 1234 } }, id);
 
     var packets = try pair.serverToClient(&.{bytes});

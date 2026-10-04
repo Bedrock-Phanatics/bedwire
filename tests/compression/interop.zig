@@ -75,7 +75,7 @@ test "Go P-384 ECDH derives the same session key" {
     const parsed = try std.json.parseFromSlice(Fixture, allocator, @embedFile("interop.json"), .{});
     defer parsed.deinit();
 
-    var scalar_a = [_]u8{0} ** 48;
+    var scalar_a = @as([48]u8, @splat(0));
     var scalar_b = scalar_a;
     scalar_a[47] = 1;
     scalar_b[47] = 2;

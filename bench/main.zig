@@ -94,7 +94,7 @@ const MockProfile = struct {
         const threshold = try reader.readU16();
         try reader.finish();
         return .{ .header = raw.header, .kind = .network_settings, .payload = raw.payload, .value = .{ .typed = .{ .network_settings = .{
-            .compression_algorithm = @enumFromInt(algorithm),
+            .compression_algorithm = @fromBackingInt(@intCast(algorithm)),
             .compression_threshold = threshold,
             .client_throttle_enabled = false,
             .client_throttle_threshold = 0,
@@ -105,10 +105,10 @@ const MockProfile = struct {
         if (envelope.kind != .network_settings) return protocol.Current.encode(writer, envelope);
         if (envelope.header.packet_id != 1000 or envelope.value != .typed or envelope.value.typed != .network_settings) return error.InvalidValue;
         const settings = envelope.value.typed.network_settings;
-        if (@intFromEnum(settings.compression_algorithm) > 255) return error.InvalidValue;
+        if (@backingInt(settings.compression_algorithm) > 255) return error.InvalidValue;
         if (writer.remainingCapacity() < 5) return error.NoSpaceLeft;
         try writer.writeVarU32(envelope.header.toWire());
-        try writer.writeU8(@intCast(@intFromEnum(settings.compression_algorithm)));
+        try writer.writeU8(@intCast(@backingInt(settings.compression_algorithm)));
         try writer.writeU16(settings.compression_threshold);
     }
 };
@@ -398,7 +398,7 @@ fn tapFrame(dest: []u8, packet: []const u8, compressed: bool) ![]const u8 {
     try codec.negotiate(.snappy, 0);
     var scratch: bedwire.compression.Scratch = undefined;
     const framed = try codec.encode(writer.written(), dest[2..], &scratch);
-    dest[1] = @intFromEnum(framed.algorithm);
+    dest[1] = @backingInt(framed.algorithm);
     return dest[0 .. 2 + framed.bytes.len];
 }
 

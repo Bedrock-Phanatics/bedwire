@@ -102,7 +102,7 @@ const Channel = struct {
 const Counter = struct {
     packets: usize = 0,
 
-    fn onPacket(self: *Counter, s: *Session, packet: Packet) !void {
+    pub fn onPacket(self: *Counter, s: *Session, packet: Packet) !void {
         _ = s;
         _ = packet;
         self.packets += 1;

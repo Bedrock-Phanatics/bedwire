@@ -136,8 +136,8 @@ pub fn SessionWithProfile(comptime Profile: type) type {
         compression: compression.Compression,
         crypto: ?SessionCrypto = null,
         peer_key: ?spki.Ecdsa.PublicKey = null,
-        sent: std.EnumSet(PacketKind) = .initEmpty(),
-        received: std.EnumSet(PacketKind) = .initEmpty(),
+        sent: std.EnumSet(PacketKind) = .empty,
+        received: std.EnumSet(PacketKind) = .empty,
 
         pool: *BufferPool,
         rx_slot: ?RxToken = null,
@@ -268,7 +268,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
             // Assemble after the frame prefix so an uncompressed batch is already in place.
             var writer = batch.Writer.init(slot.assembly[reserve..], self.limits);
-            var observed: std.EnumSet(PacketKind) = .initEmpty();
+            var observed: std.EnumSet(PacketKind) = .empty;
 
             for (packets) |packet| {
                 const header = try parseHeader(packet);
@@ -297,7 +297,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             }
 
             out[0] = batch.header;
-            if (reserve == 2) out[1] = @intFromEnum(algorithm);
+            if (reserve == 2) out[1] = @backingInt(algorithm);
             if (self.crypto) |*crypto| len = 1 + (try crypto.seal(out[1 .. len + trailer], len - 1)).len;
 
             self.tx_slot = slot_token;
@@ -523,7 +523,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
         fn admit(self: *const Self, raw: []const u8, sender: Role) !Observed {
             var reader = try batch.Reader.init(raw, self.limits);
-            var result: Observed = .{ .kinds = .initEmpty(), .count = 0 };
+            var result: Observed = .{ .kinds = .empty, .count = 0 };
 
             while (try reader.next()) |packet| {
                 const header = try parseHeader(packet);

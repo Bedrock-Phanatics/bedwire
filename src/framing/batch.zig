@@ -87,7 +87,7 @@ test "frames must carry the session header and stay within bounds" {
     try testing.expectEqualSlices(u8, &.{}, try strip(&.{header}, limits));
     try testing.expectError(error.MalformedBatch, strip(&.{}, limits));
     try testing.expectError(error.MalformedBatch, strip(&.{ 0xfd, 1 }, limits));
-    try testing.expectError(error.LimitExceeded, strip(&([_]u8{header} ++ [_]u8{0} ** 8), limits));
+    try testing.expectError(error.LimitExceeded, strip(&([_]u8{header} ++ @as([8]u8, @splat(0))), limits));
 }
 
 test "reader splits empty, single and many-packet batches" {
@@ -156,7 +156,7 @@ test "writer refuses overflow and keeps earlier packets intact" {
     try writer.append(&.{ 1, 2, 3 });
     const committed = writer.written().len;
 
-    try testing.expectError(error.NoSpaceLeft, writer.append(&([_]u8{5} ** 16)));
+    try testing.expectError(error.NoSpaceLeft, writer.append(&@as([16]u8, @splat(5))));
     try testing.expectError(error.MalformedBatch, writer.append(&.{}));
     try testing.expectEqual(committed, writer.written().len);
 

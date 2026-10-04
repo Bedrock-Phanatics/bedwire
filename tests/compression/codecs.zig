@@ -37,11 +37,11 @@ test "Snappy round-trips every literal and copy form" {
     try snappyRoundTrip("");
     try snappyRoundTrip("a");
     try snappyRoundTrip("abc");
-    try snappyRoundTrip(&([_]u8{'a'} ** 60)); // short literal boundary
-    try snappyRoundTrip(&([_]u8{'a'} ** 61)); // one-byte extended literal
-    try snappyRoundTrip(&([_]u8{'b'} ** 300)); // two-byte extended literal
-    try snappyRoundTrip(&([_]u8{'c'} ** 70000)); // three-byte extended literal
-    try snappyRoundTrip("abcd" ** 4096); // long copy runs
+    try snappyRoundTrip(&@as([60]u8, @splat('a'))); // short literal boundary
+    try snappyRoundTrip(&@as([61]u8, @splat('a'))); // one-byte extended literal
+    try snappyRoundTrip(&@as([300]u8, @splat('b'))); // two-byte extended literal
+    try snappyRoundTrip(&@as([70000]u8, @splat('c'))); // three-byte extended literal
+    try snappyRoundTrip(repeat("abcd", 4096)); // long copy runs
     try snappyRoundTrip(&noise); // incompressible
 }
 
@@ -82,7 +82,7 @@ test "raw DEFLATE round-trips and rejects corruption" {
     const allocator = testing.allocator;
 
     var history: [flate.history_len]u8 = undefined;
-    const input = "bedrock " ** 512;
+    const input = repeat("bedrock ", 512);
 
     const encoded = try allocator.alloc(u8, input.len + 64);
     defer allocator.free(encoded);
@@ -121,7 +121,7 @@ test "raw DEFLATE rejects trailing bytes after the stream" {
 test "raw DEFLATE bounds its output by the batch limit" {
     var history: [flate.history_len]u8 = undefined;
     var encoded: [4096]u8 = undefined;
-    const bomb = try flate.compress(&([_]u8{0} ** 131072), &encoded, &history);
+    const bomb = try flate.compress(&@as([131072]u8, @splat(0)), &encoded, &history);
 
     var decoded: [131072]u8 = undefined;
     var tight = limits;
@@ -137,7 +137,7 @@ test "raw DEFLATE bounds its input by the frame limit" {
     var tight = limits;
     tight.max_frame_bytes = 4;
 
-    try testing.expectError(error.LimitExceeded, flate.decompress(&([_]u8{0} ** 16), &decoded, &history, tight));
+    try testing.expectError(error.LimitExceeded, flate.decompress(&@as([16]u8, @splat(0)), &decoded, &history, tight));
 }
 
 test "raw DEFLATE fixture decompresses correctly and enforces output buffer bound" {
@@ -166,7 +166,7 @@ test "compressing into any destination size either succeeds or reports no space"
     var noise: [1024]u8 = undefined;
     random.random().bytes(&noise);
 
-    for ([_][]const u8{ "", "a", "bedrock " ** 64, &noise }) |input| {
+    for ([_][]const u8{ "", "a", repeat("bedrock ", 64), &noise }) |input| {
         for (0..destination.len) |size| {
             const dest = destination[0..size];
             if (snappy.compress(input, dest, &scratch.table)) |compressed| {
@@ -179,4 +179,10 @@ test "compressing into any destination size either succeeds or reports no space"
             } else |err| try testing.expectEqual(error.NoSpaceLeft, err);
         }
     }
+}
+
+fn repeat(comptime text: []const u8, comptime count: usize) *const [text.len * count]u8 {
+    const parts: [count][text.len]u8 = @splat(text[0..text.len].*);
+    const bytes = comptime @as([text.len * count]u8, @bitCast(parts));
+    return &bytes;
 }

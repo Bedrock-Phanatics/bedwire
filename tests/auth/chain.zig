@@ -225,7 +225,7 @@ test "a long display name is refused by the identity limit" {
     const allocator = testing.allocator;
     const key = try support.deterministicKey(8);
 
-    const name = [_]u8{'n'} ** 64;
+    const name = @as([64]u8, @splat('n'));
     const payload = try std.fmt.allocPrint(
         allocator,
         "{{\"exp\":200,\"identityPublicKey\":\"{s}\",\"extraData\":{{\"displayName\":\"{s}\",\"identity\":\"" ++

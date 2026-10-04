@@ -129,7 +129,7 @@ pub const Token = struct {
             .RS256 => |sig| {
                 std.crypto.Certificate.rsa.PKCS1v1_5Signature.verify(
                     256,
-                    sig,
+                    &sig,
                     self.signed,
                     key,
                     std.crypto.hash.sha2.Sha256,

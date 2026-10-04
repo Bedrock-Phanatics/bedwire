@@ -2,8 +2,8 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const version = @import("builtin").zig_version;
-    if (comptime version.major != 0 or version.minor != 16 or version.patch != 0) {
-        @compileError("bedwire requires Zig 0.16.0");
+    if (comptime version.major != 0 or version.minor != 17 or version.patch != 0) {
+        @compileError("bedwire requires Zig 0.17.0");
     }
 
     const target = b.standardTargetOptions(.{});
@@ -41,17 +41,17 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
     test_step.dependOn(&b.addRunArtifact(suite).step);
 
-    const bench_protocol = b.dependency("bedrock_protocol", .{ .target = target, .optimize = .ReleaseFast });
+    const bench_protocol = b.dependency("bedrock_protocol", .{ .target = target, .optimize = .fast });
     const bench_bedwire = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
-        .optimize = .ReleaseFast,
+        .optimize = .fast,
         .imports = &.{.{ .name = "bedrock_protocol", .module = bench_protocol.module("bedrock_protocol") }},
     });
     const bench = b.addExecutable(.{ .name = "bedwire-bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/main.zig"),
         .target = target,
-        .optimize = .ReleaseFast,
+        .optimize = .fast,
         .imports = &.{.{ .name = "bedwire", .module = bench_bedwire }},
     }) });
     b.step("bench", "Run session, framing, compression and crypto benchmarks")

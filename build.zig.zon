@@ -2,11 +2,11 @@
     .name = .bedwire,
     .version = "0.2.3",
     .fingerprint = 0x24f12bffadd8faea,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .bedrock_protocol = .{
-            .url = "https://github.com/Bedrock-Phanatics/protocol-zig/archive/14da5c9e939a977e5213c24c6551d83accef5cdf.tar.gz",
-            .hash = "bedrock_protocol-0.3.0-LNPkavANDQDZEXfk38LdLk1zN5hxl35BJND7IQgy97md",
+            .url = "https://github.com/Bedrock-Phanatics/protocol-zig/archive/b23c922c2397ca68bb120c195cdd9baaaeef8c0d.tar.gz",
+            .hash = "bedrock_protocol-0.5.0-LNPkah__DACmjVxtxXc5RosgTc3UYoUbDJv_GEoFPBrL",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "tests", "tools", "README.md" },

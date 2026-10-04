@@ -32,7 +32,7 @@ fn compressed(dest: []u8, packet: []const u8, algorithm: bedwire.compression.Alg
     var scratch: bedwire.compression.Scratch = undefined;
     const framed = try codec.encode(writer.written(), dest[2..], &scratch);
     dest[0] = bedwire.framing.batch.header;
-    dest[1] = @intFromEnum(framed.algorithm);
+    dest[1] = @backingInt(framed.algorithm);
     return dest[0 .. 2 + framed.bytes.len];
 }
 

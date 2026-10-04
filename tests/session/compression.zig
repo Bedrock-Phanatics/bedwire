@@ -37,7 +37,7 @@ test "every algorithm round-trips compressible and incompressible payloads" {
         defer pair.deinit();
 
         try roundTrip(&pair, "a");
-        try roundTrip(&pair, &([_]u8{'z'} ** 2048));
+        try roundTrip(&pair, &@as([2048]u8, @splat('z')));
         try roundTrip(&pair, &noise);
     }
 }
@@ -49,21 +49,21 @@ test "the threshold decides per batch and both sides agree" {
 
         var storage: [256]u8 = undefined;
 
-        const small = support.packet(&storage, support.opaque_packet_id, &([_]u8{'a'} ** 16));
+        const small = support.packet(&storage, support.opaque_packet_id, &@as([16]u8, @splat('a')));
         const small_frame = try pair.client.encode(&.{small});
         defer small_frame.release();
         try testing.expectEqual(@as(u8, 0xff), small_frame.bytes[1]);
         small_frame.release();
 
         var big_storage: [256]u8 = undefined;
-        const big = support.packet(&big_storage, support.opaque_packet_id, &([_]u8{'a'} ** 96));
+        const big = support.packet(&big_storage, support.opaque_packet_id, &@as([96]u8, @splat('a')));
         const big_frame = try pair.client.encode(&.{big});
         defer big_frame.release();
-        try testing.expectEqual(@intFromEnum(algorithm), big_frame.bytes[1]);
+        try testing.expectEqual(@backingInt(algorithm), big_frame.bytes[1]);
         big_frame.release();
 
-        try roundTrip(&pair, &([_]u8{'a'} ** 16));
-        try roundTrip(&pair, &([_]u8{'a'} ** 96));
+        try roundTrip(&pair, &@as([16]u8, @splat('a')));
+        try roundTrip(&pair, &@as([96]u8, @splat('a')));
     }
 }
 
@@ -72,12 +72,12 @@ test "an unexpected algorithm marker is refused" {
     defer pair.deinit();
 
     var storage: [128]u8 = undefined;
-    const frame = try pair.client.encode(&.{support.packet(&storage, support.opaque_packet_id, &([_]u8{'a'} ** 64))});
+    const frame = try pair.client.encode(&.{support.packet(&storage, support.opaque_packet_id, &@as([64]u8, @splat('a')))});
     defer frame.release();
     @memcpy(pair.relay[0..frame.bytes.len], frame.bytes);
     const captured = pair.relay[0..frame.bytes.len];
 
-    captured[1] = @intFromEnum(Algorithm.deflate);
+    captured[1] = @backingInt(Algorithm.deflate);
     try testing.expectError(error.UnexpectedCompression, pair.server.ingest(captured));
     try testing.expectEqual(bedwire.State.disconnected, pair.server.state);
 }
@@ -108,7 +108,7 @@ test "malformed compressed streams are rejected" {
         defer pair.deinit();
 
         var storage: [1024]u8 = undefined;
-        const frame = try pair.client.encode(&.{support.packet(&storage, support.opaque_packet_id, &([_]u8{'q'} ** 512))});
+        const frame = try pair.client.encode(&.{support.packet(&storage, support.opaque_packet_id, &@as([512]u8, @splat('q')))});
         defer frame.release();
         @memcpy(pair.relay[0..frame.bytes.len], frame.bytes);
         const captured = pair.relay[0..frame.bytes.len];
@@ -127,7 +127,7 @@ test "truncated compressed streams are rejected" {
         defer pair.deinit();
 
         var storage: [1024]u8 = undefined;
-        const frame = try pair.client.encode(&.{support.packet(&storage, support.opaque_packet_id, &([_]u8{'q'} ** 512))});
+        const frame = try pair.client.encode(&.{support.packet(&storage, support.opaque_packet_id, &@as([512]u8, @splat('q')))});
         defer frame.release();
         @memcpy(pair.relay[0..frame.bytes.len], frame.bytes);
         const captured = pair.relay[0 .. frame.bytes.len - 4];
@@ -141,7 +141,7 @@ test "a DEFLATE bomb is bounded by the batch limit, not by memory" {
 
     var history: [bedwire.compression.flate.history_len]u8 = undefined;
     var compressed: [4096]u8 = undefined;
-    const bomb = try bedwire.compression.flate.compress(&([_]u8{0} ** 65536), &compressed, &history);
+    const bomb = try bedwire.compression.flate.compress(&@as([65536]u8, @splat(0)), &compressed, &history);
 
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
@@ -152,7 +152,7 @@ test "a DEFLATE bomb is bounded by the batch limit, not by memory" {
 
     var frame: [4096]u8 = undefined;
     frame[0] = 0xfe;
-    frame[1] = @intFromEnum(Algorithm.deflate);
+    frame[1] = @backingInt(Algorithm.deflate);
     @memcpy(frame[2..][0..bomb.len], bomb);
 
     try testing.expectError(error.LimitExceeded, session.ingest(frame[0 .. 2 + bomb.len]));
@@ -170,7 +170,7 @@ test "a Snappy bomb is refused on its advertised length alone" {
     try session.compression.negotiate(.snappy, 0);
 
     // Advertises 16 MiB, then provides one literal byte.
-    const frame = [_]u8{ 0xfe, @intFromEnum(Algorithm.snappy), 0x80, 0x80, 0x80, 0x08, 0x00, 0x41 };
+    const frame = [_]u8{ 0xfe, @backingInt(Algorithm.snappy), 0x80, 0x80, 0x80, 0x08, 0x00, 0x41 };
     try testing.expectError(error.LimitExceeded, session.ingest(&frame));
 }
 
@@ -205,7 +205,7 @@ test "Snappy carries batches larger than the frame limit when they compress" {
     pair.server.state = .in_game;
 
     var storage: [8192]u8 = undefined;
-    const packet = support.packet(&storage, support.opaque_packet_id, &([_]u8{'a'} ** 4096));
+    const packet = support.packet(&storage, support.opaque_packet_id, &@as([4096]u8, @splat('a')));
 
     const frame = try pair.client.encode(&.{packet});
     defer frame.release();
@@ -224,7 +224,7 @@ test "implicit compression mode carries no marker byte" {
     pair.server.state = .in_game;
 
     var storage: [256]u8 = undefined;
-    const packet = support.packet(&storage, support.opaque_packet_id, &([_]u8{'a'} ** 64));
+    const packet = support.packet(&storage, support.opaque_packet_id, &@as([64]u8, @splat('a')));
 
     const frame = try pair.client.encode(&.{packet});
     defer frame.release();
@@ -250,7 +250,7 @@ test "an absent compression mode never compresses" {
     pair.server.state = .in_game;
 
     var storage: [256]u8 = undefined;
-    const packet = support.packet(&storage, support.opaque_packet_id, &([_]u8{'a'} ** 128));
+    const packet = support.packet(&storage, support.opaque_packet_id, &@as([128]u8, @splat('a')));
 
     const frame = try pair.client.encode(&.{packet});
     defer frame.release();

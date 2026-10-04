@@ -106,7 +106,7 @@ test "packet count and packet size limits bound one batch" {
     try testing.expectError(error.LimitExceeded, session.encode(&packets));
 
     var oversized: [64]u8 = undefined;
-    try testing.expectError(error.LimitExceeded, session.encodeOne(support.packet(&oversized, 1020, &([_]u8{7} ** 32))));
+    try testing.expectError(error.LimitExceeded, session.encodeOne(support.packet(&oversized, 1020, &@as([32]u8, @splat(7)))));
 }
 
 test "an oversized frame is refused before it is copied" {
@@ -137,7 +137,7 @@ test "output that cannot fit a frame fails instead of truncating" {
     session.state = .in_game;
 
     var storage: [256]u8 = undefined;
-    const payload = [_]u8{0xa5} ** 200;
+    const payload = @as([200]u8, @splat(0xa5));
 
     try testing.expectError(error.NoSpaceLeft, session.encodeOne(support.packet(&storage, 1020, &payload)));
     try testing.expectEqual(bedwire.State.in_game, session.state);
@@ -305,7 +305,7 @@ test "a held frame blocks encoding and a stale release cannot free its successor
 
     var small: [16]u8 = undefined;
     var large: [256]u8 = undefined;
-    const oversized = support.packet(&large, 1020, &([_]u8{0xa5} ** 200));
+    const oversized = support.packet(&large, 1020, &@as([200]u8, @splat(0xa5)));
 
     const first = try session.encode(&.{support.packet(&small, 1020, "ok")});
     try testing.expectError(error.PoolExhausted, session.encodeOne(oversized));
@@ -384,7 +384,7 @@ test "post-acquisition ingest failure releases RX slot and disconnects session" 
     defer session.deinit();
     try session.compression.negotiate(.deflate, 0);
 
-    const malformed = [_]u8{ 0xfe, @intFromEnum(bedwire.compression.Algorithm.deflate), 0x78, 0x9c, 0xff, 0xff };
+    const malformed = [_]u8{ 0xfe, @backingInt(bedwire.compression.Algorithm.deflate), 0x78, 0x9c, 0xff, 0xff };
     try testing.expectError(error.MalformedCompressedData, session.ingest(&malformed));
 
     try testing.expectEqual(bedwire.State.disconnected, session.state);

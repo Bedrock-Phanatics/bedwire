@@ -28,7 +28,7 @@ test "steady-state ingest and encode make no allocator calls" {
         failing.resize_fail_index = failing.resize_index;
 
         var storage: [1024]u8 = undefined;
-        const packet = support.packet(&storage, support.opaque_packet_id, &([_]u8{'g'} ** 512));
+        const packet = support.packet(&storage, support.opaque_packet_id, &@as([512]u8, @splat('g')));
 
         for (0..128) |_| {
             var packets = try pair.clientToServer(&.{packet});
@@ -87,7 +87,7 @@ test "ingested packets survive an encode on the same session" {
     pair.server.state = .in_game;
 
     var storage: [512]u8 = undefined;
-    const packet = support.packet(&storage, support.opaque_packet_id, &([_]u8{'r'} ** 256));
+    const packet = support.packet(&storage, support.opaque_packet_id, &@as([256]u8, @splat('r')));
 
     var packets = try pair.clientToServer(&.{packet});
     defer packets.deinit();
@@ -127,13 +127,13 @@ test "session max_frame_bytes is enforced when pool limits are larger" {
     client.state = .in_game;
 
     var small_buf: [128]u8 = undefined;
-    const small_packet = support.packet(&small_buf, support.opaque_packet_id, &([_]u8{'s'} ** 50));
+    const small_packet = support.packet(&small_buf, support.opaque_packet_id, &@as([50]u8, @splat('s')));
     const small_frame = try session.encodeOne(small_packet);
     try testing.expect(small_frame.bytes.len <= 256);
     small_frame.release();
 
     var large_buf: [512]u8 = undefined;
-    const large_packet = support.packet(&large_buf, support.opaque_packet_id, &([_]u8{'l'} ** 300));
+    const large_packet = support.packet(&large_buf, support.opaque_packet_id, &@as([300]u8, @splat('l')));
     try testing.expectError(error.NoSpaceLeft, session.encodeOne(large_packet));
 
     const client_frame = try client.encodeOne(large_packet);
@@ -155,8 +155,8 @@ test "session max_frame_bytes is enforced when pool limits are larger" {
 
     var p1_buf: [160]u8 = undefined;
     var p2_buf: [160]u8 = undefined;
-    const p1 = support.packet(&p1_buf, support.opaque_packet_id, &([_]u8{'a'} ** 140));
-    const p2 = support.packet(&p2_buf, support.opaque_packet_id_2, &([_]u8{'b'} ** 140));
+    const p1 = support.packet(&p1_buf, support.opaque_packet_id, &@as([140]u8, @splat('a')));
+    const p2 = support.packet(&p2_buf, support.opaque_packet_id_2, &@as([140]u8, @splat('b')));
     try testing.expectError(error.LimitExceeded, batch_session.encode(&.{ p1, p2 }));
 
     client_frame.release();
@@ -164,7 +164,7 @@ test "session max_frame_bytes is enforced when pool limits are larger" {
     try batch_session.compression.negotiate(.deflate, 0);
 
     var compressible_buf: [512]u8 = undefined;
-    const compressible = support.packet(&compressible_buf, support.opaque_packet_id, &([_]u8{'z'} ** 350));
+    const compressible = support.packet(&compressible_buf, support.opaque_packet_id, &@as([350]u8, @splat('z')));
     const compressed_frame = try client.encodeOne(compressible);
     defer compressed_frame.release();
     try testing.expect(compressed_frame.bytes.len < 256);
