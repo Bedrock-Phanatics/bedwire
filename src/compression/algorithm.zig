@@ -107,6 +107,37 @@ pub const Compression = struct {
         };
     }
 
+    // Compressed raw length is unknown, so dest must compress whatever we do.
+    pub fn relaysTo(self: Compression, dest: Compression) bool {
+        if (self.mode != dest.mode or self.algorithm != dest.algorithm) return false;
+        return switch (self.mode) {
+            .absent, .implicit => true,
+            .marked => self.negotiated and dest.negotiated and
+                (self.algorithm == .none or dest.threshold <= self.threshold),
+        };
+    }
+
+    pub fn relay(
+        self: Compression,
+        dest: Compression,
+        out: []u8,
+        len: usize,
+        spare: []u8,
+        scratch: *Scratch,
+        max_batch_bytes: usize,
+    ) !usize {
+        const framed = try self.split(out[0..len]);
+        if (framed.algorithm != .none) return len;
+        if (framed.bytes.len > max_batch_bytes) return error.LimitExceeded;
+        if (dest.selected(framed.bytes.len) == .none) return len;
+
+        if (framed.bytes.len > spare.len) return error.NoSpaceLeft;
+        const raw = spare[0..framed.bytes.len];
+        @memcpy(raw, framed.bytes);
+        out[0] = @backingInt(dest.algorithm);
+        return 1 + (try dest.encode(raw, out[1..], scratch)).bytes.len;
+    }
+
     fn copy(input: []const u8, dest: []u8) error{NoSpaceLeft}![]const u8 {
         if (input.len > dest.len) return error.NoSpaceLeft;
         @memcpy(dest[0..input.len], input);

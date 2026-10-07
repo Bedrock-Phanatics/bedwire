@@ -311,6 +311,64 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             };
         }
 
+        pub fn canRelayTo(self: *const Self, dest: *const Self) bool {
+            return self != dest and
+                self.state == .in_game and dest.state == .in_game and
+                self.role != dest.role and
+                self.compression.relaysTo(dest.compression);
+        }
+
+        /// Packets aren't checked or observed, so a relayed Disconnect won't close either side.
+        /// Errors after decryption close this Session; earlier ones leave it free to ingest.
+        pub fn relayTo(self: *Self, dest: *Self, payload: []const u8) !Self.Frame {
+            if (self.state == .disconnected or dest.state == .disconnected) return error.TransportClosed;
+            if (!self.canRelayTo(dest)) return error.IncompatibleRelay;
+            if (dest.tx_slot != null) return error.PoolExhausted;
+
+            const body = batch.strip(payload, self.limits) catch |err| {
+                self.close();
+                return err;
+            };
+
+            const slot_token = try dest.pool.acquireTx();
+            errdefer dest.pool.releaseTx(slot_token);
+
+            const slot = dest.pool.getTx(slot_token) orelse return error.InvalidState;
+
+            const max_egress = @min(slot.egress.len, dest.limits.max_frame_bytes);
+            const trailer: usize = if (dest.crypto != null) 8 else 0;
+            const payload_len = body.len -| @as(usize, if (self.crypto != null) 8 else 0);
+            if (1 + body.len > slot.egress.len or 1 + payload_len + trailer > max_egress) return error.LimitExceeded;
+
+            errdefer self.close();
+
+            const out = slot.egress;
+            @memcpy(out[1..][0..body.len], body);
+            var framed: []u8 = out[1..][0..body.len];
+            if (self.crypto) |*crypto| framed = try crypto.open(framed);
+
+            var len = 1 + try self.compression.relay(
+                dest.compression,
+                out[1 .. max_egress - trailer],
+                framed.len,
+                slot.assembly,
+                &slot.scratch,
+                @min(self.limits.max_batch_bytes, dest.limits.max_batch_bytes),
+            );
+
+            out[0] = batch.header;
+            if (dest.crypto) |*crypto| len = 1 + (try crypto.seal(out[1 .. len + trailer], len - 1)).len;
+
+            dest.tx_slot = slot_token;
+            dest.tx_token +%= 1;
+
+            return Self.Frame{
+                .bytes = out[0..len],
+                .session = dest,
+                .token = dest.tx_token,
+            };
+        }
+
         pub fn encodeOne(self: *Self, packet: []const u8) !Self.Frame {
             return self.encode(&.{packet});
         }
