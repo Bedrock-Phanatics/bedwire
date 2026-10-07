@@ -278,6 +278,42 @@ fn benchIngest(comptime Profile: type, io: std.Io, allocator: std.mem.Allocator,
     };
 }
 
+fn benchRelay(io: std.Io, allocator: std.mem.Allocator, pool: *bedwire.BufferPool, name: []const u8, algorithm: bedwire.compression.Algorithm, packet: []const u8, iterations: usize, fast: bool) !Result {
+    const setup: Setup = .{ .algorithm = algorithm, .encrypt = true };
+    var peer = try open(protocol.Current, pool, .client, setup);
+    defer peer.deinit();
+    var inbound = try open(protocol.Current, pool, .server, setup);
+    defer inbound.deinit();
+    var outbound = try open(protocol.Current, pool, .client, setup);
+    defer outbound.deinit();
+    outbound.crypto = bedwire.crypto.SessionCrypto.init(@splat(0x24));
+
+    const frames = try allocator.alloc([]u8, iterations);
+    defer {
+        for (frames) |frame| allocator.free(frame);
+        allocator.free(frames);
+    }
+    for (frames) |*frame| {
+        const f = try peer.encodeOne(packet);
+        defer f.release();
+        frame.* = try allocator.dupe(u8, f.bytes);
+    }
+
+    var timer = Timer.start(io);
+    for (frames) |frame| {
+        const out = if (fast) try inbound.relayTo(&outbound, frame) else blk: {
+            var packets = try inbound.ingest(frame);
+            defer packets.deinit();
+            break :blk try outbound.encodeOne(packets.next().?.bytes);
+        };
+        std.mem.doNotOptimizeAway(out.bytes.ptr);
+        out.release();
+    }
+    const elapsed = timer.read();
+
+    return .{ .name = name, .operations = iterations, .nanoseconds = elapsed, .payload_bytes = packet.len * iterations };
+}
+
 fn benchSessionLifecycle(io: std.Io, pool: *bedwire.BufferPool, iterations: usize) !Result {
     var storage: [64]u8 = undefined;
     const packet = makePacket(&storage, 1020, 32);
@@ -521,6 +557,33 @@ pub fn main(init: std.process.Init) !void {
             var name_storage: [64]u8 = undefined;
             const name = try std.fmt.bufPrint(&name_storage, "  ingest {s} / {s}", .{ workload.name, case.name });
             try (try benchIngest(protocol.Current, init.io, allocator, &pool, name, case.setup, workload.packets, workload.iterations)).report(out);
+        }
+    }
+
+    try out.print("\nmanaged relay, encrypted both legs (ingest+encode vs relayTo)\n", .{});
+    const relay_storage = try allocator.alloc(u8, 64 * 1024);
+    var prng = std.Random.DefaultPrng.init(0xbed);
+    for ([_]bedwire.compression.Algorithm{ .deflate, .snappy }) |algorithm| {
+        for ([_]bool{ true, false }) |compressible| {
+            for ([_]struct { len: usize, iterations: usize }{
+                .{ .len = 256, .iterations = 50_000 },
+                .{ .len = 1024, .iterations = 50_000 },
+                .{ .len = 8 * 1024, .iterations = 10_000 },
+                .{ .len = 64 * 1024, .iterations = 1_000 },
+            }) |size| {
+                const packet = makePacket(relay_storage, 1020, size.len);
+                if (!compressible) prng.random().bytes(relay_storage[2..size.len]);
+                for ([_]bool{ false, true }) |fast| {
+                    var name_storage: [64]u8 = undefined;
+                    const name = try std.fmt.bufPrint(&name_storage, "  {s} {s} {s} {d} B", .{
+                        if (fast) "relay " else "decode",
+                        @tagName(algorithm),
+                        if (compressible) "game " else "noise",
+                        size.len,
+                    });
+                    try (try benchRelay(init.io, allocator, &pool, name, algorithm, packet, size.iterations, fast)).report(out);
+                }
+            }
         }
     }
 
