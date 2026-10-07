@@ -100,7 +100,7 @@ test "encrypted deflate and snappy batches relay intact" {
     }
 }
 
-test "uncompressed marked batches honour the destination threshold" {
+test "uncompressed batches follow the destination threshold, compressed ones keep their marker" {
     var chain: Chain = undefined;
     try chain.init(.{ .threshold = 256, .encrypted = false }, .{ .threshold = 64, .encrypted = false });
     defer chain.deinit();
@@ -123,6 +123,16 @@ test "uncompressed marked batches honour the destination threshold" {
         var packets = try chain.upstream.ingest(frame.bytes);
         try expectPackets(&packets, &.{packet});
     }
+
+    const packet = sized(&storage, 100);
+    const sent = try chain.upstream.encode(&.{packet});
+    defer sent.release();
+    try testing.expectEqual(@as(u8, 0), sent.bytes[1]);
+    const frame = try chain.outbound.relayTo(&chain.inbound, sent.bytes);
+    defer frame.release();
+    try testing.expectEqual(@as(u8, 0), frame.bytes[1]);
+    var packets = try chain.peer.ingest(frame.bytes);
+    try expectPackets(&packets, &.{packet});
 }
 
 test "absent and implicit framing relay unchanged" {
@@ -146,7 +156,6 @@ test "incompatible pairs are refused before either session changes" {
     const unnegotiated = Compression.init(support.modern.features);
     for ([_]struct { down: Leg, up: Leg }{
         .{ .down = .{ .algorithm = .deflate }, .up = .{ .algorithm = .snappy } },
-        .{ .down = .{ .threshold = 64 }, .up = .{ .threshold = 256 } },
         .{ .down = .{}, .up = .{ .compression = implicit } },
         .{ .down = .{}, .up = .{ .compression = unnegotiated } },
     }) |case| {
@@ -362,7 +371,7 @@ test "relay respects held leases" {
 
 test "thousands of relays keep both keystreams in step" {
     var chain: Chain = undefined;
-    try chain.init(.{ .threshold = 128 }, .{ .threshold = 128 });
+    try chain.init(.{ .threshold = 128 }, .{ .threshold = 64 });
     defer chain.deinit();
 
     var storage: [4096]u8 = undefined;

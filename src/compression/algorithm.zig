@@ -107,14 +107,10 @@ pub const Compression = struct {
         };
     }
 
-    // Compressed raw length is unknown, so dest must compress whatever we do.
+    // Receivers go by the marker, not the threshold, so compressed frames carry over as-is.
     pub fn relaysTo(self: Compression, dest: Compression) bool {
         if (self.mode != dest.mode or self.algorithm != dest.algorithm) return false;
-        return switch (self.mode) {
-            .absent, .implicit => true,
-            .marked => self.negotiated and dest.negotiated and
-                (self.algorithm == .none or dest.threshold <= self.threshold),
-        };
+        return self.mode != .marked or (self.negotiated and dest.negotiated);
     }
 
     pub fn relay(
