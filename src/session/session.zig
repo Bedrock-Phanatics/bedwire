@@ -311,8 +311,10 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             };
         }
 
-        pub fn canRelayTo(self: *const Self, dest: *const Self) bool {
-            return self != dest and
+        /// `dest` may use another profile of the same protocol version.
+        pub fn canRelayTo(self: *const Self, dest: anytype) bool {
+            return @intFromPtr(self) != @intFromPtr(dest) and
+                self.version() == dest.version() and
                 self.state == .in_game and dest.state == .in_game and
                 self.role != dest.role and
                 self.compression.relaysTo(dest.compression);
@@ -320,7 +322,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
         /// Packets aren't checked or observed, so a relayed Disconnect won't close either side.
         /// Errors after decryption close this Session; earlier ones leave it free to ingest.
-        pub fn relayTo(self: *Self, dest: *Self, payload: []const u8) !Self.Frame {
+        pub fn relayTo(self: *Self, dest: anytype, payload: []const u8) !@TypeOf(dest.*).Frame {
             if (self.state == .disconnected or dest.state == .disconnected) return error.TransportClosed;
             if (!self.canRelayTo(dest)) return error.IncompatibleRelay;
             if (dest.tx_slot != null) return error.PoolExhausted;
@@ -362,7 +364,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             dest.tx_slot = slot_token;
             dest.tx_token +%= 1;
 
-            return Self.Frame{
+            return .{
                 .bytes = out[0..len],
                 .session = dest,
                 .token = dest.tx_token,

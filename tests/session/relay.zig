@@ -194,6 +194,38 @@ test "relay needs distinct in-game sessions facing opposite peers" {
     try testing.expectEqual(bedwire.State.in_game, chain.outbound.state);
 }
 
+test "relay crosses profiles only within one protocol version" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 2 });
+    defer pool.deinit();
+
+    var player = try bedwire.SessionWithProfile(support.Profile(818, .{ .login_flow = .oidc })).init(.server, .{ .pool = &pool });
+    defer player.deinit();
+    var backend = try Session.init(.client, .{ .pool = &pool });
+    defer backend.deinit();
+    var newer = try bedwire.SessionWithProfile(support.Profile(819, .{ .login_flow = .certificate_chain })).init(.client, .{ .pool = &pool });
+    defer newer.deinit();
+    for ([_]*bedwire.compression.Compression{ &player.compression, &backend.compression, &newer.compression }) |c| try c.negotiate(.deflate, 0);
+    player.state = .in_game;
+    backend.state = .in_game;
+    newer.state = .in_game;
+
+    try testing.expect(!player.canRelayTo(&newer));
+    try testing.expect(player.canRelayTo(&backend));
+
+    var storage: [64]u8 = undefined;
+    const packet = support.packet(&storage, support.opaque_packet_id, "cross");
+    var sender = try Session.init(.client, .{ .pool = &pool });
+    defer sender.deinit();
+    try sender.compression.negotiate(.deflate, 0);
+    sender.state = .in_game;
+    const sent = try sender.encode(&.{packet});
+    defer sent.release();
+
+    const frame = try player.relayTo(&backend, sent.bytes);
+    defer frame.release();
+    try testing.expectEqual(&backend, frame.session);
+}
+
 test "malformed markers fail closed without touching the destination" {
     for ([_]struct { body: []const u8, err: anyerror }{
         .{ .body = &.{}, .err = error.MalformedCompressedData },
