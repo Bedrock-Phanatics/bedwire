@@ -147,3 +147,40 @@ test "Bedwire carries shared semantic identity for gameplay packets" {
     const envelope = try pair.client.decodePacket(received);
     try testing.expectEqual(@as(i32, 1234), envelope.value.typed.set_time.time);
 }
+
+test "sessions reject oversized inventory collections before reading elements" {
+    var pair = try support.Pair.init(testing.allocator, protocol.Current);
+    defer pair.deinit();
+
+    var storage: [64]u8 = undefined;
+    const id = protocol.Current.packetId(.inventory_transaction).?;
+    for ([_]u32{ 101, 100_000, std.math.maxInt(u32) }) |count| {
+        for (0..5) |tag| {
+            var writer = protocol.Writer.init(&storage);
+            try writer.writeVarU32(id);
+            try writer.writeVarI32(-7);
+            try writer.writeBool(false);
+            try writer.writeVarU32(@intCast(tag));
+            try writer.writeVarU32(count);
+            try testing.expectError(if (count == 101) error.InvalidValue else error.LimitExceeded, pair.server.decodePacket(.{
+                .kind = .inventory_transaction,
+                .id = id,
+                .bytes = writer.written(),
+            }));
+        }
+    }
+    for ([_]u32{ 257, 100_000, std.math.maxInt(u32) }) |count| {
+        var writer = protocol.Writer.init(&storage);
+        try writer.writeVarU32(id);
+        try writer.writeVarI32(-7);
+        try writer.writeBool(true);
+        try writer.writeVarU32(1);
+        try writer.writeU8(2);
+        try writer.writeVarU32(count);
+        try testing.expectError(if (count == 257) error.InvalidValue else error.LimitExceeded, pair.server.decodePacket(.{
+            .kind = .inventory_transaction,
+            .id = id,
+            .bytes = writer.written(),
+        }));
+    }
+}
