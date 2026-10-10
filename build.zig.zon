@@ -5,7 +5,7 @@
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .bedrock_protocol = .{
-            .url = "https://github.com/Bedrock-Phanatics/protocol-zig/archive/120dc93e4f4c9120bd468a0adea5eda8150f1ce6.tar.gz",
+            .url = "https://codeload.github.com/Bedrock-Phanatics/protocol-zig/tar.gz/120dc93e4f4c9120bd468a0adea5eda8150f1ce6",
             .hash = "bedrock_protocol-0.5.0-LNPkaiU3DQDLdfwPXcW06gKGDe3Lm6HBSBF6u-DjWHjr",
         },
     },
