@@ -183,4 +183,16 @@ test "sessions reject oversized inventory collections before reading elements" {
             .bytes = writer.written(),
         }));
     }
+    for ([_]u32{ 11, 100_000, std.math.maxInt(u32) }) |count| {
+        var writer = protocol.Writer.init(&storage);
+        try writer.writeVarU32(id);
+        try writer.writeVarI32(-7);
+        try writer.writeBool(true);
+        try writer.writeVarU32(count);
+        try testing.expectError(if (count == 11) error.InvalidValue else error.LimitExceeded, pair.server.decodePacket(.{
+            .kind = .inventory_transaction,
+            .id = id,
+            .bytes = writer.written(),
+        }));
+    }
 }
