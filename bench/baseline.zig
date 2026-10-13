@@ -6,19 +6,19 @@ const protocol = bedwire.protocol;
 const Timer = legacy.Timer;
 const limits = legacy.limits;
 const Phase = enum { encode, decode, roundtrip };
-const Content = enum { compressible, realistic, noise };
+pub const Content = enum { compressible, realistic, noise };
 const latency_samples = 1024;
 const throughput_samples = 7;
 const frame_budget = 16 * 1024 * 1024;
 
-const Workload = struct {
+pub const Workload = struct {
     storage: []u8,
     packets: [1024][]const u8 = undefined,
     count: usize = 0,
     payload_bytes: usize = 0,
     batch_bytes: usize = 0,
 
-    fn init(allocator: std.mem.Allocator, content: Content, size: usize) !Workload {
+    pub fn init(allocator: std.mem.Allocator, content: Content, size: usize) !Workload {
         var self: Workload = .{ .storage = try allocator.alloc(u8, size + 4096) };
         errdefer allocator.free(self.storage);
         const payload = try allocator.alloc(u8, size);
@@ -88,7 +88,7 @@ const Workload = struct {
         return self;
     }
 
-    fn slice(self: *const Workload) []const []const u8 {
+    pub fn slice(self: *const Workload) []const []const u8 {
         return self.packets[0..self.count];
     }
 };

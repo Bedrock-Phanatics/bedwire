@@ -1,0 +1,21 @@
+{
+  "zig-out/bin/bedwire-codecs.exe": {
+    "sha256": "041175a3e600a3265afd41d958234d7066c168ad763331d85473a99c5fb5b7ba"
+  },
+  "zig-out/bin/bedwire-pool-bench.exe": {
+    "sha256": "d6a17f5e6c828f054080b95c199cbfa4fe64b9b126582f191578a971cf48bf0d"
+  },
+  "zig-out/bin/s2-reference.test.exe": {
+    "sha256": "aa4a897030d780d541726c66ade1db08ca4e41b0a4dcad6ee6c2e687f7fac84b"
+  },
+  "zig-out/linux-x86_64/bin/bedwire-codecs": {
+    "sha256": "c2d7099578c62a769970e46894fe3cf7f0581385b4de99ac4d09524790d53fc8",
+    "elf_machine": 62,
+    "static_no_dynamic_or_interpreter": true
+  },
+  "zig-out/linux-aarch64/bin/bedwire-codecs": {
+    "sha256": "4cd458ff28f2a7b911dc7df2588d07db049c6351ad2412f491c06cc326e2dae5",
+    "elf_machine": 183,
+    "static_no_dynamic_or_interpreter": true
+  }
+}

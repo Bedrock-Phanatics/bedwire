@@ -2,6 +2,7 @@ const std = @import("std");
 const bedwire = @import("bedwire");
 
 const testing = std.testing;
+pub const fixture_json = @embedFile("interop.json");
 
 const limits: bedwire.Limits = .{
     .max_frame_bytes = 1 << 20,
@@ -9,7 +10,7 @@ const limits: bedwire.Limits = .{
     .max_packet_bytes = 1 << 20,
 };
 
-const Fixture = struct {
+pub const Fixture = struct {
     plain: []const u8,
     snappy: []const u8,
     flate: []const u8,

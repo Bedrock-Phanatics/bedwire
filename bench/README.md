@@ -1,5 +1,8 @@
 # Session baseline
 
+For optional codec comparisons, pool contention and Tracy evaluation, see
+[CANDIDATES.md](CANDIDATES.md).
+
 Build with Zig 0.17.0, then run the executable separately from the compiler:
 
 ```sh

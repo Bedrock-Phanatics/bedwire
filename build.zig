@@ -70,6 +70,52 @@ pub fn build(b: *std.Build) void {
     b.step("bench-baseline-build", "Build the session benchmark matrix without running it")
         .dependOn(&b.addInstallArtifact(baseline, .{}).step);
 
+    const pool_bench = b.addExecutable(.{ .name = "bedwire-pool-bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/pool.zig"),
+        .target = target,
+        .optimize = .fast,
+        .imports = &.{.{ .name = "bedwire", .module = bench_bedwire }},
+    }) });
+    b.step("bench-pool-build", "Build the pool contention benchmark")
+        .dependOn(&b.addInstallArtifact(pool_bench, .{}).step);
+    b.step("bench-pool", "Run the pool contention benchmark")
+        .dependOn(&b.addRunArtifact(pool_bench).step);
+
+    if (b.option([]const u8, "libdeflate-path", "libdeflate source directory for optional codec benchmarks")) |source| {
+        const root: std.Build.LazyPath = .{ .cwd_relative = source };
+        const libdeflate = b.addLibrary(.{ .name = "bench-libdeflate", .root_module = b.createModule(.{
+            .target = target,
+            .optimize = .fast,
+            .link_libc = true,
+        }) });
+        libdeflate.root_module.addIncludePath(root);
+        libdeflate.root_module.addCSourceFiles(.{ .root = root, .files = &.{
+            "lib/adler32.c",         "lib/crc32.c",            "lib/deflate_compress.c", "lib/deflate_decompress.c",
+            "lib/gzip_compress.c",   "lib/gzip_decompress.c",  "lib/utils.c",            "lib/zlib_compress.c",
+            "lib/zlib_decompress.c", "lib/arm/cpu_features.c", "lib/x86/cpu_features.c",
+        }, .flags = &.{ "-O2", "-std=c11" } });
+        const codecs = b.addExecutable(.{ .name = "bedwire-codecs", .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/codecs.zig"),
+            .target = target,
+            .optimize = .fast,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "bedwire", .module = bench_bedwire },
+                .{ .name = "interop", .module = b.createModule(.{
+                    .root_source_file = b.path("tests/compression/interop.zig"),
+                    .imports = &.{.{ .name = "bedwire", .module = bench_bedwire }},
+                }) },
+            },
+        }) });
+        codecs.root_module.linkLibrary(libdeflate);
+        codecs.root_module.addIncludePath(root);
+        codecs.root_module.addCSourceFile(.{ .file = b.path("bench/libdeflate_metrics.c"), .flags = &.{ "-O2", "-std=c11" } });
+        b.step("bench-codecs-build", "Build optional raw codec comparisons")
+            .dependOn(&b.addInstallArtifact(codecs, .{}).step);
+        b.step("bench-codecs", "Run optional raw codec comparisons")
+            .dependOn(&b.addRunArtifact(codecs).step);
+    }
+
     const interop = b.addExecutable(.{ .name = "interop-export", .root_module = b.createModule(.{
         .root_source_file = b.path("tools/interop/export.zig"),
         .target = target,

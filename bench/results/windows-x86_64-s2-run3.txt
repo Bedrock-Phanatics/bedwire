@@ -1,0 +1,53 @@
+goos: windows
+goarch: amd64
+pkg: interop
+cpu: AMD Ryzen 5 5500
+BenchmarkSnappy/large-compressible/encode         	   10000	     10623 ns/op	24677.47 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/large-compressible/decode/snappy  	     978	    123137 ns/op	2128.90 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/large-compressible/decode/s2snappy         	     830	    143676 ns/op	1824.57 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/large-noise/encode                         	   14787	      8086 ns/op	32420.59 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/large-noise/decode/snappy                  	   24986	      4766 ns/op	55001.62 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/large-noise/decode/s2snappy                	   25021	      4847 ns/op	54080.01 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/large-realistic/encode                     	    3394	     35653 ns/op	7352.94 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/large-realistic/decode/snappy              	    5970	     22216 ns/op	11800.09 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/large-realistic/decode/s2snappy            	    1116	    108527 ns/op	2415.57 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/medium-compressible/encode                 	   72694	      1671 ns/op	9826.98 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/medium-compressible/decode/snappy          	   71996	      1736 ns/op	9455.44 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/medium-compressible/decode/s2snappy        	   61431	      1830 ns/op	8972.84 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/medium-noise/encode                        	   19666	      6117 ns/op	2683.52 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/medium-noise/decode/snappy                 	  457788	       267.6 ns/op	61348.53 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/medium-noise/decode/s2snappy               	  814166	       149.8 ns/op	109572.97 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/medium-realistic/encode                    	    6112	     19947 ns/op	 845.74 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/medium-realistic/decode/snappy             	   16113	      7458 ns/op	2261.94 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/medium-realistic/decode/s2snappy           	   18807	      6381 ns/op	2643.95 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/small-compressible/encode                  	 1765183	        68.09 ns/op	3789.26 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/small-compressible/decode/snappy           	  627220	       195.2 ns/op	1321.51 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/small-compressible/decode/s2snappy         	  955641	       128.1 ns/op	2013.89 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/small-noise/encode                         	 1000000	       115.8 ns/op	2227.77 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/small-noise/decode/snappy                  	 8115070	        14.82 ns/op	17408.17 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/small-noise/decode/s2snappy                	 7769504	        15.06 ns/op	17131.96 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/small-realistic/encode                     	  372704	       326.2 ns/op	 858.40 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/small-realistic/decode/snappy              	  940143	       127.7 ns/op	2192.41 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/small-realistic/decode/s2snappy            	  938158	       128.0 ns/op	2186.98 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-1/encode                             	16841868	         7.253 ns/op	 137.87 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-1/decode/snappy                      	11975330	        10.15 ns/op	  98.49 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-1/decode/s2snappy                    	12015740	        10.05 ns/op	  99.50 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-128/encode                           	 1277384	        93.38 ns/op	1370.69 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-128/decode/snappy                    	 8949345	        13.30 ns/op	9621.80 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-128/decode/s2snappy                  	 9155482	        13.38 ns/op	9568.51 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-16/encode                            	16689150	         7.264 ns/op	2202.56 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-16/decode/snappy                     	16794255	         7.493 ns/op	2135.46 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-16/decode/s2snappy                   	16508686	         7.343 ns/op	2178.81 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-3/encode                             	16821328	         7.501 ns/op	 399.93 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-3/decode/snappy                      	11920608	        10.24 ns/op	 293.04 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-3/decode/s2snappy                    	12007804	        10.13 ns/op	 296.26 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-32/encode                            	 1954425	        61.37 ns/op	 521.43 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-32/decode/snappy                     	11225653	        10.75 ns/op	2977.99 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-32/decode/s2snappy                   	11191210	        10.75 ns/op	2977.27 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-4/encode                             	16823451	         7.185 ns/op	 556.70 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-4/decode/snappy                      	12010809	        10.06 ns/op	 397.44 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-4/decode/s2snappy                    	12018507	        10.25 ns/op	 390.23 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-64/encode                            	 1630923	        73.60 ns/op	 869.52 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-64/decode/snappy                     	 9781465	        12.54 ns/op	5104.69 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnappy/noise-64/decode/s2snappy                   	10291682	        12.49 ns/op	5124.04 MB/s	       0 B/op	       0 allocs/op
+PASS
