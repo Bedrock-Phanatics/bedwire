@@ -1,12 +1,12 @@
 const std = @import("std");
 const bedwire = @import("bedwire");
 
-const Counting = struct {
+pub const Counting = struct {
     backing: std.mem.Allocator,
     allocations: usize = 0,
     bytes: usize = 0,
 
-    fn allocator(self: *Counting) std.mem.Allocator {
+    pub fn allocator(self: *Counting) std.mem.Allocator {
         return .{ .ptr = self, .vtable = &.{
             .alloc = alloc,
             .resize = resize,
@@ -56,7 +56,7 @@ const Result = struct {
     }
 };
 
-const limits: bedwire.Limits = .{
+pub const limits: bedwire.Limits = .{
     .max_frame_bytes = 1 << 20,
     .max_batch_bytes = 4 << 20,
     .max_packet_bytes = 1 << 20,
@@ -113,12 +113,12 @@ const MockProfile = struct {
     }
 };
 
-const Setup = struct {
+pub const Setup = struct {
     algorithm: ?bedwire.compression.Algorithm,
     encrypt: bool,
 };
 
-fn open(comptime Profile: type, pool: *bedwire.BufferPool, role: bedwire.Role, setup: Setup) !bedwire.SessionWithProfile(Profile) {
+pub fn open(comptime Profile: type, pool: *bedwire.BufferPool, role: bedwire.Role, setup: Setup) !bedwire.SessionWithProfile(Profile) {
     var session = try bedwire.SessionWithProfile(Profile).init(role, .{ .pool = pool, .limits = limits });
     errdefer session.deinit();
 
@@ -129,18 +129,18 @@ fn open(comptime Profile: type, pool: *bedwire.BufferPool, role: bedwire.Role, s
     return session;
 }
 
-const Timer = struct {
+pub const Timer = struct {
     io: std.Io,
     start_ts: std.Io.Timestamp,
 
-    fn start(io: std.Io) Timer {
+    pub fn start(io: std.Io) Timer {
         return .{
             .io = io,
             .start_ts = std.Io.Timestamp.now(io, .awake),
         };
     }
 
-    fn read(self: Timer) u64 {
+    pub fn read(self: Timer) u64 {
         const now = std.Io.Timestamp.now(self.io, .awake);
         const duration = self.start_ts.durationTo(now);
         return @intCast(duration.nanoseconds);

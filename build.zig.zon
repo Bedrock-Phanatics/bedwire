@@ -9,5 +9,5 @@
             .hash = "bedrock_protocol-0.5.0-LNPkatg8DQA7j5wxMbThhIMDOIvvB14msZAwRu-ih4gZ",
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "src", "tests", "tools", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "tests", "tools", "bench", "README.md" },
 }

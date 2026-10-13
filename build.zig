@@ -59,6 +59,17 @@ pub fn build(b: *std.Build) void {
     b.step("bench-build", "Build the benchmark binary without running it")
         .dependOn(&b.addInstallArtifact(bench, .{}).step);
 
+    const baseline = b.addExecutable(.{ .name = "bedwire-baseline", .root_module = b.createModule(.{
+        .root_source_file = b.path("bench/baseline.zig"),
+        .target = target,
+        .optimize = .fast,
+        .imports = &.{.{ .name = "bedwire", .module = bench_bedwire }},
+    }) });
+    b.step("bench-baseline", "Run the bounded session benchmark matrix")
+        .dependOn(&b.addRunArtifact(baseline).step);
+    b.step("bench-baseline-build", "Build the session benchmark matrix without running it")
+        .dependOn(&b.addInstallArtifact(baseline, .{}).step);
+
     const interop = b.addExecutable(.{ .name = "interop-export", .root_module = b.createModule(.{
         .root_source_file = b.path("tools/interop/export.zig"),
         .target = target,

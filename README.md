@@ -133,3 +133,5 @@ python tools/interop/check.py
 ```
 
 The interoperability check requires Python 3 and Go 1.25+.
+
+For session performance benchmarks and recorded baselines, see [bench/README.md](bench/README.md).
