@@ -1,8 +1,8 @@
 # Codec and pool investigation
 
-Production compression, encryption, session/authentication, resource-pack state,
-and pool implementation are unchanged in this phase. The optional C library is
-linked only into `bedwire-codecs`; ordinary builds require no C dependency.
+This records the raw-codec and pool investigation before production changes.
+The subsequent [session backend trial](LIBDEFLATE.md) retains libdeflate as an
+opt-in backend. Ordinary builds continue to use pure Zig without a C dependency.
 
 ## Reproduce
 

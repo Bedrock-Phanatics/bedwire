@@ -229,11 +229,12 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             var session_payload: []const u8 = rx_slot.frame[0..body.len];
             if (self.crypto) |*crypto| session_payload = try crypto.open(rx_slot.frame[0..body.len]);
 
-            const raw = try self.compression.decode(
+            const raw = try self.compression.decodeWithContext(
                 session_payload,
                 rx_slot.batch,
                 &rx_slot.history,
                 self.limits,
+                rx_slot.decoder,
             );
             const observed = try self.admit(raw, self.role.peer());
 
@@ -290,7 +291,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             if (self.compression.selected(raw.len) == .none) {
                 if (raw.len > room) return error.NoSpaceLeft;
             } else {
-                const framed = try self.compression.encode(raw, slot.egress[reserve..][0..room], &slot.scratch);
+                const framed = try self.compression.encodeWithContext(raw, slot.egress[reserve..][0..room], &slot.scratch, slot.encoder);
                 out = slot.egress;
                 algorithm = framed.algorithm;
                 len = reserve + framed.bytes.len;
@@ -349,13 +350,14 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             var framed: []u8 = out[1..][0..body.len];
             if (self.crypto) |*crypto| framed = try crypto.open(framed);
 
-            var len = 1 + try self.compression.relay(
+            var len = 1 + try self.compression.relayWithContext(
                 dest.compression,
                 out[1 .. max_egress - trailer],
                 framed.len,
                 slot.assembly,
                 &slot.scratch,
                 @min(self.limits.max_batch_bytes, dest.limits.max_batch_bytes),
+                slot.encoder,
             );
 
             out[0] = batch.header;

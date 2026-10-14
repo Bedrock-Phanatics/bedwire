@@ -51,6 +51,22 @@ test "initialization unwinds every allocation failure" {
     try testing.checkAllAllocationFailures(testing.allocator, initCase, .{});
 }
 
+test "pool allocations can be freed on another thread" {
+    const Worker = struct {
+        fn run(pool: *bedwire.BufferPool) void {
+            pool.deinit();
+        }
+    };
+    for (0..16) |_| {
+        var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 1 });
+        const thread = std.Thread.spawn(.{}, Worker.run, .{&pool}) catch |err| {
+            pool.deinit();
+            return err;
+        };
+        thread.join();
+    }
+}
+
 test "limits are validated before any buffer is reserved" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 1 });
     defer pool.deinit();

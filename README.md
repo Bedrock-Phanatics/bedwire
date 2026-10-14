@@ -25,6 +25,22 @@ const bedwire = b.dependency("bedwire", .{
 exe.root_module.addImport("bedwire", bedwire.module("bedwire"));
 ```
 
+Raw DEFLATE uses Zig's standard library by default. To opt into the pinned
+libdeflate 1.26 backend, add `.libdeflate = true` to the dependency arguments
+above, or use `zig build -Dlibdeflate=true` in this repository. Zig builds the
+MIT-licensed C sources as a static library; no system libdeflate installation
+is needed. This option requires a target with libc support.
+
+The optional backend uses level 3 and allocates reusable codec state through
+the pool's allocator during `BufferPool.init`: approximately 668 KB per TX
+slot and 12 KB per RX slot, in addition to the existing buffers and scratch.
+Session encode/ingest, Tap decode and relay recompression reuse the exclusively
+leased slot's context without allocating. Pool destruction frees the contexts.
+The standalone `compression.flate.compress/decompress` and existing
+`Compression.encode/decode/relay` APIs continue to use pure Zig. Compression
+thresholds and protocol markers apply to both backends. See the measured
+tradeoffs in [the backend investigation](bench/LIBDEFLATE.md).
+
 ## Use a session
 
 Create a shared pool, then a session for each connection. `Session` uses the current `bedrock_protocol` profile:

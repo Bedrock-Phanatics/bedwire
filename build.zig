@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const version = @import("builtin").zig_version;
     if (comptime version.major != 0 or version.minor != 17 or version.patch != 0) {
         @compileError("bedwire requires Zig 0.17.0");
@@ -9,6 +9,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const fuzz_iterations = b.option(usize, "fuzz-iterations", "Deterministic malformed inputs per campaign") orelse 20_000;
+    const use_libdeflate = b.option(bool, "libdeflate", "Use reusable libdeflate level 3 contexts for session batches") orelse false;
+    const compression_options = b.addOptions();
+    compression_options.addOption(bool, "libdeflate", use_libdeflate);
+    const native = if (use_libdeflate) blk: {
+        const dependency = try b.dependencyLazy("libdeflate", .{});
+        break :blk buildLibdeflate(b, target, dependency.path("libdeflate-1.26"));
+    } else null;
 
     const options = b.addOptions();
     options.addOption(usize, "fuzz_iterations", fuzz_iterations);
@@ -22,6 +29,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "bedrock_protocol", .module = protocol_module }},
     });
+    bedwire.addOptions("compression_options", compression_options);
+    if (native) |library| bedwire.linkLibrary(library);
     b.installArtifact(b.addLibrary(.{ .name = "bedwire", .root_module = bedwire }));
 
     const unit_tests = b.addTest(.{ .root_module = bedwire });
@@ -48,6 +57,8 @@ pub fn build(b: *std.Build) void {
         .optimize = .fast,
         .imports = &.{.{ .name = "bedrock_protocol", .module = bench_protocol.module("bedrock_protocol") }},
     });
+    bench_bedwire.addOptions("compression_options", compression_options);
+    if (native) |library| bench_bedwire.linkLibrary(library);
     const bench = b.addExecutable(.{ .name = "bedwire-bench", .root_module = b.createModule(.{
         .root_source_file = b.path("bench/main.zig"),
         .target = target,
@@ -83,17 +94,7 @@ pub fn build(b: *std.Build) void {
 
     if (b.option([]const u8, "libdeflate-path", "libdeflate source directory for optional codec benchmarks")) |source| {
         const root: std.Build.LazyPath = .{ .cwd_relative = source };
-        const libdeflate = b.addLibrary(.{ .name = "bench-libdeflate", .root_module = b.createModule(.{
-            .target = target,
-            .optimize = .fast,
-            .link_libc = true,
-        }) });
-        libdeflate.root_module.addIncludePath(root);
-        libdeflate.root_module.addCSourceFiles(.{ .root = root, .files = &.{
-            "lib/adler32.c",         "lib/crc32.c",            "lib/deflate_compress.c", "lib/deflate_decompress.c",
-            "lib/gzip_compress.c",   "lib/gzip_decompress.c",  "lib/utils.c",            "lib/zlib_compress.c",
-            "lib/zlib_decompress.c", "lib/arm/cpu_features.c", "lib/x86/cpu_features.c",
-        }, .flags = &.{ "-O2", "-std=c11" } });
+        const libdeflate = native orelse buildLibdeflate(b, target, root);
         const codecs = b.addExecutable(.{ .name = "bedwire-codecs", .root_module = b.createModule(.{
             .root_source_file = b.path("bench/codecs.zig"),
             .target = target,
@@ -124,4 +125,17 @@ pub fn build(b: *std.Build) void {
     }) });
     b.step("interop", "Build the Snappy exporter used by tools/interop/check.py")
         .dependOn(&b.addInstallArtifact(interop, .{}).step);
+}
+
+fn buildLibdeflate(b: *std.Build, target: std.Build.ResolvedTarget, root: std.Build.LazyPath) *std.Build.Step.Compile {
+    const library = b.addLibrary(.{ .name = "libdeflate", .root_module = b.createModule(.{
+        .target = target,
+        .optimize = .fast,
+        .link_libc = true,
+    }) });
+    library.root_module.addIncludePath(root);
+    library.root_module.addCSourceFiles(.{ .root = root, .files = &.{
+        "lib/deflate_compress.c", "lib/deflate_decompress.c", "lib/utils.c", "lib/x86/cpu_features.c",
+    }, .flags = &.{ "-O2", "-std=c11" } });
+    return library;
 }

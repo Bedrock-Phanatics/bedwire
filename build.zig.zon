@@ -4,6 +4,11 @@
     .fingerprint = 0x24f12bffadd8faea,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
+        .libdeflate = .{
+            .url = "https://codeload.github.com/ebiggers/libdeflate/zip/refs/tags/v1.26",
+            .hash = "N-V-__8AAEaRCwAh986dYM3g0YcFCX7otmWagQ-3H95MTPIt",
+            .lazy = true,
+        },
         .bedrock_protocol = .{
             .url = "https://codeload.github.com/Bedrock-Phanatics/protocol-zig/tar.gz/652db63f0a722c86774a076296463b2ebc5bc037",
             .hash = "bedrock_protocol-0.5.0-LNPkatg8DQA7j5wxMbThhIMDOIvvB14msZAwRu-ih4gZ",

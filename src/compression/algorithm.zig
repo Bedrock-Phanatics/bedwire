@@ -81,10 +81,14 @@ pub const Compression = struct {
     }
 
     pub fn encode(self: Compression, input: []const u8, dest: []u8, scratch: *Scratch) !Framed {
+        return self.encodeWithContext(input, dest, scratch, .{});
+    }
+
+    pub fn encodeWithContext(self: Compression, input: []const u8, dest: []u8, scratch: *Scratch, encoder: flate.Encoder) !Framed {
         const algorithm = self.selected(input.len);
         return .{ .algorithm = algorithm, .bytes = switch (algorithm) {
             .none => try copy(input, dest),
-            .deflate => try flate.compress(input, dest, &scratch.history),
+            .deflate => try encoder.compress(input, dest, &scratch.history),
             .snappy => try snappy.compress(input, dest, &scratch.table),
         } };
     }
@@ -97,12 +101,23 @@ pub const Compression = struct {
         history: *[flate.history_len]u8,
         limits: Limits,
     ) ![]const u8 {
+        return self.decodeWithContext(input, dest, history, limits, .{});
+    }
+
+    pub fn decodeWithContext(
+        self: Compression,
+        input: []const u8,
+        dest: []u8,
+        history: *[flate.history_len]u8,
+        limits: Limits,
+        decoder: flate.Decoder,
+    ) ![]const u8 {
         if (input.len > limits.max_frame_bytes) return error.LimitExceeded;
 
         const framed = try self.split(input);
         return switch (framed.algorithm) {
             .none => if (framed.bytes.len > limits.max_batch_bytes) error.LimitExceeded else framed.bytes,
-            .deflate => flate.decompress(framed.bytes, dest, history, limits),
+            .deflate => decoder.decompress(framed.bytes, dest, history, limits),
             .snappy => snappy.decompress(framed.bytes, dest, limits),
         };
     }
@@ -122,6 +137,19 @@ pub const Compression = struct {
         scratch: *Scratch,
         max_batch_bytes: usize,
     ) !usize {
+        return self.relayWithContext(dest, out, len, spare, scratch, max_batch_bytes, .{});
+    }
+
+    pub fn relayWithContext(
+        self: Compression,
+        dest: Compression,
+        out: []u8,
+        len: usize,
+        spare: []u8,
+        scratch: *Scratch,
+        max_batch_bytes: usize,
+        encoder: flate.Encoder,
+    ) !usize {
         const framed = try self.split(out[0..len]);
         if (framed.algorithm != .none) return len;
         if (framed.bytes.len > max_batch_bytes) return error.LimitExceeded;
@@ -131,7 +159,7 @@ pub const Compression = struct {
         const raw = spare[0..framed.bytes.len];
         @memcpy(raw, framed.bytes);
         out[0] = @backingInt(dest.algorithm);
-        return 1 + (try dest.encode(raw, out[1..], scratch)).bytes.len;
+        return 1 + (try dest.encodeWithContext(raw, out[1..], scratch, encoder)).bytes.len;
     }
 
     fn copy(input: []const u8, dest: []u8) error{NoSpaceLeft}![]const u8 {

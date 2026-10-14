@@ -113,7 +113,7 @@ pub fn TapWithProfile(comptime Profile: type) type {
             const token = try self.pool.acquireRx();
             errdefer self.pool.releaseRx(token);
             const slot = self.pool.getRx(token) orelse return error.InvalidState;
-            var raw = try self.compression.decode(body, slot.batch, &slot.history, self.limits);
+            var raw = try self.compression.decodeWithContext(body, slot.batch, &slot.history, self.limits, slot.decoder);
             if (raw.ptr != slot.batch.ptr) {
                 if (raw.len > slot.frame.len) return error.LimitExceeded;
                 @memcpy(slot.frame[0..raw.len], raw);

@@ -7,6 +7,7 @@ const testing = std.testing;
 const SessionWorker = struct {
     pool: *bedwire.BufferPool,
     key_byte: u8,
+    algorithm: bedwire.compression.Algorithm,
     failure: ?anyerror = null,
 
     fn run(self: *@This()) void {
@@ -22,6 +23,10 @@ const SessionWorker = struct {
         defer receiver.deinit();
         sender.state = .in_game;
         receiver.state = .in_game;
+        if (self.algorithm != .none) {
+            try sender.compression.negotiate(self.algorithm, 0);
+            try receiver.compression.negotiate(self.algorithm, 0);
+        }
         sender.crypto = bedwire.crypto.SessionCrypto.init(@splat(self.key_byte));
         receiver.crypto = bedwire.crypto.SessionCrypto.init(@splat(self.key_byte));
         var storage: [32]u8 = undefined;
@@ -54,22 +59,24 @@ const SessionWorker = struct {
 };
 
 test "independent encrypted sessions share bounded slots under contention" {
-    const limits: bedwire.Limits = .{ .max_frame_bytes = 1024, .max_batch_bytes = 1024, .max_packet_bytes = 512 };
-    var pool = try bedwire.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
-    defer pool.deinit();
-    var workers: [4]SessionWorker = undefined;
-    var threads: [4]std.Thread = undefined;
-    var started: usize = 0;
-    {
-        defer for (threads[0..started]) |thread| thread.join();
-        for (&workers, 0..) |*worker, i| {
-            worker.* = .{ .pool = &pool, .key_byte = @intCast(i + 1) };
-            threads[i] = try std.Thread.spawn(.{}, SessionWorker.run, .{worker});
-            started += 1;
+    for ([_]bedwire.compression.Algorithm{ .none, .deflate }) |algorithm| {
+        const limits: bedwire.Limits = .{ .max_frame_bytes = 1024, .max_batch_bytes = 1024, .max_packet_bytes = 512 };
+        var pool = try bedwire.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
+        defer pool.deinit();
+        var workers: [4]SessionWorker = undefined;
+        var threads: [4]std.Thread = undefined;
+        var started: usize = 0;
+        {
+            defer for (threads[0..started]) |thread| thread.join();
+            for (&workers, 0..) |*worker, i| {
+                worker.* = .{ .pool = &pool, .key_byte = @intCast(i + 1), .algorithm = algorithm };
+                threads[i] = try std.Thread.spawn(.{}, SessionWorker.run, .{worker});
+                started += 1;
+            }
         }
+        for (workers) |worker| if (worker.failure) |err| return err;
+        try testing.expect(pool.isIdle());
     }
-    for (workers) |worker| if (worker.failure) |err| return err;
-    try testing.expect(pool.isIdle());
 }
 
 const Worker = struct {

@@ -186,3 +186,55 @@ fn repeat(comptime text: []const u8, comptime count: usize) *const [text.len * c
     const bytes = comptime @as([text.len * count]u8, @bitCast(parts));
     return &bytes;
 }
+
+test "reusable DEFLATE contexts interoperate and preserve input and output limits" {
+    var failing = testing.FailingAllocator.init(testing.allocator, .{});
+    const encoder = try flate.Encoder.init(failing.allocator());
+    defer encoder.deinit();
+    const decoder = try flate.Decoder.init(failing.allocator());
+    defer decoder.deinit();
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+
+    var history: [flate.history_len]u8 = undefined;
+    var encoded: [4096]u8 = undefined;
+    var output: [8256]u8 = undefined;
+    var random = std.Random.DefaultPrng.init(0xbed);
+    var noise: [1024]u8 = undefined;
+    random.random().bytes(&noise);
+
+    for ([_][]const u8{ "", "a", repeat("bedrock ", 1024), &noise }) |input| {
+        const pure = try flate.compress(input, &encoded, &history);
+        try testing.expectEqualSlices(u8, input, try decoder.decompress(pure, &output, &history, limits));
+        const compressed = try encoder.compress(input, &encoded, &history);
+        try testing.expectEqualSlices(u8, input, try flate.decompress(compressed, &output, &history, limits));
+        try testing.expectEqualSlices(u8, input, try decoder.decompress(compressed, &output, &history, limits));
+        if (decoder.decompress(compressed[0 .. compressed.len - 1], &output, &history, limits)) |_| {
+            return error.TestExpectedError;
+        } else |err| try testing.expect(err == error.MalformedCompressedData or err == error.LimitExceeded);
+        encoded[compressed.len] = 0xaa;
+        try testing.expectError(error.MalformedCompressedData, decoder.decompress(encoded[0 .. compressed.len + 1], &output, &history, limits));
+        if (input.len > 0) {
+            try testing.expectError(error.LimitExceeded, decoder.decompress(compressed, output[0 .. input.len - 1], &history, limits));
+        }
+    }
+    for ([_][]const u8{ repeat("bedrock ", 64), &noise }) |input| {
+        for (0..512) |size| {
+            if (encoder.compress(input, encoded[0..size], &history)) |compressed| {
+                try testing.expectEqualSlices(u8, input, try decoder.decompress(compressed, &output, &history, limits));
+            } else |err| try testing.expectEqual(error.NoSpaceLeft, err);
+        }
+    }
+    var tight = limits;
+    tight.max_frame_bytes = 4;
+    try testing.expectError(error.LimitExceeded, decoder.decompress(&@as([16]u8, @splat(0)), &output, &history, tight));
+    const bomb = try encoder.compress(&@as([131072]u8, @splat(0)), &encoded, &history);
+    tight = limits;
+    tight.max_batch_bytes = 128;
+    try testing.expectError(error.LimitExceeded, decoder.decompress(bomb, &output, &history, tight));
+    for (0..1000) |_| {
+        try testing.expectError(error.MalformedCompressedData, decoder.decompress(&.{0xff}, &output, &history, limits));
+    }
+    try testing.expectEqualSlices(u8, "reused", try decoder.decompress(try encoder.compress("reused", &encoded, &history), &output, &history, limits));
+    try testing.expect(!failing.has_induced_failure);
+}

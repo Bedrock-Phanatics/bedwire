@@ -1,0 +1,14 @@
+{
+  "x86_64-linux-musl": {
+    "sha256": "a73f645455d071778dabb58638e0c8b6910b1ad558e48c437bbf97ddb7bbe28a",
+    "bytes": 10941408,
+    "static": true,
+    "cpu": "native"
+  },
+  "aarch64-linux-musl": {
+    "sha256": "6601ba226918ef804357264bb21554ae7582e7e24404ab4838be80ac40dfc582",
+    "bytes": 12493872,
+    "static": true,
+    "cpu": "generic"
+  }
+}

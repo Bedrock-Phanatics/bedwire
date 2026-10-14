@@ -46,6 +46,9 @@ test "Go Snappy and DEFLATE output decodes byte for byte" {
 
     var history: [bedwire.compression.flate.history_len]u8 = undefined;
     try testing.expectEqualSlices(u8, plain, try bedwire.compression.flate.decompress(flate_bytes, output, &history, limits));
+    const decoder = try bedwire.compression.flate.Decoder.init(allocator);
+    defer decoder.deinit();
+    try testing.expectEqualSlices(u8, plain, try decoder.decompress(flate_bytes, output, &history, limits));
 }
 
 test "Go continuous AES-256-CTR sessions open in sequence" {

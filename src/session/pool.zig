@@ -24,6 +24,7 @@ pub const RxSlot = struct {
     frame: []u8,
     batch: []u8,
     history: [flate.history_len]u8 = undefined,
+    decoder: flate.Decoder = .{},
 };
 
 pub const TxSlot = struct {
@@ -31,6 +32,7 @@ pub const TxSlot = struct {
     assembly: []u8,
     egress: []u8,
     scratch: Scratch = undefined,
+    encoder: flate.Encoder = .{},
 };
 
 /// Keep the pool at a stable address and destroy it after its users and leases.
@@ -75,22 +77,30 @@ pub const BufferPool = struct {
         const tx_storage: []u8 = if (config.tx_slots == 0) &.{} else try allocator.alloc(u8, total_tx_storage);
         errdefer if (tx_storage.len != 0) allocator.free(tx_storage);
 
+        var initialized_rx: usize = 0;
+        errdefer for (rx_slots[0..initialized_rx]) |*slot| slot.decoder.deinit();
         for (rx_slots, 0..) |*slot, i| {
             const offset = i * per_rx_storage;
             slot.* = .{
                 .epoch = .init(0),
                 .frame = rx_storage[offset .. offset + limits.max_frame_bytes],
                 .batch = rx_storage[offset + limits.max_frame_bytes .. offset + per_rx_storage],
+                .decoder = try .init(allocator),
             };
+            initialized_rx += 1;
         }
 
+        var initialized_tx: usize = 0;
+        errdefer for (tx_slots[0..initialized_tx]) |*slot| slot.encoder.deinit();
         for (tx_slots, 0..) |*slot, i| {
             const offset = i * per_tx_storage;
             slot.* = .{
                 .epoch = .init(0),
                 .assembly = tx_storage[offset .. offset + assembly_len],
                 .egress = tx_storage[offset + assembly_len .. offset + per_tx_storage],
+                .encoder = try .init(allocator),
             };
+            initialized_tx += 1;
         }
 
         const rx_all_mask = maskForSlots(config.rx_slots);
@@ -125,6 +135,8 @@ pub const BufferPool = struct {
         std.debug.assert(self.rx_free.load(.acquire) == self.rx_all_mask);
         std.debug.assert(self.tx_free.load(.acquire) == self.tx_all_mask);
 
+        for (self.rx_slots) |*slot| slot.decoder.deinit();
+        for (self.tx_slots) |*slot| slot.encoder.deinit();
         self.allocator.free(self.rx_storage);
         if (self.tx_storage.len != 0) self.allocator.free(self.tx_storage);
         self.allocator.free(self.rx_slots);
