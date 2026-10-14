@@ -1,0 +1,14 @@
+{
+  "x86_64": {
+    "sha256": "dbe54027042f80067c5d8adf34f7fdfe35013f767d11ed69e71ab50bf73cff26",
+    "bytes": 10123304,
+    "static_elf": true,
+    "runtime_checked": true
+  },
+  "aarch64": {
+    "sha256": "06b32ef310b0af2df8918384f29303175c1bcd359471f5c76cfbb75084ea1150",
+    "bytes": 11635280,
+    "static_elf": true,
+    "runtime_checked": false
+  }
+}

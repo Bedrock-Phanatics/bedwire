@@ -3,6 +3,8 @@
 This records the raw-codec and pool investigation before production changes.
 The subsequent [session backend trial](LIBDEFLATE.md) retains libdeflate as an
 opt-in backend. Ordinary builds continue to use pure Zig without a C dependency.
+The subsequent [Snappy trial](SNAPPY.md) retains the pure-Zig implementation
+with a measured internal optimization for large batches and overlap copies.
 
 ## Reproduce
 

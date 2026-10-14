@@ -1,0 +1,10 @@
+{
+  "before": {
+    "bedwire-codecs": "8a5b84e552fbdb325561ec9c4170d4d4ba9197b4f06546f993a8842ab533f9be",
+    "bedwire-baseline": "14f0f0014a7e4b0afc29e463c5c0f8ff283733fa65cc35af5c99b0ddef968b52"
+  },
+  "after": {
+    "bedwire-codecs": "0f6ed07e7bb2a221e21879807097380b977ccf58ceae5c179b107b65b1c397cb",
+    "bedwire-baseline": "83a651f7f571fa77db23b072ac79fe81428e453776221e261e90019e3c271255"
+  }
+}

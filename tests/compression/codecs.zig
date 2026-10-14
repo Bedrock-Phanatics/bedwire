@@ -78,6 +78,93 @@ test "Snappy self-references decode correctly when the copy overlaps" {
     try testing.expectEqualSlices(u8, "aaaaaaaa", try snappy.decompress(&input, &output, limits));
 }
 
+test "Snappy copy forms preserve every short overlap and output boundary" {
+    var encoded: [80]u8 = undefined;
+    var expected: [128]u8 = undefined;
+    var storage: [130]u8 = undefined;
+    for (1..65) |offset| {
+        for (1..65) |len| {
+            for ([_]u8{ 1, 2, 3 }) |kind| {
+                if (kind == 1 and (len < 4 or len > 11)) continue;
+                const total = offset + len;
+                var cursor = try bedwire.framing.varint.writeU32(&encoded, @intCast(total));
+                if (offset <= 60) {
+                    encoded[cursor] = @as(u8, @intCast(offset - 1)) << 2;
+                    cursor += 1;
+                } else {
+                    encoded[cursor] = 60 << 2;
+                    encoded[cursor + 1] = @intCast(offset - 1);
+                    cursor += 2;
+                }
+                for (expected[0..offset], 0..) |*byte, i| byte.* = @truncate(i * 17 + 3);
+                @memcpy(encoded[cursor..][0..offset], expected[0..offset]);
+                cursor += offset;
+                encoded[cursor] = if (kind == 1) (@as(u8, @intCast(len - 4)) << 2) | kind else (@as(u8, @intCast(len - 1)) << 2) | kind;
+                cursor += 1;
+                const count: usize = if (kind == 1) 1 else if (kind == 2) 2 else 4;
+                var encoded_offset: [4]u8 = undefined;
+                std.mem.writeInt(u32, &encoded_offset, @intCast(offset), .little);
+                @memcpy(encoded[cursor..][0..count], encoded_offset[0..count]);
+                cursor += count;
+                for (offset..total) |i| expected[i] = expected[i - offset];
+                @memset(&storage, 0xa5);
+                try testing.expectEqualSlices(u8, expected[0..total], try snappy.decompress(encoded[0..cursor], storage[1..][0..total], limits));
+                try testing.expectEqual(@as(u8, 0xa5), storage[0]);
+                try testing.expectEqual(@as(u8, 0xa5), storage[total + 1]);
+            }
+        }
+    }
+}
+
+test "Snappy wide matches handle unaligned inputs, mismatches and tails without allocating" {
+    var failing = testing.FailingAllocator.init(testing.allocator, .{});
+    const table = try failing.allocator().create(snappy.Table);
+    defer failing.allocator().destroy(table);
+    const large_input = try failing.allocator().alloc(u8, 65536 + 16 + 7);
+    defer failing.allocator().free(large_input);
+    const large_encoded = try failing.allocator().alloc(u8, try snappy.maxEncodedLen(65536 + 16));
+    defer failing.allocator().free(large_encoded);
+    const large_output = try failing.allocator().alloc(u8, 65536 + 16);
+    defer failing.allocator().free(large_output);
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+    var input: [136]u8 = undefined;
+    var encoded: [256]u8 = undefined;
+    var output: [128]u8 = undefined;
+    for (0..8) |alignment| {
+        for (1..17) |period| {
+            for (0..129) |len| {
+                const plain = input[alignment..][0..len];
+                for (plain, 0..) |*byte, i| byte.* = @intCast((i % period) * 13);
+                if (len != 0) plain[len - 1] ^= 0x80;
+                const compressed = try snappy.compress(plain, &encoded, table);
+                try testing.expectEqualSlices(u8, plain, try snappy.decompress(compressed, output[0..len], limits));
+            }
+        }
+        const sparse_plain = large_input[alignment..][0 .. 65536 + 16];
+        var random = std.Random.DefaultPrng.init(0x5a9);
+        random.random().bytes(sparse_plain);
+        @memset(sparse_plain[50000..51024], 'k');
+        @memset(sparse_plain[60000..61024], 'k');
+        for (0..256) |size| {
+            try testing.expectError(error.NoSpaceLeft, snappy.compress(sparse_plain, large_encoded[0..size], table));
+        }
+        const sparse_compressed = try snappy.compress(sparse_plain, large_encoded, table);
+        try testing.expectEqualSlices(u8, sparse_plain, try snappy.decompress(sparse_compressed, large_output, limits));
+        try testing.expectError(error.LimitExceeded, snappy.decompress(sparse_compressed, large_output[0 .. sparse_plain.len - 1], limits));
+        for (1..17) |period| {
+            for (0..17) |tail| {
+                const plain = large_input[alignment..][0 .. 65536 + tail];
+                for (plain, 0..) |*byte, i| byte.* = @intCast((i % period) * 13);
+                plain[plain.len - 1] ^= 0x80;
+                const compressed = try snappy.compress(plain, large_encoded, table);
+                try testing.expectEqualSlices(u8, plain, try snappy.decompress(compressed, large_output[0..plain.len], limits));
+            }
+        }
+    }
+    try testing.expect(!failing.has_induced_failure);
+}
+
 test "raw DEFLATE round-trips and rejects corruption" {
     const allocator = testing.allocator;
 

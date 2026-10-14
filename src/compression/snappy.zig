@@ -13,6 +13,10 @@ pub fn maxEncodedLen(len: usize) !usize {
 
 // Keeping this out of line made Session.encode about 1.8x faster.
 pub noinline fn compress(input: []const u8, output: []u8, table: *Table) ![]u8 {
+    return if (input.len < 65536) compressBlock(input, output, table, false) else compressBlock(input, output, table, true);
+}
+
+noinline fn compressBlock(input: []const u8, output: []u8, table: *Table, comptime large: bool) ![]u8 {
     if (input.len > std.math.maxInt(u32)) return error.LimitExceeded;
 
     // Clear only the table entries this input can reach.
@@ -26,6 +30,7 @@ pub noinline fn compress(input: []const u8, output: []u8, table: *Table) ![]u8 {
 
     var cursor: usize = 0;
     var literal_start: usize = 0;
+    var skip: usize = 32;
 
     while (input.len - cursor >= 4) {
         const word = std.mem.readInt(u32, input[cursor..][0..4], .little);
@@ -35,12 +40,28 @@ pub noinline fn compress(input: []const u8, output: []u8, table: *Table) ![]u8 {
 
         const candidate = previous < cursor and cursor - previous <= 65535;
         if (!candidate or !std.mem.eql(u8, input[previous..][0..4], input[cursor..][0..4])) {
-            cursor += 1;
+            if (large) {
+                cursor += @min(skip >> 5, input.len - cursor);
+                skip = @min(skip + 1, 4096);
+            } else cursor += 1;
             continue;
         }
 
+        skip = 32;
         try writer.literal(input[literal_start..cursor]);
         var len: usize = 4;
+        if (large) {
+            while (input.len - cursor - len >= 8 and input[previous + len] == input[cursor + len]) {
+                const a = std.mem.readInt(u64, input[previous + len ..][0..8], .little);
+                const b = std.mem.readInt(u64, input[cursor + len ..][0..8], .little);
+                const difference = a ^ b;
+                if (difference != 0) {
+                    len += @as(usize, @ctz(difference)) / 8;
+                    break;
+                }
+                len += 8;
+            }
+        }
         while (len < input.len - cursor and input[previous + len] == input[cursor + len]) len += 1;
 
         const offset: u16 = @intCast(cursor - previous);
@@ -65,7 +86,7 @@ pub noinline fn compress(input: []const u8, output: []u8, table: *Table) ![]u8 {
 }
 
 /// Output contents are unspecified on error.
-pub fn decompress(input: []const u8, output: []u8, limits: Limits) ![]u8 {
+pub noinline fn decompress(input: []const u8, output: []u8, limits: Limits) ![]u8 {
     return output[0..try decode(input, output, limits)];
 }
 
@@ -191,8 +212,17 @@ fn decode(input: []const u8, output: []u8, limits: Limits) !usize {
             if (!valid) return error.MalformedCompressedData;
             if (offset >= len) {
                 @memcpy(output[cursor..][0..len], output[cursor - offset ..][0..len]);
+            } else if (offset == 1) {
+                @memset(output[cursor..][0..len], output[cursor - 1]);
             } else {
-                for (0..len) |i| output[cursor + i] = output[cursor + i - offset];
+                const dest = output[cursor..][0..len];
+                @memcpy(dest[0..offset], output[cursor - offset .. cursor]);
+                var copied = offset;
+                while (copied < len) {
+                    const count = @min(copied, len - copied);
+                    @memcpy(dest[copied..][0..count], dest[0..count]);
+                    copied += count;
+                }
             }
         }
 
