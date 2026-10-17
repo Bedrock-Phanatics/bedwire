@@ -506,6 +506,19 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             try self.enableCrypto(secret, peer, salt);
         }
 
+        /// Like installServerCrypto, for hosts that authenticated the client and derived the key themselves.
+        pub fn installServerKey(self: *Self, key: [32]u8) !void {
+            const ordered =
+                self.role == .server and
+                self.state == .authenticating and
+                self.didSend(.server_to_client_handshake);
+            if (!ordered) return error.InvalidState;
+            if (self.crypto != null) return error.InvalidState;
+
+            self.crypto = SessionCrypto.init(key);
+            self.state = .encrypted_handshake;
+        }
+
         pub fn acceptServerHandshake(
             self: *Self,
             allocator: std.mem.Allocator,

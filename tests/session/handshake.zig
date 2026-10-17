@@ -559,3 +559,36 @@ fn authenticateUnderAllocationFailure(allocator: std.mem.Allocator) !void {
 test "authenticateLogin handles allocation failures cleanly" {
     try testing.checkAllAllocationFailures(testing.allocator, authenticateUnderAllocationFailure, .{});
 }
+
+test "a host-derived server key interoperates with the client handshake" {
+    var pair = try support.Pair.init(testing.allocator, support.modern);
+    defer pair.deinit();
+
+    var build: support.Builder = .{};
+    const descriptor = support.modern;
+    const client_key = try support.deterministicKey(1);
+    const server_key = try support.deterministicKey(4);
+    const salt: [16]u8 = @splat(7);
+
+    try pair.clientToServerDiscard(&.{build.make(descriptor, .request_network_settings)});
+    try pair.serverToClientDiscard(&.{build.make(descriptor, .network_settings)});
+    try pair.server.negotiateCompression(.deflate, 0);
+    try pair.client.negotiateCompression(.deflate, 0);
+    try pair.clientToServerDiscard(&.{build.make(descriptor, .login)});
+
+    const key = try bedwire.crypto.ecdh.derive(server_key.secret_key, client_key.public_key, salt);
+    try testing.expectError(error.InvalidState, pair.server.installServerKey(key));
+
+    const token = try bedwire.auth.login.serverHandshake(testing.allocator, server_key, salt, support.limits);
+    defer testing.allocator.free(token);
+    try pair.serverToClientDiscard(&.{build.make(descriptor, .server_to_client_handshake)});
+    try pair.server.installServerKey(key);
+    try testing.expectError(error.InvalidState, pair.server.installServerKey(key));
+    try pair.client.acceptServerHandshake(testing.allocator, token, client_key.secret_key);
+    try testing.expectEqual(State.encrypted_handshake, pair.server.state);
+
+    try pair.clientToServerDiscard(&.{build.make(descriptor, .client_to_server_handshake)});
+    try pair.server.advance(.resource_packs);
+    try pair.client.advance(.resource_packs);
+    try pair.serverToClientDiscard(&.{build.make(descriptor, .resource_packs_info)});
+}
