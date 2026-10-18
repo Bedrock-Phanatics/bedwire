@@ -37,6 +37,12 @@ pub const TxSlot = struct {
     encoder: flate.Encoder = .{},
 };
 
+/// Each availability mask gets its own cache line so RX and TX traffic and the
+/// read-mostly fields don't contend.
+pub const Mask = struct {
+    bits: std.atomic.Value(u64) align(std.atomic.cache_line),
+};
+
 /// Keep the pool at a stable address and destroy it after its users and leases.
 /// Releasing a token invalidates slices into that slot.
 pub const BufferPool = struct {
@@ -49,8 +55,8 @@ pub const BufferPool = struct {
     rx_storage: []u8,
     tx_storage: []u8,
 
-    rx_free: std.atomic.Value(u64),
-    tx_free: std.atomic.Value(u64),
+    rx_free: Mask,
+    tx_free: Mask,
     rx_all_mask: u64,
     tx_all_mask: u64,
 
@@ -117,8 +123,8 @@ pub const BufferPool = struct {
             .tx_slots = tx_slots,
             .rx_storage = rx_storage,
             .tx_storage = tx_storage,
-            .rx_free = .init(rx_all_mask),
-            .tx_free = .init(tx_all_mask),
+            .rx_free = .{ .bits = .init(rx_all_mask) },
+            .tx_free = .{ .bits = .init(tx_all_mask) },
             .rx_all_mask = rx_all_mask,
             .tx_all_mask = tx_all_mask,
         };
@@ -135,8 +141,8 @@ pub const BufferPool = struct {
     };
 
     pub fn deinit(self: *BufferPool) void {
-        std.debug.assert(self.rx_free.load(.acquire) == self.rx_all_mask);
-        std.debug.assert(self.tx_free.load(.acquire) == self.tx_all_mask);
+        std.debug.assert(self.rx_free.bits.load(.acquire) == self.rx_all_mask);
+        std.debug.assert(self.tx_free.bits.load(.acquire) == self.tx_all_mask);
 
         for (self.rx_slots) |*slot| slot.decoder.deinit();
         for (self.tx_slots) |*slot| slot.encoder.deinit();
@@ -148,8 +154,8 @@ pub const BufferPool = struct {
     }
 
     pub fn isIdle(self: *const BufferPool) bool {
-        return self.rx_free.load(.acquire) == self.rx_all_mask and
-            self.tx_free.load(.acquire) == self.tx_all_mask;
+        return self.rx_free.bits.load(.acquire) == self.rx_all_mask and
+            self.tx_free.bits.load(.acquire) == self.tx_all_mask;
     }
 
     pub fn acquireRx(self: *BufferPool) error{PoolExhausted}!RxToken {
@@ -194,7 +200,7 @@ pub const BufferPool = struct {
     };
 
     fn acquireSlot(self: *BufferPool, is_rx: bool) error{PoolExhausted}!InternalToken {
-        const free_mask = if (is_rx) &self.rx_free else &self.tx_free;
+        const free_mask = if (is_rx) &self.rx_free.bits else &self.tx_free.bits;
         const num_slots = if (is_rx) self.config.rx_slots else self.config.tx_slots;
 
         var current = free_mask.load(.monotonic);
@@ -227,7 +233,7 @@ pub const BufferPool = struct {
         const num_slots = if (is_rx) self.config.rx_slots else self.config.tx_slots;
         if (slot_index >= num_slots) return;
 
-        const free_mask = if (is_rx) &self.rx_free else &self.tx_free;
+        const free_mask = if (is_rx) &self.rx_free.bits else &self.tx_free.bits;
         const epoch_ptr = if (is_rx)
             &self.rx_slots[slot_index].epoch
         else

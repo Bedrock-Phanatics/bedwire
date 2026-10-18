@@ -162,8 +162,8 @@ test "concurrent multi-threaded pool stress test" {
         t.join();
     }
 
-    try testing.expectEqual(pool.rx_all_mask, pool.rx_free.load(.seq_cst));
-    try testing.expectEqual(pool.tx_all_mask, pool.tx_free.load(.seq_cst));
+    try testing.expectEqual(pool.rx_all_mask, pool.rx_free.bits.load(.seq_cst));
+    try testing.expectEqual(pool.tx_all_mask, pool.tx_free.bits.load(.seq_cst));
 }
 
 test "concurrent multi-threaded stale release and reacquire contention" {
