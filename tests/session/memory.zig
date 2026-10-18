@@ -186,3 +186,26 @@ test "session max_frame_bytes is enforced when pool limits are larger" {
     try testing.expect(compressed_frame.bytes.len < 256);
     try testing.expectError(error.LimitExceeded, batch_session.ingest(compressed_frame.bytes));
 }
+
+test "ingested packets never borrow the caller's frame" {
+    for ([_]?bedwire.compression.Algorithm{ null, .none, .snappy, .deflate }) |algorithm| {
+        var pair = try support.Pair.init(testing.allocator, support.modern);
+        defer pair.deinit();
+
+        if (algorithm) |selected| {
+            try pair.client.compression.negotiate(selected, 0);
+            try pair.server.compression.negotiate(selected, 0);
+        }
+        pair.client.state = .in_game;
+        pair.server.state = .in_game;
+
+        var storage: [512]u8 = undefined;
+        const packet = support.packet(&storage, support.opaque_packet_id, &@as([200]u8, @splat('b')));
+
+        var packets = try pair.clientToServer(&.{packet});
+        defer packets.deinit();
+        @memset(pair.relay, 0xaa);
+
+        try testing.expectEqualSlices(u8, packet, packets.next().?.bytes);
+    }
+}

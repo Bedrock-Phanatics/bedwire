@@ -224,18 +224,25 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
             const rx_slot = self.pool.getRx(rx_token) orelse return error.InvalidState;
             if (body.len > rx_slot.frame.len or body.len > self.limits.max_frame_bytes) return error.LimitExceeded;
-            @memcpy(rx_slot.frame[0..body.len], body);
 
-            var session_payload: []const u8 = rx_slot.frame[0..body.len];
-            if (self.crypto) |*crypto| session_payload = try crypto.open(rx_slot.frame[0..body.len]);
+            // Plaintext decompresses straight from the caller, only stored batches need a copy.
+            var session_payload: []const u8 = body;
+            if (self.crypto) |*crypto| {
+                @memcpy(rx_slot.frame[0..body.len], body);
+                session_payload = try crypto.open(rx_slot.frame[0..body.len]);
+            }
 
-            const raw = try self.compression.decodeWithContext(
+            var raw = try self.compression.decodeWithContext(
                 session_payload,
                 rx_slot.batch,
                 &rx_slot.history,
                 self.limits,
                 rx_slot.decoder,
             );
+            if (self.crypto == null and raw.ptr != rx_slot.batch.ptr) {
+                @memcpy(rx_slot.frame[0..raw.len], raw);
+                raw = rx_slot.frame[0..raw.len];
+            }
             const observed = try self.admit(raw, self.role.peer());
 
             const reader = try batch.Reader.init(raw, self.limits);
