@@ -31,7 +31,12 @@ above, or use `zig build -Dlibdeflate=true` in this repository. Zig builds the
 MIT-licensed C sources as a static library; no system libdeflate installation
 is needed. This option requires a target with libc support.
 
-The optional backend uses level 3 and allocates reusable codec state through
+`PoolConfig.deflate_level` (1 through 9) sets the session encoding level. It
+defaults to 1 for pure Zig, which encoded the medium MovePlayer benchmark
+batches about 5x faster than level 6 with equal or smaller output, and to 3 for
+libdeflate. Raise it if bandwidth matters more than CPU.
+
+The optional backend allocates reusable codec state through
 the pool's allocator during `BufferPool.init`: approximately 668 KB per TX
 slot and 12 KB per RX slot, in addition to the existing buffers and scratch.
 Session encode/ingest, Tap decode and relay recompression reuse the exclusively

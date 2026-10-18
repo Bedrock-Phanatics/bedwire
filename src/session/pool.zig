@@ -9,6 +9,8 @@ pub const frame_overhead = 1 + 1 + 8;
 pub const PoolConfig = struct {
     rx_slots: u8,
     tx_slots: u8,
+    /// DEFLATE level for session encoding and relay recompression, 1 through 9.
+    deflate_level: u4 = flate.default_level,
 
     pub fn conservative() PoolConfig {
         return .{ .rx_slots = 2, .tx_slots = 1 };
@@ -57,6 +59,7 @@ pub const BufferPool = struct {
 
         if (config.rx_slots < 1 or config.rx_slots > 64) return error.InvalidLimits;
         if (config.tx_slots > 64) return error.InvalidLimits;
+        if (config.deflate_level < 1 or config.deflate_level > 9) return error.InvalidLimits;
 
         const per_rx_storage = std.math.add(usize, limits.max_frame_bytes, limits.max_batch_bytes) catch return error.LimitExceeded;
         const total_rx_storage = std.math.mul(usize, per_rx_storage, config.rx_slots) catch return error.LimitExceeded;
@@ -98,7 +101,7 @@ pub const BufferPool = struct {
                 .epoch = .init(0),
                 .assembly = tx_storage[offset .. offset + assembly_len],
                 .egress = tx_storage[offset + assembly_len .. offset + per_tx_storage],
-                .encoder = try .init(allocator),
+                .encoder = try .initLevel(allocator, config.deflate_level),
             };
             initialized_tx += 1;
         }

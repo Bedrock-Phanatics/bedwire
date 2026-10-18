@@ -262,3 +262,38 @@ test "an absent compression mode never compresses" {
     defer packets.deinit();
     try testing.expectEqualSlices(u8, packet, packets.next().?.bytes);
 }
+
+test "every DEFLATE level round-trips and out-of-range levels are refused" {
+    for ([_]u4{ 0, 10 }) |level| {
+        try testing.expectError(error.InvalidLimits, bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1, .deflate_level = level }));
+    }
+
+    var payload: [2048]u8 = undefined;
+    for (&payload, 0..) |*byte, i| byte.* = @truncate(i / 7 + i % 5);
+    var storage: [4096]u8 = undefined;
+    const packet = support.packet(&storage, support.opaque_packet_id, &payload);
+
+    for (1..10) |level| {
+        var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1, .deflate_level = @intCast(level) });
+        defer pool.deinit();
+        var sender = try support.Session.init(.client, .{ .pool = &pool });
+        defer sender.deinit();
+        var receiver = try support.Session.init(.server, .{ .pool = &pool });
+        defer receiver.deinit();
+        for ([_]*support.Session{ &sender, &receiver }) |session| {
+            try session.compression.negotiate(.deflate, 0);
+            session.state = .in_game;
+        }
+
+        var copy: [4096]u8 = undefined;
+        const frame = try sender.encodeOne(packet);
+        const sent = copy[0..frame.bytes.len];
+        @memcpy(sent, frame.bytes);
+        frame.release();
+        try testing.expect(sent.len < packet.len);
+
+        var packets = try receiver.ingest(sent);
+        defer packets.deinit();
+        try testing.expectEqualSlices(u8, packet, packets.next().?.bytes);
+    }
+}

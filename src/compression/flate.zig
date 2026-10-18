@@ -9,15 +9,24 @@ pub const minimum_output_bytes = 64;
 const native = @import("compression_options").libdeflate;
 const Handle = if (native) ?*anyopaque else void;
 
+pub const default_level: u4 = if (native) 3 else 1;
+
 pub const Encoder = struct {
     handle: Handle = if (native) null else {},
+    level: u4 = default_level,
 
     pub fn init(allocator: std.mem.Allocator) !Encoder {
-        if (!native) return .{};
+        return initLevel(allocator, default_level);
+    }
+
+    /// Levels 1 through 9 trade speed for size like zlib.
+    pub fn initLevel(allocator: std.mem.Allocator, level: u4) !Encoder {
+        if (level < 1 or level > 9) return error.InvalidLimits;
+        if (!native) return .{ .level = level };
         const previous = context_allocator;
         context_allocator = allocator;
         defer context_allocator = previous;
-        return .{ .handle = libdeflate_alloc_compressor_ex(3, &native_options) orelse return error.OutOfMemory };
+        return .{ .handle = libdeflate_alloc_compressor_ex(level, &native_options) orelse return error.OutOfMemory, .level = level };
     }
 
     pub fn deinit(self: Encoder) void {
@@ -26,7 +35,7 @@ pub const Encoder = struct {
 
     pub fn compress(self: Encoder, input: []const u8, output: []u8, history: *[history_len]u8) ![]u8 {
         if (native) if (self.handle) |handle| return compressNative(handle, input, output);
-        return @import("flate.zig").compress(input, output, history);
+        return compressLevel(input, output, history, self.level);
     }
 };
 
@@ -107,13 +116,28 @@ extern "c" fn libdeflate_free_decompressor(*anyopaque) void;
 extern "c" fn libdeflate_deflate_compress(*anyopaque, [*]const u8, usize, [*]u8, usize) usize;
 extern "c" fn libdeflate_deflate_decompress_ex(*anyopaque, [*]const u8, usize, [*]u8, usize, *usize, *usize) c_int;
 
+pub fn compress(input: []const u8, output: []u8, history: *[history_len]u8) ![]u8 {
+    return compressLevel(input, output, history, default_level);
+}
+
 /// Keep std's large compressor stack frame out of callers.
-pub noinline fn compress(input: []const u8, output: []u8, history: *[history_len]u8) ![]u8 {
+noinline fn compressLevel(input: []const u8, output: []u8, history: *[history_len]u8, level: u4) ![]u8 {
     // std's compressor asserts when given less than 64 bytes.
     if (output.len < minimum_output_bytes) return error.NoSpaceLeft;
 
+    const options: std.compress.flate.Compress.Options = switch (level) {
+        1 => .level_1,
+        2 => .level_2,
+        3 => .level_3,
+        4 => .level_4,
+        5 => .level_5,
+        7 => .level_7,
+        8 => .level_8,
+        9 => .level_9,
+        else => .level_6,
+    };
     var writer: std.Io.Writer = .fixed(output);
-    var compressor: std.compress.flate.Compress = try .init(&writer, history, .raw, .default);
+    var compressor: std.compress.flate.Compress = try .init(&writer, history, .raw, options);
 
     compressor.writer.writeAll(input) catch return error.NoSpaceLeft;
     compressor.finish() catch return error.NoSpaceLeft;
