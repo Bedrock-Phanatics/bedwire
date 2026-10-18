@@ -1,10 +1,20 @@
 # Bedwire
 
-Minecraft Bedrock session networking for Zig 0.17.0. Bedwire sits between a transport such as RakNet or NetherNet and the `bedrock_protocol` packet codec. It handles batch framing, compression, login authentication, encryption, and session state. Your application owns network I/O and trust-key fetching.
+A high-performance Minecraft Bedrock session networking library for Zig 0.17.0.
 
-## Add Bedwire to a project
+Bedwire provides batch framing, compression, encryption, login authentication and session management. It works independently of the underlying transport, including RakNet and NetherNet, and integrates with [protocol-zig](https://github.com/Bedrock-Phanatics/protocol-zig).
 
-In `build.zig.zon`, pin a commit and use the hash Zig reports for that archive:
+- Transport-independent session handling
+- Snappy and DEFLATE compression
+- AES encryption and JWT authentication
+- Pooled buffers with allocation-free steady-state processing
+- Thread-safe buffer pooling and worker-owned sessions
+- Configurable resource limits and protocol profiles
+- Proxy support through passive packet observation and authenticated login forwarding
+
+## Installation
+
+Add Bedwire to `build.zig.zon` using a pinned commit:
 
 ```zig
 .dependencies = .{
@@ -15,40 +25,22 @@ In `build.zig.zon`, pin a commit and use the hash Zig reports for that archive:
 },
 ```
 
-In `build.zig`:
+Import the module in `build.zig`:
 
 ```zig
 const bedwire = b.dependency("bedwire", .{
     .target = target,
     .optimize = optimize,
 });
+
 exe.root_module.addImport("bedwire", bedwire.module("bedwire"));
 ```
 
-Raw DEFLATE uses Zig's standard library by default. To opt into the pinned
-libdeflate 1.26 backend, add `.libdeflate = true` to the dependency arguments
-above, or use `zig build -Dlibdeflate=true` in this repository. Zig builds the
-MIT-licensed C sources as a static library; no system libdeflate installation
-is needed. This option requires a target with libc support.
+Bedwire uses pure Zig compression by default. To enable the optional libdeflate backend, add `.libdeflate = true` to the dependency arguments.
 
-`PoolConfig.deflate_level` (1 through 9) sets the session encoding level. It
-defaults to 1 for pure Zig, which encoded the medium MovePlayer benchmark
-batches about 5x faster than level 6 with equal or smaller output, and to 3 for
-libdeflate. Raise it if bandwidth matters more than CPU.
+## Usage
 
-The optional backend allocates reusable codec state through
-the pool's allocator during `BufferPool.init`: approximately 668 KB per TX
-slot and 12 KB per RX slot, in addition to the existing buffers and scratch.
-Session encode/ingest, Tap decode and relay recompression reuse the exclusively
-leased slot's context without allocating. Pool destruction frees the contexts.
-The standalone `compression.flate.compress/decompress` and existing
-`Compression.encode/decode/relay` APIs continue to use pure Zig. Compression
-thresholds and protocol markers apply to both backends. See the measured
-tradeoffs in [the backend investigation](tests/bench/LIBDEFLATE.md).
-
-## Use a session
-
-Create a shared pool, then a session for each connection. `Session` uses the current `bedrock_protocol` profile:
+Create a shared buffer pool and a session for each connection.
 
 ```zig
 const std = @import("std");
@@ -61,37 +53,41 @@ var pool = try bedwire.BufferPool.init(
 );
 defer pool.deinit();
 
-var session = try bedwire.Session.init(.server, .{ .pool = &pool });
+var session = try bedwire.Session.init(.server, .{
+    .pool = &pool,
+});
 defer session.deinit();
 
+// Receive a complete Bedrock batch
 var packets = try session.ingest(incoming_frame);
 defer packets.deinit();
 
 while (packets.next()) |packet| {
-    std.log.info("packet {d}: {d} bytes", .{ packet.id, packet.bytes.len });
+    std.log.info("packet {d}: {d} bytes", .{
+        packet.id,
+        packet.bytes.len,
+    });
 }
 
+// Encode and send a packet
 const frame = try session.encodeOne(outgoing_packet);
 defer frame.release();
+
 carrier.send(frame.bytes) catch |err| {
     session.close();
     return err;
 };
 ```
 
-`incoming_frame` is a complete Bedrock batch from the transport; `outgoing_packet` is an encoded packet from your selected profile. Send frames in encode order. The transport must consume or copy `frame.bytes` before `send` returns.
+The application handles network I/O, transport ordering and backpressure. Bedwire manages framing, compression, encryption and session state.
 
-Packet bytes are borrowed until `packets.deinit()`; frame bytes are borrowed until `frame.release()`. A session allows one outstanding packet iterator and one outgoing frame. Keep the session and pool at stable addresses, serialize calls on each session, and destroy the pool last.
+Sessions are owned by a single thread but may share a buffer pool across workers. Packet data remains valid until `packets.deinit()`, and encoded frames remain valid until `frame.release()`.
 
-Sessions are thread-confined. A networking worker can own many sessions and share one pool between them. Pool slots bound simultaneous leases, not the number of sessions; release each iterator and frame promptly. `PoolExhausted` leaves a session unchanged, so the host may retry the same inbound frame. The host owns queues, backpressure, and ordered transport delivery. Pool acquisition and release support concurrent users, but each session and each leased slot needs exclusive access.
+A session permits one outstanding packet iterator and one outgoing frame. Release both before destroying the session, and destroy the pool after all sessions.
 
-`close()` stops traffic and clears crypto while preserving held buffers. Release leases before `session.deinit()`; destruction invalidates every outstanding handle and slice. Destroy all sessions and taps before their pool, even when `pool.isIdle()` is true. Authentication results own their strings and need their own `identity.deinit()`.
+## Proxy support
 
-Use `bedwire.protocol` for packet types and codecs to share Bedwire's pinned `protocol-zig` revision. If the host also declares that dependency, keep both pins identical.
-
-## Observe a proxied connection
-
-A `Tap` reads both directions without changing the bytes you forward. Call it for each cleartext batch with its actual direction:
+`Tap` allows a proxy to inspect cleartext Bedrock traffic without changing the forwarded data.
 
 ```zig
 var pool = try bedwire.BufferPool.init(
@@ -109,59 +105,143 @@ if (tap.phase() != .encrypted) {
     defer packets.deinit();
 
     while (packets.next()) |packet| {
-        std.log.info("observed packet {d}", .{packet.id});
+        std.log.info("packet {d}", .{packet.id});
     }
 }
+
 try carrier.forward(original_payload);
 ```
 
-Release the iterator before the next `observe`. After the server handshake, `tap.phase()` becomes `.encrypted`; pass later ciphertext through without observing it. To verify an observed Login, call `tap.authenticateLoginPacket(allocator, packet, trust_policy)` while that packet's iterator is active.
+Once encryption is established, the tap stops decoding traffic. Encrypted packets continue through the proxy unchanged.
 
-## Authenticate a Login
+For terminating proxies, Bedwire also supports authenticated connection request generation and backend login forwarding. Proxy-issued identities require an explicitly trusted backend key and are not represented as Microsoft-authenticated identities.
 
-The host fetches and caches Microsoft's JWKS. For an OIDC profile, parse the keys and verify the Login packet while its iterator is active:
+## Authentication
+
+Bedwire supports Microsoft OIDC/JWKS verification and legacy certificate-chain authentication, depending on the selected protocol profile.
 
 ```zig
-var keys = try bedwire.auth.KeySet.parse(allocator, jwks_json, .{});
+var keys = try bedwire.auth.KeySet.parse(
+    allocator,
+    jwks_json,
+    .{},
+);
 defer keys.deinit();
 
 const trust: bedwire.TrustPolicy = .{
-    .oidc = .{ .now = now_unix_seconds, .keys = &keys },
+    .oidc = .{
+        .now = now_unix_seconds,
+        .keys = &keys,
+    },
 };
-
-var packets = try session.ingest(login_frame);
-defer packets.deinit();
-while (packets.next()) |packet| {
-    if (packet.kind != .login) continue;
-    var identity = try session.authenticateLoginPacket(allocator, packet, trust);
-    defer identity.deinit();
-    std.log.info("authenticated {s}", .{identity.display_name});
-}
 ```
 
-For a legacy profile, use `.{ .certificate_chain = .{ .now = now_unix_seconds } }` and set `options.policy.connection_request_format = .legacy_chain`. Use `SessionWithProfile(Profile)` or `TapWithProfile(Profile)` for another `bedrock_protocol` profile; the selected profile defines packet layouts and login flow. The host sends the cleartext server handshake before calling `session.installServerCrypto(...)`.
+Verify Login packets using `session.authenticateLoginPacket()` or `tap.authenticateLoginPacket()` while their packet iterator is active.
 
-For a terminating proxy, `bedwire.auth.login.buildProxyConnectionRequest(Profile, allocator, proxy_key, &authenticated_identity, client_data_json, expires_at, .envelope, limits)` returns an owned connection request; free it with the same allocator. `bedwire.auth.login.encodeLoginPacket(Profile, &packet_storage, request, limits)` writes the typed Login packet into caller-owned storage. Use `.legacy_chain` for a backend configured for legacy framing. This builder supports certificate-chain profiles and signs both the identity link and caller-provided JSON client data with the proxy key. The backend must explicitly set `certificate_chain.trusted_issuer_key` to that public key and keep `allow_offline` disabled. The resulting identity is proxy-issued, with `online == false` and no Microsoft XUID; it does not claim Microsoft authentication.
+The application is responsible for fetching and caching Microsoft's trusted keys. Authentication results own their allocated data and must be released with `identity.deinit()`.
 
-## Limits and checks
+## Compression
 
-`bedwire.Limits` bounds frames, decompressed batches, packets, authentication data, and JSON nesting. Set limits before creating the pool; pool allocation scales with them. Sessions and taps may use lower limits than their pool.
+Bedwire supports Snappy and raw DEFLATE, including an optional [libdeflate](https://github.com/ebiggers/libdeflate) 1.26 backend.
+
+| Backend | Default level | Dependencies |
+|---|---:|---|
+| Pure Zig DEFLATE | 1 | None |
+| libdeflate | 3 | Bundled C sources |
+| Snappy | — | None |
+
+Compression levels can be configured through `PoolConfig.deflate_level` (1–9).
+
+The libdeflate backend is compiled statically and does not require a system installation. It requires libc support and allocates approximately 668 KB per transmit slot and 12 KB per receive slot for reusable compression state.
+
+The pure Zig backend remains the default for lower memory overhead.
+
+## Benchmarks
+
+Performance measurements were recorded using Zig 0.17.0 in ReleaseFast mode on an AMD Ryzen 5 5500, running Windows x86_64.
+
+### Session performance
+
+The following results compare the implementation before and after the 0.3.0 optimization pass.
+
+Median round-trip execution time, including session processing, compression, encryption where applicable, and packet iteration. Lower is better.
+
+| Workload | Before | Bedwire 0.3.0 | Speedup |
+|---|---:|---:|---:|
+| Small Snappy + AES | 1.85 µs | **1.44 µs** | **1.29x** |
+| Medium Snappy + AES | 99.66 µs | **74.13 µs** | **1.34x** |
+| Large Snappy + AES | 346.38 µs | **176.14 µs** | **1.97x** |
+| Large noise Snappy + AES | 990.24 µs | **401.57 µs** | **2.47x** |
+| Medium DEFLATE | 977.36 µs | **262.27 µs** | **3.73x** |
+| Medium DEFLATE + AES | 888.08 µs | **256.38 µs** | **3.46x** |
+
+These gains come from improvements to AES processing, compression defaults, buffer handling and session structures.
+
+In particular, AES processing uses pipelined CTR operations with a shared key schedule. A 1,392-byte encryption operation improved from approximately 2.54 µs to 1.07 µs.
+
+### libdeflate comparison
+
+A separate benchmark compares the default pure Zig DEFLATE backend with optional libdeflate using reusable compression contexts.
+
+Median round-trip time. Lower is better.
+
+| Workload | Pure Zig | libdeflate | Speedup |
+|---|---:|---:|---:|
+| Small DEFLATE | 15.64 µs | **7.42 µs** | **2.11x** |
+| Medium DEFLATE | 886.91 µs | **128.92 µs** | **6.88x** |
+| Medium DEFLATE + AES | 908.61 µs | **147.37 µs** | **6.17x** |
+| Large DEFLATE | 2.04 ms | **0.86 ms** | **2.36x** |
+| Large DEFLATE + AES | 2.21 ms | **1.12 ms** | **1.97x** |
+
+These results are from the earlier backend comparison, not the final 0.3.0 benchmark, and should not be compared directly with the preceding table.
+
+libdeflate offers faster compression on the tested realistic batches, at the cost of additional pool memory. Some highly compressible decode-only workloads perform better with pure Zig.
+
+### Buffer pool
+
+The 0.3.0 changes also reduce contention between receive and transmit workers sharing a buffer pool.
+
+| Workers | Before | After | Speedup |
+|---|---:|---:|---:|
+| 4 threads | 41.6 ns | **4.9 ns** | **8.5x** |
+| 8 threads | 56.1 ns | **6.4 ns** | **8.8x** |
+
+These measurements cover split-direction acquisition and release with a single slot per direction. Same-direction contention is unchanged.
+
+Recorded session benchmarks reported **zero steady-state pool allocator calls** after initialization.
+
+The benchmark suite covers small (256 B), medium (16 KiB) and large (256 KiB) batches, with compressible, incompressible and generated Minecraft packet data. Results exclude network I/O and typed packet serialization.
+
+Full methodology, results and reproduction instructions are available in [bench/README.md](bench/README.md), [bench/LIBDEFLATE.md](bench/LIBDEFLATE.md) and [bench/SNAPPY.md](bench/SNAPPY.md).
+
+## Testing
+
+Run the test suite:
 
 ```sh
 zig build test
 zig build test -Doptimize=ReleaseSafe
+```
+
+Check interoperability with the reference implementations:
+
+```sh
 python tools/interop/check.py
 ```
 
-The interoperability check requires Python 3 and Go 1.25+.
+The interoperability checker requires Python 3 and Go 1.25+.
 
-For session performance benchmarks and recorded baselines, see [tests/bench/README.md](tests/bench/README.md).
+To run the session benchmarks:
 
-## Upgrading to 0.3.0
+```sh
+zig build bench-baseline-build
+./zig-out/bin/bedwire-baseline
+```
 
-- Pure Zig DEFLATE output now defaults to level 1, including `compression.flate.compress`
-  and `Compression.encode`. Set `PoolConfig.deflate_level` or use
-  `flate.Encoder.initLevel` for another level. The wire format is unchanged.
-- `framing.batch.Reader.limits` and `Writer.limits` are now `framing.batch.Bounds`;
-  `init` still takes `Limits`.
-- `BufferPool.rx_free` and `tx_free` are cache-line padded; read them through `.bits`.
+Use `zig build bench-baseline-build -Dlibdeflate=true` to benchmark the optional backend.
+
+Tests cover session state, encryption, authentication, compression, buffer ownership, resource limits, malformed packets and interoperability.
+
+## License
+
+See [LICENSE](LICENSE).
