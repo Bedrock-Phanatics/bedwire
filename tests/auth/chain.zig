@@ -49,7 +49,6 @@ test "an untrusted root is refused" {
     const client_data = try support.buildClientData(allocator, k[0]);
     defer allocator.free(client_data);
 
-    // This chain is not signed by the pinned Mojang root.
     try testing.expectError(error.UntrustedChain, auth.verifyChain(allocator, chain, client_data, .{ .now = 100 }, support.limits));
 
     const wrong = try support.deterministicKey(9);

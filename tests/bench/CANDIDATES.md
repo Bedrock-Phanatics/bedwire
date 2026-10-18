@@ -28,7 +28,7 @@ go test -c -o ../../zig-out/bin/s2-reference.test.exe
 Then, from the repository root:
 
 ```sh
-python bench/run_candidates.py
+python tests/bench/run_candidates.py
 ```
 
 Remove `.exe` from executable names on Linux. The runner selects the platform

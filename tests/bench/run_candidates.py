@@ -4,14 +4,14 @@ import platform
 import subprocess
 import sys
 
-root = pathlib.Path(__file__).resolve().parents[1]
+root = pathlib.Path(__file__).resolve().parents[2]
 suffix = ".exe" if sys.platform == "win32" else ""
 codec = root / "zig-out/bin" / ("bedwire-codecs" + suffix)
 pool = root / "zig-out/bin" / ("bedwire-pool-bench" + suffix)
 reference = root / "zig-out/bin" / ("s2-reference.test" + suffix)
 architecture = platform.machine().lower().replace("amd64", "x86_64")
 tag = ("windows" if sys.platform == "win32" else sys.platform) + "-" + architecture
-results = root / "bench/results"
+results = root / "tests/bench/results"
 reference_args = [
     str(reference), "-test.run=TestSnappyInteroperability", "-test.count=1",
     "-test.bench=BenchmarkSnappy", "-test.benchtime=100ms", "-test.cpu=1",

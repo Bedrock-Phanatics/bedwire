@@ -6,10 +6,10 @@ import platform
 import subprocess
 import sys
 
-root = pathlib.Path(__file__).resolve().parents[1]
+root = pathlib.Path(__file__).resolve().parents[2]
 suffix = ".exe" if sys.platform == "win32" else ""
 tag = ("windows" if sys.platform == "win32" else sys.platform) + "-" + platform.machine().lower().replace("amd64", "x86_64")
-results = root / "bench/results"
+results = root / "tests/bench/results"
 binaries = {
     "before": root / "zig-out/snappy-before",
     "after": root / "zig-out/snappy-after/bin",

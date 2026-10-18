@@ -44,7 +44,7 @@ leased slot's context without allocating. Pool destruction frees the contexts.
 The standalone `compression.flate.compress/decompress` and existing
 `Compression.encode/decode/relay` APIs continue to use pure Zig. Compression
 thresholds and protocol markers apply to both backends. See the measured
-tradeoffs in [the backend investigation](bench/LIBDEFLATE.md).
+tradeoffs in [the backend investigation](tests/bench/LIBDEFLATE.md).
 
 ## Use a session
 
@@ -155,7 +155,7 @@ python tools/interop/check.py
 
 The interoperability check requires Python 3 and Go 1.25+.
 
-For session performance benchmarks and recorded baselines, see [bench/README.md](bench/README.md).
+For session performance benchmarks and recorded baselines, see [tests/bench/README.md](tests/bench/README.md).
 
 ## Upgrading to 0.3.0
 

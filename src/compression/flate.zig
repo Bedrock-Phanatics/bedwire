@@ -19,7 +19,6 @@ pub const Encoder = struct {
         return initLevel(allocator, default_level);
     }
 
-    /// Levels 1 through 9 trade speed for size like zlib.
     pub fn initLevel(allocator: std.mem.Allocator, level: u4) !Encoder {
         if (level < 1 or level > 9) return error.InvalidLimits;
         if (!native) return .{ .level = level };

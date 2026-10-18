@@ -60,7 +60,7 @@ pub fn build(b: *std.Build) !void {
     bench_bedwire.addOptions("compression_options", compression_options);
     if (native) |library| bench_bedwire.linkLibrary(library);
     const bench = b.addExecutable(.{ .name = "bedwire-bench", .root_module = b.createModule(.{
-        .root_source_file = b.path("bench/main.zig"),
+        .root_source_file = b.path("tests/bench/main.zig"),
         .target = target,
         .optimize = .fast,
         .imports = &.{.{ .name = "bedwire", .module = bench_bedwire }},
@@ -71,7 +71,7 @@ pub fn build(b: *std.Build) !void {
         .dependOn(&b.addInstallArtifact(bench, .{}).step);
 
     const baseline = b.addExecutable(.{ .name = "bedwire-baseline", .root_module = b.createModule(.{
-        .root_source_file = b.path("bench/baseline.zig"),
+        .root_source_file = b.path("tests/bench/baseline.zig"),
         .target = target,
         .optimize = .fast,
         .imports = &.{.{ .name = "bedwire", .module = bench_bedwire }},
@@ -82,7 +82,7 @@ pub fn build(b: *std.Build) !void {
         .dependOn(&b.addInstallArtifact(baseline, .{}).step);
 
     const pool_bench = b.addExecutable(.{ .name = "bedwire-pool-bench", .root_module = b.createModule(.{
-        .root_source_file = b.path("bench/pool.zig"),
+        .root_source_file = b.path("tests/bench/pool.zig"),
         .target = target,
         .optimize = .fast,
         .imports = &.{.{ .name = "bedwire", .module = bench_bedwire }},
@@ -96,7 +96,7 @@ pub fn build(b: *std.Build) !void {
         const root: std.Build.LazyPath = .{ .cwd_relative = source };
         const libdeflate = native orelse buildLibdeflate(b, target, root);
         const codecs = b.addExecutable(.{ .name = "bedwire-codecs", .root_module = b.createModule(.{
-            .root_source_file = b.path("bench/codecs.zig"),
+            .root_source_file = b.path("tests/bench/codecs.zig"),
             .target = target,
             .optimize = .fast,
             .link_libc = true,
@@ -110,7 +110,7 @@ pub fn build(b: *std.Build) !void {
         }) });
         codecs.root_module.linkLibrary(libdeflate);
         codecs.root_module.addIncludePath(root);
-        codecs.root_module.addCSourceFile(.{ .file = b.path("bench/libdeflate_metrics.c"), .flags = &.{ "-O2", "-std=c11" } });
+        codecs.root_module.addCSourceFile(.{ .file = b.path("tests/bench/libdeflate_metrics.c"), .flags = &.{ "-O2", "-std=c11" } });
         b.step("bench-codecs-build", "Build optional raw codec comparisons")
             .dependOn(&b.addInstallArtifact(codecs, .{}).step);
         b.step("bench-codecs", "Run optional raw codec comparisons")

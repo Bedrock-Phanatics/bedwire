@@ -18,7 +18,7 @@ jobs:
         with:
           version: 0.17.0
 
-      - run: zig fmt --check build.zig build.zig.zon src tests bench tools/interop/export.zig
+      - run: zig fmt --check build.zig build.zig.zon src tests tools/interop/export.zig
       - run: zig build
       - run: zig build test
       - run: zig build test -Doptimize=ReleaseSafe

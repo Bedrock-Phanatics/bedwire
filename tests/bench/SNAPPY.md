@@ -191,7 +191,7 @@ go test -c -o ../../zig-out/bin/s2-reference.test.exe
 ../../zig-out/bin/s2-reference.test.exe -test.run=TestSnappyInteroperability -test.count=1
 ```
 
-Then run `python bench/run_snappy.py` from the repository root. It validates
+Then run `python tests/bench/run_snappy.py` from the repository root. It validates
 row counts, allocation counts, percentiles, unchanged metadata/control output,
 cross-decoding, and saves all three pairs and executable hashes. On Linux omit
 `.exe` in manual commands; the Python runner chooses the suffix automatically.

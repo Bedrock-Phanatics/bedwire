@@ -10,10 +10,8 @@ pub const Identity = identity_mod.Identity;
 
 pub const ChainPolicy = struct {
     now: i64,
-    /// Accept single-link self-signed chains (offline/LAN).
     allow_offline: bool = false,
     trusted_issuer_key: ?spki.Ecdsa.PublicKey = null,
-    /// Defaults to the pinned Mojang root.
     root: ?spki.Ecdsa.PublicKey = null,
 };
 

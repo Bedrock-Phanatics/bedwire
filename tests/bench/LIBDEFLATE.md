@@ -78,7 +78,7 @@ The target must support libc. The source dependency includes its MIT license.
 ```sh
 zig build bench-baseline-build --prefix zig-out/pure-zig
 zig build bench-baseline-build -Dlibdeflate=true --prefix zig-out/libdeflate
-python bench/run_sessions.py
+python tests/bench/run_sessions.py
 ```
 
 The runner alternates backend order across three complete runs and checks the

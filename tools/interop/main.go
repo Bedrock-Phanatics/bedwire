@@ -15,7 +15,6 @@ import (
     "github.com/klauspost/compress/s2"
 )
 
-// Deterministic public test keys.
 func main() {
     plain := bytes.Repeat([]byte("Bedrock Snappy interoperability. "), 100)
     compressed := s2.EncodeSnappy(nil, plain)

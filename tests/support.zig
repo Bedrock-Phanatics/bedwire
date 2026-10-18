@@ -173,7 +173,6 @@ pub const Builder = struct {
     }
 };
 
-/// A client/server pair with a copy buffer for encoded frames.
 pub const Pair = struct {
     pub fn init(allocator: std.mem.Allocator, comptime profile: type) !PairFor(profile) {
         return PairFor(profile).init(allocator);

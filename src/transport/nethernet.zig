@@ -5,10 +5,8 @@ const session_mod = @import("../session/session.zig");
 const Packet = session_mod.Packet;
 const Session = session_mod.Session;
 
-/// Connection needs send(bytes, reliability) and receive() !Message.
-/// Handler needs onPacket(*Handler, *Session, Packet) !void.
-/// Send must consume or copy bytes; received data must live through delivery.
-/// Handlers must not retain packet bytes. Unreliable delivery closes the Session.
+/// send must copy or consume its bytes, and received data must outlive delivery.
+/// Handlers must not keep packet bytes, and unreliable messages close the Session.
 pub fn NetherNet(comptime Connection: type, comptime Handler: type) type {
     return NetherNetWithProfile(@import("bedrock_protocol").Current, Connection, Handler);
 }
