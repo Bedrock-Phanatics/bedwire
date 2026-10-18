@@ -11,16 +11,31 @@ pub fn strip(frame: []const u8, limits: Limits) ![]const u8 {
     return frame[1..];
 }
 
+/// The subset of Limits that framing needs, so iterators stay small.
+pub const Bounds = struct {
+    max_batch_bytes: usize,
+    max_packet_bytes: usize,
+    max_packets_per_batch: usize,
+
+    pub fn of(limits: Limits) Bounds {
+        return .{
+            .max_batch_bytes = limits.max_batch_bytes,
+            .max_packet_bytes = limits.max_packet_bytes,
+            .max_packets_per_batch = limits.max_packets_per_batch,
+        };
+    }
+};
+
 /// Packet slices borrow the input.
 pub const Reader = struct {
     bytes: []const u8,
     cursor: usize = 0,
     count: usize = 0,
-    limits: Limits,
+    limits: Bounds,
 
     pub fn init(bytes: []const u8, limits: Limits) !Reader {
         if (bytes.len > limits.max_batch_bytes) return error.LimitExceeded;
-        return .{ .bytes = bytes, .limits = limits };
+        return .{ .bytes = bytes, .limits = .of(limits) };
     }
 
     pub fn next(self: *Reader) !?[]const u8 {
@@ -50,10 +65,10 @@ pub const Writer = struct {
     dest: []u8,
     cursor: usize = 0,
     count: usize = 0,
-    limits: Limits,
+    limits: Bounds,
 
     pub fn init(dest: []u8, limits: Limits) Writer {
-        return .{ .dest = dest, .limits = limits };
+        return .{ .dest = dest, .limits = .of(limits) };
     }
 
     pub fn append(self: *Writer, packet: []const u8) !void {
