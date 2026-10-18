@@ -117,3 +117,44 @@ changes. The benchmark itself verifies every case and pool lease completion.
 No production implementation or backend has changed in this phase. Reference
 codec comparisons, optional Tracy evaluation, contention profiling, and
 Linux/ARM measurements remain for subsequent phases.
+
+## 0.3.0 optimization pass
+
+Interleaved before/after runs of this matrix, three each, on the same Windows
+x86_64 Ryzen 5 5500 host and ReleaseFast build. "Before" is `3df3883`. Times
+are medians in ns/op; raw CSVs are the `windows-x86_64-v030-*` files under
+`results/`. The desktop was not idle, so differences under about 10% are noise.
+
+| Case | Before | After | Gain |
+| --- | ---: | ---: | ---: |
+| Small realistic Snappy + AES round trip | 1,854 | 1,435 | 1.29x |
+| Medium realistic Snappy + AES round trip | 99,659 | 74,133 | 1.34x |
+| Large realistic Snappy + AES round trip | 346,379 | 176,141 | 1.97x |
+| Large noise Snappy + AES round trip | 990,236 | 401,571 | 2.47x |
+| Medium realistic DEFLATE encode | 928,030 | 159,540 | 5.82x |
+| Medium realistic DEFLATE round trip | 977,360 | 262,265 | 3.73x |
+| Medium realistic DEFLATE + AES round trip | 888,081 | 256,384 | 3.46x |
+| Large realistic DEFLATE + AES round trip | 2,268,336 | 2,020,349 | 1.12x |
+
+- AES-CTR now uses std's pipelined `ctrSlice` instead of one block at a time,
+  and both directions share one key schedule. A pinned digest test proves the
+  keystream and MAC bytes are unchanged. `seal`/`open` of 1,392 bytes went from
+  about 2,540 to 1,070 ns, managed relay is about 2x faster, and `Session`
+  shrank from 1,120 to 848 bytes.
+- Pure Zig session encoding defaults to DEFLATE level 1 (`PoolConfig.deflate_level`).
+  Output is equal or smaller on every workload here. Level 1 streams decode
+  about 18% slower with std's inflater on the medium realistic case, which the
+  encode gain outweighs. libdeflate keeps level 3.
+- Plaintext frames decompress straight from the caller's buffer. Large Snappy
+  decodes are 1.1-1.7x faster; uncompressed frames still take one copy.
+- `Packets` shrank from 192 to 80 bytes by keeping only framing bounds.
+- Uncompressed and plain Snappy cases moved within noise. Best-of-15 and 25 micro
+  benchmarks against `3df3883` showed small-batch plaintext encode/ingest
+  within a few ns and medium Snappy encode unchanged.
+
+The RX and TX availability masks now sit on separate cache lines. With
+split-direction traffic on one shared pool, `bedwire-pool-bench` medians of two
+runs went from 41.6 to 4.9 ns per pair at 4 threads and 56.1 to 6.4 at 8
+threads (one slot). Same-direction contention is unchanged, since threads still
+share one mask; give each worker its own pool when that matters. The pool grew
+from 256 to 512 bytes.

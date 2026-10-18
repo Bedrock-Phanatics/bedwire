@@ -156,3 +156,12 @@ python tools/interop/check.py
 The interoperability check requires Python 3 and Go 1.25+.
 
 For session performance benchmarks and recorded baselines, see [bench/README.md](bench/README.md).
+
+## Upgrading to 0.3.0
+
+- Pure Zig DEFLATE output now defaults to level 1, including `compression.flate.compress`
+  and `Compression.encode`. Set `PoolConfig.deflate_level` or use
+  `flate.Encoder.initLevel` for another level. The wire format is unchanged.
+- `framing.batch.Reader.limits` and `Writer.limits` are now `framing.batch.Bounds`;
+  `init` still takes `Limits`.
+- `BufferPool.rx_free` and `tx_free` are cache-line padded; read them through `.bits`.
