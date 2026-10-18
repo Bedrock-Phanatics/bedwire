@@ -228,3 +228,24 @@ test "crypto installation unwinds every handshake allocation failure" {
     defer testing.allocator.free(token);
     try testing.checkAllAllocationFailures(testing.allocator, acceptHandshakeWithAllocationFailure, .{ token, client.secret_key });
 }
+
+test "the keystream and checksum match the pinned wire format across chunk sizes" {
+    var key: [32]u8 = undefined;
+    for (&key, 0..) |*byte, i| byte.* = @intCast(i * 7 + 3);
+    var sender = SessionCrypto.init(key);
+    defer sender.deinit();
+    var receiver = SessionCrypto.init(key);
+    defer receiver.deinit();
+
+    var digest = std.crypto.hash.sha2.Sha256.init(.{});
+    var storage: [1200]u8 = undefined;
+    for ([_]usize{ 1, 7, 8, 9, 15, 16, 17, 31, 127, 128, 129, 300, 1000 }) |len| {
+        for (storage[0..len], 0..) |*byte, i| byte.* = @truncate(i *% 31 +% len);
+        const sealed = try sender.seal(&storage, len);
+        digest.update(sealed);
+        const opened = try receiver.open(sealed);
+        for (opened, 0..) |byte, i| try testing.expectEqual(@as(u8, @truncate(i *% 31 +% len)), byte);
+    }
+    const hex = std.fmt.bytesToHex(digest.finalResult(), .lower);
+    try testing.expectEqualStrings("daa00ef99bc884ab72ffda77f5a752ad2352c616b8dfab44388d5e6fb587b59d", &hex);
+}

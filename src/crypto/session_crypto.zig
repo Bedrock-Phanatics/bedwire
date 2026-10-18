@@ -5,14 +5,15 @@ const Aes = std.crypto.core.aes.Aes256;
 /// MAC is sha256(le_u64(counter) ++ payload ++ key)[0..8].
 pub const SessionCrypto = struct {
     key: [32]u8,
-    inbound: Stream,
-    outbound: Stream,
+    aes: Ctx,
+    inbound: Stream = .{},
+    outbound: Stream = .{},
     recv_counter: u64 = 0,
     send_counter: u64 = 0,
     closed: bool = false,
 
     pub fn init(key: [32]u8) SessionCrypto {
-        return .{ .key = key, .inbound = .init(key), .outbound = .init(key) };
+        return .{ .key = key, .aes = Aes.initEnc(key) };
     }
 
     pub fn deinit(self: *SessionCrypto) void {
@@ -30,7 +31,7 @@ pub const SessionCrypto = struct {
         try self.outbound.check(bytes.len);
 
         @memcpy(bytes[payload_len..], &self.checksum(self.send_counter, bytes[0..payload_len]));
-        self.outbound.xor(bytes);
+        self.outbound.xor(self.aes, self.key[0..12].*, bytes);
         self.send_counter += 1;
 
         return bytes;
@@ -47,14 +48,14 @@ pub const SessionCrypto = struct {
         var original = self.inbound;
         defer std.crypto.secureZero(u8, std.mem.asBytes(&original));
 
-        self.inbound.xor(bytes);
+        self.inbound.xor(self.aes, self.key[0..12].*, bytes);
 
         const payload = bytes[0 .. bytes.len - 8];
         const actual: [8]u8 = bytes[bytes.len - 8 ..][0..8].*;
         const expected = self.checksum(self.recv_counter, payload);
 
         if (!std.crypto.timing_safe.eql([8]u8, actual, expected)) {
-            original.xor(bytes);
+            original.xor(self.aes, self.key[0..12].*, bytes);
             return error.ChecksumMismatch;
         }
 
@@ -74,16 +75,13 @@ pub const SessionCrypto = struct {
     }
 };
 
+const Ctx = std.crypto.core.aes.AesEncryptCtx(Aes);
+
+/// Both directions share the key schedule and nonce; only their positions differ.
 const Stream = struct {
-    aes: std.crypto.core.aes.AesEncryptCtx(Aes),
-    nonce: [12]u8,
     counter: u64 = 2,
     block: [16]u8 = undefined,
     position: usize = 16,
-
-    fn init(key: [32]u8) Stream {
-        return .{ .aes = Aes.initEnc(key), .nonce = key[0..12].* };
-    }
 
     fn check(self: *const Stream, len: usize) !void {
         const remaining = 16 - self.position;
@@ -92,23 +90,38 @@ const Stream = struct {
         if (blocks > (@as(u64, 1) << 32) - self.counter) return error.CounterExhausted;
     }
 
-    fn xor(self: *Stream, bytes: []u8) void {
-        var cursor: usize = 0;
-        while (cursor < bytes.len) {
-            if (self.position == 16) {
-                var iv: [16]u8 = undefined;
-                @memcpy(iv[0..12], &self.nonce);
-                std.mem.writeInt(u32, iv[12..16], @intCast(self.counter), .big);
-                self.aes.encrypt(&self.block, &iv);
-                self.counter += 1;
-                self.position = 0;
-            }
-            const count = @min(bytes.len - cursor, self.block.len - self.position);
-            for (bytes[cursor..][0..count], self.block[self.position..][0..count]) |*byte, key_byte| {
-                byte.* ^= key_byte;
-            }
+    fn xor(self: *Stream, aes: Ctx, nonce: [12]u8, bytes: []u8) void {
+        var rest = bytes;
+        if (self.position != 16) {
+            const count = @min(rest.len, 16 - self.position);
+            xorInto(rest[0..count], self.block[self.position..][0..count]);
             self.position += count;
-            cursor += count;
+            rest = rest[count..];
+        }
+
+        const whole = rest.len & ~@as(usize, 15);
+        if (whole != 0) {
+            std.crypto.core.modes.ctrSlice(Ctx, aes, rest[0..whole], rest[0..whole], self.iv(nonce), .big, 12, 4);
+            self.counter += whole / 16;
+            rest = rest[whole..];
+        }
+
+        if (rest.len != 0) {
+            aes.encrypt(&self.block, &self.iv(nonce));
+            self.counter += 1;
+            xorInto(rest, self.block[0..rest.len]);
+            self.position = rest.len;
         }
     }
+
+    fn iv(self: *const Stream, nonce: [12]u8) [16]u8 {
+        var block: [16]u8 = undefined;
+        block[0..12].* = nonce;
+        std.mem.writeInt(u32, block[12..16], @intCast(self.counter), .big);
+        return block;
+    }
 };
+
+fn xorInto(bytes: []u8, keystream: []const u8) void {
+    for (bytes, keystream) |*byte, key_byte| byte.* ^= key_byte;
+}
