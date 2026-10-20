@@ -279,6 +279,37 @@ test "optional encryption lets a session skip the encrypted handshake" {
     try testing.expect(!pair.client.encrypted());
 }
 
+test "transport encryption skips the handshake and lets packs share the login batch" {
+    const descriptor = support.modern;
+
+    var pair = try support.Pair.init(testing.allocator, descriptor);
+    defer pair.deinit();
+    pair.client.policy = .{ .encryption = .disabled, .batch_header = false };
+    pair.server.policy = pair.client.policy;
+
+    var build: support.Builder = .{};
+    var second: support.Builder = .{};
+    const settings = try pair.client.encode(&.{build.make(descriptor, .request_network_settings)});
+    try testing.expect(settings.bytes[0] != bedwire.framing.batch.header);
+    settings.release();
+    pair.client.state = .transport_ready;
+    pair.client.sent = .empty;
+    try pair.clientToServerDiscard(&.{build.make(descriptor, .request_network_settings)});
+    try pair.serverToClientDiscard(&.{build.make(descriptor, .network_settings)});
+    try pair.server.negotiateCompression(.snappy, 0);
+    try pair.client.negotiateCompression(.snappy, 0);
+    try pair.clientToServerDiscard(&.{build.make(descriptor, .login)});
+
+    const login_done: []const []const u8 = &.{ build.make(descriptor, .play_status), second.make(descriptor, .resource_packs_info) };
+    try testing.expectError(error.Unauthenticated, pair.server.encode(login_done));
+    try pair.server.installVerifiedClientKey((try support.deterministicKey(1)).public_key);
+    try pair.serverToClientDiscard(login_done);
+    try testing.expectEqual(bedwire.State.resource_packs, pair.server.state);
+    try testing.expectEqual(bedwire.State.resource_packs, pair.client.state);
+    try testing.expect(!pair.client.encrypted() and !pair.server.encrypted());
+    try testing.expectError(error.InvalidState, pair.server.encode(&.{build.make(descriptor, .server_to_client_handshake)}));
+}
+
 test "crypto installation refuses to run out of order" {
     var pair = try support.Pair.init(testing.allocator, support.modern);
     defer pair.deinit();

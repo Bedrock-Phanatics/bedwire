@@ -6,6 +6,7 @@ const Packet = session_mod.Packet;
 const Session = session_mod.Session;
 
 /// send must copy or consume its bytes, and received data must outlive delivery.
+/// Vanilla NetherNet sessions use `.{ .encryption = .disabled, .batch_header = false }`.
 /// Handlers must not keep packet bytes, and unreliable messages close the Session.
 pub fn NetherNet(comptime Connection: type, comptime Handler: type) type {
     return NetherNetWithProfile(@import("bedrock_protocol").Current, Connection, Handler);
@@ -200,7 +201,7 @@ test "adapter sends reliable frames and stops once closed" {
     var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var local = try Session.init(.client, .{ .limits = limits, .pool = &pool });
+    var local = try Session.init(.client, .{ .limits = limits, .pool = &pool, .policy = .{ .encryption = .disabled, .batch_header = false } });
     defer local.deinit();
     local.state = .in_game;
 
@@ -209,9 +210,9 @@ test "adapter sends reliable frames and stops once closed" {
     var adapter = NetherNet(Channel, Counter){ .session = &local, .connection = &channel, .handler = &counter };
 
     try adapter.sendOne(&.{ 9, 7 });
-    try testing.expectEqual(@as(u8, 0xfe), channel.outbound[0]);
+    try testing.expectEqualSlices(u8, &.{ 2, 9, 7 }, channel.outbound[0..channel.outbound_len]);
 
     local.close();
     try testing.expectError(error.TransportClosed, adapter.sendOne(&.{ 9, 7 }));
-    try testing.expectError(error.TransportClosed, adapter.deliver(&.{ 0xfe, 2, 9, 7 }));
+    try testing.expectError(error.TransportClosed, adapter.deliver(&.{ 2, 9, 7 }));
 }

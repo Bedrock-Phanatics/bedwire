@@ -48,7 +48,10 @@ pub const Packets = Session.Packets;
 pub const Packet = Session.Packet;
 
 pub const SessionPolicy = struct {
-    encryption: enum { required, optional } = .required,
+    /// `disabled` is for transports that encrypt on their own, such as NetherNet.
+    encryption: enum { required, optional, disabled } = .required,
+    /// NetherNet sends batches without the 0xfe header.
+    batch_header: bool = true,
     connection_request_format: wire.ConnectionRequestFormat = .envelope,
 };
 
@@ -212,7 +215,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             if (self.state == .disconnected) return error.TransportClosed;
             if (self.active_generation != null or self.rx_slot != null) return error.InvalidState;
 
-            const body = batch.strip(payload, self.limits) catch |err| {
+            const body = batch.body(payload, self.policy.batch_header, self.limits) catch |err| {
                 self.close();
                 return err;
             };
@@ -247,6 +250,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
             const reader = try batch.Reader.init(raw, self.limits);
             self.observe(observed.kinds, self.role.peer());
+            if (observed.state == .resource_packs and self.state == .authenticating) self.state = observed.state;
             self.generation +%= 1;
             self.active_generation = self.generation;
             self.rx_slot = rx_token;
@@ -277,18 +281,20 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             // Assemble after the frame prefix so an uncompressed batch is already in place.
             var writer = batch.Writer.init(slot.assembly[reserve..], self.limits);
             var observed: std.EnumSet(PacketKind) = .empty;
+            var state = self.state;
 
             for (packets) |packet| {
                 const header = try parseHeader(packet);
                 const kind = Profile.packetKind(header.packet_id);
-                try self.check(kind, header, self.role);
+                try self.check(state, kind, header, self.role);
                 try self.validateControl(packet, header, kind);
                 try writer.append(packet);
                 if (kind) |known| observed.insert(known);
+                state = try self.after(state, kind, self.role);
             }
 
             if (writer.count == 0) return error.MalformedBatch;
-            if (self.state.singlePacketBatch() and writer.count != 1) return error.InvalidState;
+            if (self.singlePacketBatch() and writer.count != 1) return error.InvalidState;
 
             const raw = writer.written();
             const room = max_egress - reserve - trailer;
@@ -311,9 +317,10 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.tx_slot = slot_token;
             self.tx_token +%= 1;
             self.observe(observed, self.role);
+            if (state == .resource_packs and self.state == .authenticating) self.state = state;
 
             return Self.Frame{
-                .bytes = out[0..len],
+                .bytes = out[@intFromBool(!self.policy.batch_header)..len],
                 .session = self,
                 .token = self.tx_token,
             };
@@ -335,7 +342,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             if (!self.canRelayTo(dest)) return error.IncompatibleRelay;
             if (dest.tx_slot != null) return error.PoolExhausted;
 
-            const body = batch.strip(payload, self.limits) catch |err| {
+            const body = batch.body(payload, self.policy.batch_header, self.limits) catch |err| {
                 self.close();
                 return err;
             };
@@ -374,7 +381,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             dest.tx_token +%= 1;
 
             return .{
-                .bytes = out[0..len],
+                .bytes = out[@intFromBool(!dest.policy.batch_header)..len],
                 .session = dest,
                 .token = dest.tx_token,
             };
@@ -550,7 +557,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
                 .resource_packs => switch (self.state) {
                     .encrypted_handshake => self.crypto != null and self.exchanged(.client_to_server_handshake, .client),
                     // The client key must be authenticated even without encryption.
-                    .authenticating => self.policy.encryption == .optional and self.exchanged(.login, .client) and
+                    .authenticating => self.policy.encryption != .required and self.exchanged(.login, .client) and
                         (self.role == .client or self.peer_key != null),
                     else => false,
                 },
@@ -601,31 +608,45 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.state = .encrypted_handshake;
         }
 
-        const Observed = struct { kinds: std.EnumSet(PacketKind), count: usize };
+        const Observed = struct { kinds: std.EnumSet(PacketKind), count: usize, state: State };
 
         fn admit(self: *const Self, raw: []const u8, sender: Role) !Observed {
             var reader = try batch.Reader.init(raw, self.limits);
-            var result: Observed = .{ .kinds = .empty, .count = 0 };
+            var result: Observed = .{ .kinds = .empty, .count = 0, .state = self.state };
 
             while (try reader.next()) |packet| {
                 const header = try parseHeader(packet);
                 const kind = Profile.packetKind(header.packet_id);
-                try self.check(kind, header, sender);
+                try self.check(result.state, kind, header, sender);
                 try self.validateControl(packet, header, kind);
 
                 if (kind) |known| result.kinds.insert(known);
                 result.count += 1;
+                result.state = try self.after(result.state, kind, sender);
             }
 
             if (result.count == 0) return error.MalformedBatch;
-            if (self.state.singlePacketBatch() and result.count != 1) return error.InvalidState;
+            if (self.singlePacketBatch() and result.count != 1) return error.InvalidState;
 
             return result;
         }
 
-        fn check(self: *const Self, kind: ?PacketKind, header: protocol.packet.Header, sender: Role) !void {
+        // Without encryption the server's PlayStatus ends the login, so packs can follow in the same batch
+        fn after(self: *const Self, state: State, kind: ?PacketKind, sender: Role) !State {
+            if (self.policy.encryption != .disabled or state != .authenticating or kind != .play_status or sender != .server) return state;
+            if (self.role == .server and self.peer_key == null) return error.Unauthenticated;
+            return .resource_packs;
+        }
+
+        fn singlePacketBatch(self: *const Self) bool {
+            if (self.policy.encryption == .disabled and self.state == .authenticating) return false;
+            return self.state.singlePacketBatch();
+        }
+
+        fn check(self: *const Self, state: State, kind: ?PacketKind, header: protocol.packet.Header, sender: Role) !void {
+            if (self.policy.encryption == .disabled and (kind == .server_to_client_handshake or kind == .client_to_server_handshake)) return error.InvalidState;
             const direction = if (kind) |known| Profile.packetDirection(known) else .bidirectional;
-            if (!self.state.permitsWithDirection(Profile.features, sender, kind, direction)) return error.InvalidState;
+            if (!state.permitsWithDirection(Profile.features, sender, kind, direction)) return error.InvalidState;
 
             if (header.sender_subclient != 0 or header.target_subclient != 0) return error.InvalidState;
         }

@@ -109,7 +109,7 @@ pub fn TapWithProfile(comptime Profile: type) type {
         pub fn observe(self: *Self, direction: Direction, payload: []const u8) !Packets {
             if (self.active_generation != null) return error.InvalidState;
             if (self.current_phase == .encrypted) return error.Opaque;
-            const body = try batch.strip(payload, self.limits);
+            const body = try batch.body(payload, self.policy.batch_header, self.limits);
             const token = try self.pool.acquireRx();
             errdefer self.pool.releaseRx(token);
             const slot = self.pool.getRx(token) orelse return error.InvalidState;
