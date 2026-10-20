@@ -6,7 +6,7 @@
     .dependencies = .{
         .libdeflate = .{
             .url = "https://codeload.github.com/ebiggers/libdeflate/zip/refs/tags/v1.26",
-            .hash = "N-V-__8AAEaRCwAh986dYM3g0YcFCX7otmWagQ-3H95MTPIt",
+            .hash = "N-V-__8AAEaRCwCsYb_rSsH72Pb6DNFQLSjdRzTFOVsJWcoB",
             .lazy = true,
         },
         .bedrock_protocol = .{
