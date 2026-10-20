@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) !void {
     compression_options.addOption(bool, "libdeflate", use_libdeflate);
     const native = if (use_libdeflate) blk: {
         const dependency = try b.dependencyLazy("libdeflate", .{});
-        break :blk buildLibdeflate(b, target, dependency.path("libdeflate-1.26"));
+        break :blk buildLibdeflate(b, target, dependency.path(""));
     } else null;
 
     const options = b.addOptions();
