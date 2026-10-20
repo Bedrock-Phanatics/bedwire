@@ -10,8 +10,8 @@
             .lazy = true,
         },
         .bedrock_protocol = .{
-            .url = "https://codeload.github.com/Bedrock-Phanatics/protocol-zig/tar.gz/652db63f0a722c86774a076296463b2ebc5bc037",
-            .hash = "bedrock_protocol-0.5.0-LNPkatg8DQA7j5wxMbThhIMDOIvvB14msZAwRu-ih4gZ",
+            .url = "https://codeload.github.com/Bedrock-Phanatics/protocol-zig/tar.gz/080c7c2fe57042a1a9dad3727b1ac41d1f684e2a",
+            .hash = "bedrock_protocol-0.6.0-LNPkatI5DQA-QvBL8dMO04Sagxp9E7KIrgpwXyjX1OpA",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "tests", "tools", "bench", "README.md" },
