@@ -15,7 +15,7 @@ fn buildRequest(comptime Profile: type, allocator: std.mem.Allocator, format: be
         .online = true,
     }, limits);
     defer identity.deinit();
-    return bedwire.auth.login.buildProxyConnectionRequest(Profile, allocator, proxy_key, &identity, "{\"SkinId\":\"demo\"}", 200, format, limits);
+    return bedwire.auth.login.buildProxyConnectionRequest(Profile, allocator, proxy_key, &identity, "{\"SkinId\":\"demo\"}", .{ .ip4 = .{ .bytes = .{ 203, 0, 113, 5 }, .port = 51234 } }, 200, format, limits);
 }
 
 test "proxy-issued Login round trips through the selected profile and trusted backend" {
@@ -40,6 +40,7 @@ test "proxy-issued Login round trips through the selected profile and trusted ba
     var link = try bedwire.auth.jwt.Token.parse(allocator, chain.value.object.get("chain").?.array.items[0].string, support.limits);
     defer link.deinit();
     try testing.expectEqualStrings("1234", try bedwire.auth.jwt.string(link.payload.value.object.get("extraData").?, "XUID"));
+    try testing.expectEqualStrings("203.0.113.5:51234", try bedwire.auth.jwt.string(link.payload.value, "PlayerAddress"));
 
     var pair = try support.Pair.init(allocator, support.modern);
     defer pair.deinit();
@@ -130,7 +131,7 @@ test "proxy Login construction enforces limits and cleans up allocation failures
         .online = false,
     }, support.limits);
     defer identity.deinit();
-    try testing.expectError(error.InvalidJson, bedwire.auth.login.buildProxyConnectionRequest(support.modern, allocator, key, &identity, "{", 200, .envelope, support.limits));
+    try testing.expectError(error.InvalidJson, bedwire.auth.login.buildProxyConnectionRequest(support.modern, allocator, key, &identity, "{", null, 200, .envelope, support.limits));
 
     const request = try buildRequest(support.modern, allocator, .envelope, support.limits);
     defer allocator.free(request);

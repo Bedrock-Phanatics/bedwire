@@ -37,12 +37,14 @@ pub fn encodedPublicKey(key: spki.Ecdsa.PublicKey) [160]u8 {
 }
 
 /// The backend must trust this key explicitly; these are not Microsoft credentials.
+/// `player_address` is signed in as `PlayerAddress`, since the backend only sees the proxy's.
 pub fn buildProxyConnectionRequest(
     comptime Profile: type,
     allocator: std.mem.Allocator,
     key: spki.Ecdsa.KeyPair,
     identity: *const identity_mod.Identity,
     client_data_payload: []const u8,
+    player_address: ?std.Io.net.IpAddress,
     expires_at: i64,
     format: wire.ConnectionRequestFormat,
     limits: Limits,
@@ -60,10 +62,15 @@ pub fn buildProxyConnectionRequest(
 
     var header_storage: [200]u8 = undefined;
     const header = try std.fmt.bufPrint(&header_storage, "{{\"alg\":\"{s}\",\"x5u\":\"{s}\"}}", .{ jwt.algorithm, encodedPublicKey(key.public_key) });
+    var address_storage: [80]u8 = undefined;
+    const address_claim = if (player_address) |address|
+        try std.fmt.bufPrint(&address_storage, ",\"PlayerAddress\":\"{f}\"", .{address})
+    else
+        "";
     const payload = try std.fmt.allocPrint(
         allocator,
-        "{{\"exp\":{d},\"identityPublicKey\":\"{s}\",\"extraData\":{{\"displayName\":{f},\"identity\":{f},\"XUID\":{f}}}}}",
-        .{ expires_at, encodedPublicKey(key.public_key), std.json.fmt(identity.display_name, .{}), std.json.fmt(identity.uuid, .{}), std.json.fmt(identity.xuid, .{}) },
+        "{{\"exp\":{d},\"identityPublicKey\":\"{s}\"{s},\"extraData\":{{\"displayName\":{f},\"identity\":{f},\"XUID\":{f}}}}}",
+        .{ expires_at, encodedPublicKey(key.public_key), address_claim, std.json.fmt(identity.display_name, .{}), std.json.fmt(identity.uuid, .{}), std.json.fmt(identity.xuid, .{}) },
     );
     defer allocator.free(payload);
     const link = try sign(allocator, key, header, payload, limits);
