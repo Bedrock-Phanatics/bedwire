@@ -5,7 +5,7 @@
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .libdeflate = .{
-            .url = "https://codeload.github.com/ebiggers/libdeflate/zip/refs/tags/v1.26",
+            .url = "git+https://github.com/ebiggers/libdeflate#92e6a0db9fa848d742f9eb286c92afc60f2c3dda",
             .hash = "N-V-__8AAEaRCwCsYb_rSsH72Pb6DNFQLSjdRzTFOVsJWcoB",
             .lazy = true,
         },
