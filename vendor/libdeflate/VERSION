@@ -1,0 +1,2 @@
+libdeflate v1.26 (92e6a0db9fa848d742f9eb286c92afc60f2c3dda), lib/ and headers only. Vendored because
+Zig hashes the upstream package differently on Windows and Linux.
