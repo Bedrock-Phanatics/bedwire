@@ -62,8 +62,8 @@ pub fn buildProxyConnectionRequest(
     const header = try std.fmt.bufPrint(&header_storage, "{{\"alg\":\"{s}\",\"x5u\":\"{s}\"}}", .{ jwt.algorithm, encodedPublicKey(key.public_key) });
     const payload = try std.fmt.allocPrint(
         allocator,
-        "{{\"exp\":{d},\"identityPublicKey\":\"{s}\",\"extraData\":{{\"displayName\":{f},\"identity\":{f}}}}}",
-        .{ expires_at, encodedPublicKey(key.public_key), std.json.fmt(identity.display_name, .{}), std.json.fmt(identity.uuid, .{}) },
+        "{{\"exp\":{d},\"identityPublicKey\":\"{s}\",\"extraData\":{{\"displayName\":{f},\"identity\":{f},\"XUID\":{f}}}}}",
+        .{ expires_at, encodedPublicKey(key.public_key), std.json.fmt(identity.display_name, .{}), std.json.fmt(identity.uuid, .{}), std.json.fmt(identity.xuid, .{}) },
     );
     defer allocator.free(payload);
     const link = try sign(allocator, key, header, payload, limits);
@@ -76,7 +76,8 @@ pub fn buildProxyConnectionRequest(
     if (chain_json.len > limits.max_jwt_payload_bytes) return error.LimitExceeded;
 
     const envelope = if (format == .envelope)
-        try std.fmt.allocPrint(allocator, "{{\"AuthenticationType\":2,\"Certificate\":{f}}}", .{std.json.fmt(chain_json, .{})})
+        // Backends that map the envelope strictly require a Token even when the chain carries the identity
+        try std.fmt.allocPrint(allocator, "{{\"AuthenticationType\":2,\"Certificate\":{f},\"Token\":\"\"}}", .{std.json.fmt(chain_json, .{})})
     else
         null;
     defer if (envelope) |bytes| allocator.free(bytes);

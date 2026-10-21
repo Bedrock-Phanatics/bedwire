@@ -34,6 +34,12 @@ test "proxy-issued Login round trips through the selected profile and trusted ba
     var envelope = try bedwire.auth.parseChainEnvelope(allocator, parsed_request.chain_data, support.limits);
     defer envelope.deinit();
     try testing.expectEqual(@as(u8, 2), envelope.authentication_type);
+    try testing.expectEqualStrings("", envelope.token.?);
+    const chain = try bedwire.auth.jwt.parseJson(allocator, envelope.certificate.?, support.limits);
+    defer chain.deinit();
+    var link = try bedwire.auth.jwt.Token.parse(allocator, chain.value.object.get("chain").?.array.items[0].string, support.limits);
+    defer link.deinit();
+    try testing.expectEqualStrings("1234", try bedwire.auth.jwt.string(link.payload.value.object.get("extraData").?, "XUID"));
 
     var pair = try support.Pair.init(allocator, support.modern);
     defer pair.deinit();
