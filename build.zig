@@ -9,12 +9,16 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const fuzz_iterations = b.option(usize, "fuzz-iterations", "Deterministic malformed inputs per campaign") orelse 20_000;
+    const libc_file = b.option([]const u8, "libc-file", "Libc paths file for compiling libdeflate, for cross builds");
     const use_libdeflate = b.option(bool, "libdeflate", "Use reusable libdeflate level 3 contexts for session batches") orelse false;
     const compression_options = b.addOptions();
     compression_options.addOption(bool, "libdeflate", use_libdeflate);
+    // Configuration goes on while the lazy package is fetched, so packages that import bedwire still find its module.
     const native = if (use_libdeflate) blk: {
-        const dependency = try b.dependencyLazy("libdeflate", .{});
-        break :blk buildLibdeflate(b, target, dependency.path(""));
+        const dependency = b.lazyDependency("libdeflate", .{}) orelse break :blk null;
+        const library = buildLibdeflate(b, target, dependency.path(""));
+        if (libc_file) |file| library.setLibCFile(b.graph.cwdRelativePath(file));
+        break :blk library;
     } else null;
 
     const options = b.addOptions();
