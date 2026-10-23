@@ -77,6 +77,13 @@ pub const resource_packs = struct {
     pub const Metadata = @import("resource_packs/transfer.zig").Metadata;
     pub const Chunk = @import("resource_packs/transfer.zig").Chunk;
     pub const Request = @import("resource_packs/transfer.zig").Request;
+    pub const TransferOptions = @import("resource_packs/transfer.zig").Options;
+    pub const DataInfo = @import("resource_packs/transfer.zig").DataInfo;
+    pub const Progress = @import("resource_packs/transfer.zig").Progress;
+    pub const Delivery = @import("resource_packs/transfer.zig").Delivery;
+    pub const Memory = @import("resource_packs/transfer.zig").Memory;
+    pub const Archive = @import("resource_packs/transfer.zig").Archive;
+    pub const max_window = @import("resource_packs/transfer.zig").max_window;
     pub const serve = @import("resource_packs/transfer.zig").serve;
 };
 

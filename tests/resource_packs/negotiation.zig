@@ -39,6 +39,35 @@ test "a client may decline every pack" {
     try testing.expectError(error.InvalidState, negotiation.respond(.refused, &.{}));
 }
 
+test "refusing required packs fails the negotiation" {
+    var negotiation = try packs.Negotiation.init(testing.allocator, offers, support.limits);
+    defer negotiation.deinit();
+    negotiation.required = true;
+
+    try testing.expectError(error.RequiredPacksRefused, negotiation.respond(.refused, &.{}));
+    try testing.expectEqual(packs.Phase.refused, negotiation.phase);
+    try testing.expect(!negotiation.downloaded());
+}
+
+test "cached packs are neither requested nor waited on" {
+    var negotiation = try packs.Negotiation.init(testing.allocator, offers, support.limits);
+    defer negotiation.deinit();
+
+    try negotiation.markCached("alpha");
+    try testing.expectError(error.InvalidState, negotiation.markCached("alpha"));
+    try testing.expectError(error.UnknownPack, negotiation.markCached("gamma"));
+    try testing.expectError(error.InvalidState, negotiation.respond(.send_packs, &.{ "alpha", "beta" }));
+    try testing.expect(!negotiation.downloaded());
+
+    try negotiation.respond(.send_packs, &.{"beta"});
+    try testing.expectError(error.InvalidState, negotiation.markCached("beta"));
+    try testing.expect(!negotiation.downloaded());
+    try negotiation.markVerified("beta");
+    try testing.expect(negotiation.downloaded());
+    try negotiation.respond(.all_packs_downloaded, &.{});
+    try testing.expect(negotiation.downloaded());
+}
+
 test "a client with nothing to download skips straight to the stack" {
     var negotiation = try packs.Negotiation.init(testing.allocator, offers, support.limits);
     defer negotiation.deinit();

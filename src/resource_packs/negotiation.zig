@@ -15,12 +15,15 @@ pub const Negotiation = struct {
     allocator: std.mem.Allocator,
     packs: []Pack,
     phase: Phase = .offered,
+    /// Mirrors ResourcePacksInfo's flag. A refusal then fails instead of completing.
+    required: bool = false,
 
     pub const Pack = struct {
         id: []u8,
         size: u64,
         requested: bool = false,
         verified: bool = false,
+        cached: bool = false,
     };
 
     pub fn init(allocator: std.mem.Allocator, offers: []const Offer, limits: Limits) !Negotiation {
@@ -64,6 +67,23 @@ pub const Negotiation = struct {
         return null;
     }
 
+    pub fn markCached(self: *Negotiation, id: []const u8) !void {
+        if (self.phase != .offered) return error.InvalidState;
+        const pack = self.find(id) orelse return error.UnknownPack;
+        if (pack.cached) return error.InvalidState;
+        pack.cached = true;
+    }
+
+    pub fn downloaded(self: *const Negotiation) bool {
+        return switch (self.phase) {
+            .offered, .refused => false,
+            .stack, .complete => true,
+            .downloading => for (self.packs) |pack| {
+                if (pack.requested and !pack.verified) break false;
+            } else true,
+        };
+    }
+
     pub fn markVerified(self: *Negotiation, id: []const u8) !void {
         if (self.phase != .downloading) return error.InvalidState;
 
@@ -81,6 +101,7 @@ pub const Negotiation = struct {
             .refused => {
                 if (self.phase == .complete or self.phase == .refused) return error.InvalidState;
                 self.phase = .refused;
+                if (self.required) return error.RequiredPacksRefused;
             },
             .send_packs => {
                 if (self.phase != .offered or requested.len == 0) return error.InvalidState;
@@ -107,7 +128,8 @@ pub const Negotiation = struct {
 
     fn request(self: *Negotiation, requested: []const []const u8) !void {
         for (requested, 0..) |id, i| {
-            if (self.find(id) == null) return error.UnknownPack;
+            const pack = self.find(id) orelse return error.UnknownPack;
+            if (pack.cached) return error.InvalidState;
             for (requested[0..i]) |previous| {
                 if (std.mem.eql(u8, previous, id)) return error.DuplicatePack;
             }

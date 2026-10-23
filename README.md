@@ -99,6 +99,20 @@ Sessions enforce their protocol's handshake and packet-state transitions. Keep e
 
 For terminating proxies, `Session.relayTo()` can relay between compatible in-game sessions. Bedwire also supports authenticated connection-request generation and backend login forwarding. Proxy-issued identities must be trusted explicitly by the backend; they are not Microsoft-authenticated identities.
 
+## Resource packs
+
+`resource_packs.Transfer` downloads a pack into caller-owned storage. Keep up to `window` chunk requests in flight with `nextRequest()` and pass each ResourcePackChunkData to `accept()`:
+
+```zig
+var transfer = try bedwire.resource_packs.Transfer.init(allocator, .fromDataInfo(info), limits, .{ .window = 8 });
+defer transfer.deinit();
+while (transfer.nextRequest()) |request| try sendChunkRequest(request);
+// for each chunk that arrives:
+_ = try transfer.accept(.fromPacket(chunk_data), storage);
+```
+
+Chunks may arrive in any order inside the window. Repeats are reported and ignored, and anything unsolicited or malformed fails the transfer. The archive is hashed as its prefix fills in and checked against the ResourcePackDataInfo SHA-256 when it completes. `Delivery` serves a pack from a caller source and sends each chunk at most once. Storage and sources are any type with `writeAt` and `readAt`, and `Memory` and `Archive` cover buffers already in memory, so Bedwire itself does no file or network I/O. `Negotiation` tracks the offer, cached packs, required packs and completion.
+
 ## Authentication
 
 Login verification supports Microsoft OIDC/JWKS or legacy certificate chains, according to the selected protocol profile. For OIDC, parse a trusted JWKS with `bedwire.auth.KeySet.parse()` and supply it through `bedwire.TrustPolicy` to `session.authenticateLoginPacket()` or `tap.authenticateLoginPacket()` while the login packet's iterator is alive.
