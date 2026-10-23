@@ -115,6 +115,7 @@ test "a client key cannot be replaced once installed" {
     pair.server.received.insert(.login);
     const key = bedwire.auth.moj_root.key();
     try pair.server.installVerifiedClientKey(key);
+    try pair.server.installVerifiedClientKey(key);
     try testing.expectError(error.InvalidState, pair.server.installVerifiedClientKey((try support.deterministicKey(3)).public_key));
     try testing.expectError(error.InvalidState, pair.server.authenticateLogin(testing.allocator, &.{}, .{ .certificate_chain = .{ .now = 0 } }));
     try testing.expectEqual(bedwire.State.authenticating, pair.server.state);

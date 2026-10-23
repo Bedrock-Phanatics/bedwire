@@ -567,7 +567,11 @@ pub fn SessionWithProfile(comptime Profile: type) type {
         /// Use when the host already authenticated the client.
         pub fn installVerifiedClientKey(self: *Self, key: spki.Ecdsa.PublicKey) !void {
             if (self.role != .server or self.state != .authenticating) return error.InvalidState;
-            if (!self.didReceive(.login) or self.peer_key != null) return error.InvalidState;
+            if (!self.didReceive(.login)) return error.InvalidState;
+            if (self.peer_key) |installed| {
+                if (!std.crypto.timing_safe.eql([97]u8, installed.toUncompressedSec1(), key.toUncompressedSec1())) return error.InvalidState;
+                return;
+            }
 
             self.peer_key = key;
         }
