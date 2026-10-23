@@ -7,7 +7,8 @@ const session = @import("session.zig");
 const BufferPool = @import("pool.zig").BufferPool;
 
 pub const Direction = enum { client_to_server, server_to_client };
-pub const Phase = enum { awaiting_request, awaiting_settings, awaiting_login, awaiting_handshake, encrypted };
+/// `established` follows a login on transports that skip Bedrock encryption, and traffic stays readable.
+pub const Phase = enum { awaiting_request, awaiting_settings, awaiting_login, awaiting_handshake, encrypted, established };
 
 pub const Options = struct {
     pool: *BufferPool,
@@ -127,7 +128,7 @@ pub fn TapWithProfile(comptime Profile: type) type {
             var count: usize = 0;
             while (try reader.next()) |bytes| {
                 count += 1;
-                if (count != 1) return error.InvalidState;
+                if (count != 1 and next_phase != .established) return error.InvalidState;
                 const header = try parseHeader(bytes);
                 if (header.sender_subclient != 0 or header.target_subclient != 0) return error.InvalidState;
                 const kind = Profile.packetKind(header.packet_id);
@@ -159,9 +160,14 @@ pub fn TapWithProfile(comptime Profile: type) type {
                         next_phase = .awaiting_handshake;
                     },
                     .server_to_client_handshake => {
-                        if (next_phase != .awaiting_handshake or direction != .server_to_client) return error.InvalidState;
+                        if (next_phase != .awaiting_handshake or direction != .server_to_client or
+                            self.policy.encryption == .disabled) return error.InvalidState;
                         _ = try self.decodeControl(bytes, header, kind);
                         next_phase = .encrypted;
+                    },
+                    .play_status => if (next_phase == .awaiting_handshake and direction == .server_to_client and self.policy.encryption == .disabled) {
+                        _ = try self.decodeControl(bytes, header, kind);
+                        next_phase = .established;
                     },
                     else => {},
                 }

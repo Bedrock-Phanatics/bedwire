@@ -111,7 +111,7 @@ Sessions enforce their protocol's handshake and packet-state transitions. One-ti
 
 ## Proxy support
 
-`Tap` observes the unencrypted handshake without modifying forwarded frames. Use `PoolConfig.observer()` for an observation-only pool. Once the handshake establishes encryption, the tap becomes opaque; forwarding encrypted traffic remains the application's responsibility.
+`Tap` observes the unencrypted handshake without modifying forwarded frames. Use `PoolConfig.observer()` for an observation-only pool. Once the handshake establishes encryption, the tap becomes opaque; forwarding encrypted traffic remains the application's responsibility. On transports without Bedrock encryption, such as NetherNet, it moves to `established` after the login and keeps reading the traffic.
 
 For terminating proxies, `Session.relayTo()` can relay between compatible in-game sessions. Bedwire also supports authenticated connection-request generation and backend login forwarding. Proxy-issued identities must be trusted explicitly by the backend; they are not Microsoft-authenticated identities.
 

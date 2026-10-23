@@ -268,3 +268,55 @@ test "mutated compressed Login leaves Tap state and pool reusable" {
         tap.deinit();
     }
 }
+
+test "without Bedrock encryption the tap follows the login into plaintext traffic" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, bedwire.PoolConfig.observer());
+    defer pool.deinit();
+    var tap = try bedwire.TapWithProfile(support.modern).init(.{ .pool = &pool, .policy = .{ .encryption = .disabled, .batch_header = false } });
+    defer tap.deinit();
+    var builder: support.Builder = .{};
+    var other: support.Builder = .{};
+    var storage: [support.limits.max_frame_bytes]u8 = undefined;
+
+    for ([_]struct { direction: bedwire.TapDirection, kind: bedwire.PacketKind, phase: bedwire.TapPhase }{
+        .{ .direction = .client_to_server, .kind = .request_network_settings, .phase = .awaiting_settings },
+        .{ .direction = .server_to_client, .kind = .network_settings, .phase = .awaiting_login },
+    }) |step| {
+        var packets = try tap.observe(step.direction, (try plain(&storage, builder.make(support.modern, step.kind)))[1..]);
+        packets.deinit();
+        try testing.expectEqual(step.phase, tap.phase());
+    }
+    var login = try tap.observe(.client_to_server, (try compressed(&storage, builder.make(support.modern, .login), .snappy, 0))[1..]);
+    login.deinit();
+    try testing.expectEqual(bedwire.TapPhase.awaiting_handshake, tap.phase());
+
+    var raw: [256]u8 = undefined;
+    var writer = bedwire.framing.batch.Writer.init(&raw, support.limits);
+    try writer.append(builder.make(support.modern, .server_to_client_handshake));
+    var frame: [300]u8 = undefined;
+    frame[0] = 0xff;
+    @memcpy(frame[1..][0..writer.written().len], writer.written());
+    try testing.expectError(error.InvalidState, tap.observe(.server_to_client, frame[0 .. 1 + writer.written().len]));
+    try testing.expectEqual(bedwire.TapPhase.awaiting_handshake, tap.phase());
+
+    writer = bedwire.framing.batch.Writer.init(&raw, support.limits);
+    try writer.append(builder.make(support.modern, .play_status));
+    try writer.append(other.make(support.modern, .resource_packs_info));
+    @memcpy(frame[1..][0..writer.written().len], writer.written());
+    var done = try tap.observe(.server_to_client, frame[0 .. 1 + writer.written().len]);
+    try testing.expectEqual(bedwire.PacketKind.play_status, done.next().?.kind);
+    try testing.expectEqual(bedwire.PacketKind.resource_packs_info, done.next().?.kind);
+    done.deinit();
+    try testing.expectEqual(bedwire.TapPhase.established, tap.phase());
+
+    writer = bedwire.framing.batch.Writer.init(&raw, support.limits);
+    try writer.append(builder.makeId(support.opaque_packet_id));
+    try writer.append(other.makeId(support.opaque_packet_id_2));
+    @memcpy(frame[1..][0..writer.written().len], writer.written());
+    var gameplay = try tap.observe(.client_to_server, frame[0 .. 1 + writer.written().len]);
+    var count: usize = 0;
+    while (gameplay.next()) |_| count += 1;
+    gameplay.deinit();
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expect(pool.isIdle());
+}
