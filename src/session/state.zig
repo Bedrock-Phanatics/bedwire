@@ -124,7 +124,7 @@ pub const Startup = struct {
 
 pub fn oncePerSession(kind: PacketKind) bool {
     return switch (kind) {
-        .request_network_settings, .network_settings, .login, .server_to_client_handshake, .client_to_server_handshake, .start_game, .set_local_player_as_initialised => true,
+        .request_network_settings, .network_settings, .login, .server_to_client_handshake, .client_to_server_handshake, .start_game => true,
         else => false,
     };
 }

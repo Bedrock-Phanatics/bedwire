@@ -752,12 +752,15 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
         fn special(self: *const Self, observed: *Observed, packet: []const u8, header: protocol.packet.Header, kind: PacketKind, sender: Role) !void {
             if (state_mod.oncePerSession(kind) and self.seen(observed, kind, sender, sender)) return error.InvalidState;
-            const needs: ?PacketKind = switch (kind) {
-                .resource_pack_stack, .resource_pack_data_info, .resource_pack_chunk_data, .resource_pack_client_response => .resource_packs_info,
-                .resource_pack_chunk_request => .resource_pack_data_info,
-                else => null,
+            const ordered = switch (kind) {
+                .resource_pack_data_info, .resource_pack_chunk_data => self.seen(observed, .resource_packs_info, .server, sender),
+                .resource_pack_chunk_request => self.seen(observed, .resource_pack_data_info, .server, sender),
+                // Some servers skip the offer and go straight to the stack
+                .resource_pack_client_response => self.seen(observed, .resource_packs_info, .server, sender) or
+                    self.seen(observed, .resource_pack_stack, .server, sender),
+                else => true,
             };
-            if (needs) |earlier| if (!self.seen(observed, earlier, .server, sender)) return error.InvalidState;
+            if (!ordered) return error.InvalidState;
 
             if (controls(kind)) {
                 try self.control(&observed.startup, packet, header, kind);
@@ -786,7 +789,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
                 .play_status => |packet| if (packet.status == .playerspawn) {
                     startup.spawned = true;
                 },
-                .set_local_player_as_initialised => |packet| {
+                .set_local_player_as_initialised => |packet| if (!startup.initialized) {
                     if (!startup.spawned or startup.runtime_id != packet.player_id) return error.InvalidState;
                     startup.initialized = true;
                 },

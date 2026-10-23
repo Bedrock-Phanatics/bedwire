@@ -38,7 +38,7 @@ test "a second NetworkSettings before negotiation is refused" {
     try testing.expectEqual(State.disconnected, pair.client.state);
 }
 
-test "StartGame and the initialization ack happen once" {
+test "StartGame happens once and only the first init ack is checked" {
     var pair = try support.Pair.init(testing.allocator, modern);
     defer pair.deinit();
     pair.server.state = .waiting_for_start_game;
@@ -52,14 +52,23 @@ test "StartGame and the initialization ack happen once" {
     try testing.expect(!pair.server.didSend(.start_game));
 
     pair.server.state = .in_game;
-    pair.server.received.insert(.set_local_player_as_initialised);
     pair.client.state = .in_game;
-    pair.client.sent.insert(.set_local_player_as_initialised);
     var c: [8]u8 = undefined;
-    const ack = support.packet(&c, support.packetId(modern, .set_local_player_as_initialised), "\x01");
-    try testing.expectError(error.InvalidState, pair.client.encodeOne(ack));
-    pair.client.sent.remove(.set_local_player_as_initialised);
-    try testing.expectError(error.InvalidState, pair.clientToServer(&.{ack}));
+    const wrong = support.packet(&c, support.packetId(modern, .set_local_player_as_initialised), "\x07");
+    try testing.expectError(error.InvalidState, pair.clientToServer(&.{wrong}));
+
+    var d: [8]u8 = undefined;
+    var e: [8]u8 = undefined;
+    var pair2 = try support.Pair.init(testing.allocator, modern);
+    defer pair2.deinit();
+    for ([_]*support.Session{ &pair2.server, &pair2.client }) |session| {
+        session.state = .in_game;
+        session.startup = .{ .runtime_id = 1, .spawned = true };
+    }
+    const ack = support.packet(&d, support.packetId(modern, .set_local_player_as_initialised), "\x01");
+    try pair2.clientToServerDiscard(&.{ack});
+    try pair2.clientToServerDiscard(&.{support.packet(&e, support.packetId(modern, .set_local_player_as_initialised), "\x07")});
+    try testing.expect(pair2.server.startup.initialized);
 }
 
 test "resource pack control packets follow the offer" {
@@ -74,7 +83,7 @@ test "resource pack control packets follow the offer" {
     pair.server.state = .resource_packs;
     pair.client.state = .resource_packs;
 
-    for ([_][]const u8{ build.make(modern, .resource_pack_stack), data_info, chunk_data }) |early| {
+    for ([_][]const u8{ data_info, chunk_data }) |early| {
         try testing.expectError(error.InvalidState, pair.server.encodeOne(early));
     }
     try testing.expectError(error.InvalidState, pair.client.encodeOne(build.make(modern, .resource_pack_client_response)));
@@ -87,6 +96,20 @@ test "resource pack control packets follow the offer" {
     try pair.serverToClientDiscard(&.{data_info});
     try pair.clientToServerDiscard(&.{chunk_request});
     try pair.clientToServerDiscard(&.{build.make(modern, .resource_pack_client_response)});
+}
+
+test "a stack without an offer can still be completed" {
+    var build: support.Builder = .{};
+    var pair = try support.Pair.init(testing.allocator, modern);
+    defer pair.deinit();
+    pair.server.state = .resource_packs;
+    pair.client.state = .resource_packs;
+
+    try pair.serverToClientDiscard(&.{build.make(modern, .resource_pack_stack)});
+    try pair.clientToServerDiscard(&.{build.make(modern, .resource_pack_client_response)});
+    try testing.expect(pair.server.startup.packs_completed and pair.client.startup.packs_completed);
+    try testing.expectEqual(State.waiting_for_start_game, pair.server.settle());
+    try testing.expectEqual(State.waiting_for_start_game, pair.client.settle());
 }
 
 test "server crypto waits for the handshake frame to be released" {
