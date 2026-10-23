@@ -249,8 +249,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             const observed = try self.admit(raw, self.role.peer());
 
             const reader = try batch.Reader.init(raw, self.limits);
-            self.observe(observed.kinds, self.role.peer());
-            if (observed.state == .resource_packs and self.state == .authenticating) self.state = observed.state;
+            self.commit(observed, self.role.peer());
             self.generation +%= 1;
             self.active_generation = self.generation;
             self.rx_slot = rx_token;
@@ -276,15 +275,11 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
             const budget = try self.splitBudget(@min(self.pool.limits.max_frame_bytes, self.limits.max_frame_bytes));
             const bounds: batch.Bounds = .outgoing(self.limits);
-            var state = self.state;
+            var observed: Observed = .{ .state = self.state };
             for (packets) |packet| {
                 if (packet.len == 0) return error.MalformedBatch;
                 if (packet.len > bounds.max_packet_bytes or batch.entryLen(packet.len) > @min(budget, bounds.max_batch_bytes)) return error.LimitExceeded;
-                const header = try parseHeader(packet);
-                const kind = Profile.packetKind(header.packet_id);
-                try self.check(state, kind, header, self.role);
-                try self.validateControl(packet, header, kind);
-                state = try self.after(state, kind, self.role);
+                try self.step(&observed, packet, self.role);
             }
 
             return .{ .session = self, .packets = packets };
@@ -329,19 +324,13 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             var dest = slot.assembly[reserve..];
             if (split) dest = dest[0..@min(dest.len, try self.splitBudget(max_egress))];
             var writer = batch.Writer.init(dest, self.limits);
-            var observed: std.EnumSet(PacketKind) = .empty;
-            var state = self.state;
+            var observed: Observed = .{ .state = self.state };
             const single = self.singlePacketBatch();
 
             for (packets) |packet| {
                 if (split and writer.count != 0 and (single or !writer.fits(packet.len))) break;
-                const header = try parseHeader(packet);
-                const kind = Profile.packetKind(header.packet_id);
-                try self.check(state, kind, header, self.role);
-                try self.validateControl(packet, header, kind);
+                try self.step(&observed, packet, self.role);
                 try writer.append(packet);
-                if (kind) |known| observed.insert(known);
-                state = try self.after(state, kind, self.role);
             }
 
             if (writer.count == 0) return error.MalformedBatch;
@@ -370,8 +359,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
             self.tx_slot = slot_token;
             self.tx_token +%= 1;
-            self.observe(observed, self.role);
-            if (state == .resource_packs and self.state == .authenticating) self.state = state;
+            self.commit(observed, self.role);
 
             return .{ .count = writer.count, .frame = .{
                 .bytes = out[@intFromBool(!self.policy.batch_header)..len],
@@ -566,17 +554,18 @@ pub fn SessionWithProfile(comptime Profile: type) type {
         /// Use when the host already authenticated the client.
         pub fn installVerifiedClientKey(self: *Self, key: spki.Ecdsa.PublicKey) !void {
             if (self.role != .server or self.state != .authenticating) return error.InvalidState;
-            if (!self.didReceive(.login)) return error.InvalidState;
+            if (!self.didReceive(.login) or self.peer_key != null) return error.InvalidState;
 
             self.peer_key = key;
         }
 
-        /// Call after sending the cleartext ServerToClientHandshake.
+        /// Call once the cleartext ServerToClientHandshake frame is sent and released.
         pub fn installServerCrypto(self: *Self, secret: spki.Ecdsa.SecretKey, salt: [16]u8) !void {
             const ordered =
                 self.role == .server and
                 self.state == .authenticating and
-                self.didSend(.server_to_client_handshake);
+                self.didSend(.server_to_client_handshake) and
+                self.tx_slot == null;
             if (!ordered) return error.InvalidState;
             if (self.crypto != null) return error.InvalidState;
 
@@ -589,7 +578,8 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             const ordered =
                 self.role == .server and
                 self.state == .authenticating and
-                self.didSend(.server_to_client_handshake);
+                self.didSend(.server_to_client_handshake) and
+                self.tx_slot == null;
             if (!ordered) return error.InvalidState;
             if (self.crypto != null) return error.InvalidState;
 
@@ -636,17 +626,18 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.state = next;
         }
 
-        fn observe(self: *Self, kinds: std.EnumSet(PacketKind), sender: Role) void {
+        fn commit(self: *Self, observed: Observed, sender: Role) void {
             if (sender == self.role) {
-                self.sent = self.sent.unionWith(kinds);
+                self.sent = self.sent.unionWith(observed.kinds);
             } else {
-                self.received = self.received.unionWith(kinds);
+                self.received = self.received.unionWith(observed.kinds);
             }
 
-            if (self.state == .transport_ready and kinds.contains(.request_network_settings)) {
+            if (observed.state == .resource_packs and self.state == .authenticating) self.state = observed.state;
+            if (self.state == .transport_ready and observed.kinds.contains(.request_network_settings)) {
                 self.state = .network_settings;
             }
-            if (kinds.contains(.disconnect)) self.beginClose();
+            if (observed.kinds.contains(.disconnect)) self.beginClose();
         }
 
         fn exchanged(self: *const Self, kind: PacketKind, sender: Role) bool {
@@ -655,7 +646,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
         fn readyToAuthenticate(self: *const Self, flow: LoginFlow) !void {
             if (self.role != .server or self.state != .authenticating) return error.InvalidState;
-            if (!self.didReceive(.login)) return error.InvalidState;
+            if (!self.didReceive(.login) or self.peer_key != null) return error.InvalidState;
             if (Profile.features.login_flow != flow) return error.UnsupportedProtocol;
         }
 
@@ -672,27 +663,32 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.state = .encrypted_handshake;
         }
 
-        const Observed = struct { kinds: std.EnumSet(PacketKind), count: usize, state: State };
+        const Observed = struct {
+            kinds: std.EnumSet(PacketKind) = .empty,
+            count: usize = 0,
+            state: State,
+        };
 
         fn admit(self: *const Self, raw: []const u8, sender: Role) !Observed {
             var reader = try batch.Reader.init(raw, self.limits);
-            var result: Observed = .{ .kinds = .empty, .count = 0, .state = self.state };
+            var observed: Observed = .{ .state = self.state };
+            while (try reader.next()) |packet| try self.step(&observed, packet, sender);
 
-            while (try reader.next()) |packet| {
-                const header = try parseHeader(packet);
-                const kind = Profile.packetKind(header.packet_id);
-                try self.check(result.state, kind, header, sender);
-                try self.validateControl(packet, header, kind);
+            if (observed.count == 0) return error.MalformedBatch;
+            if (self.singlePacketBatch() and observed.count != 1) return error.InvalidState;
 
-                if (kind) |known| result.kinds.insert(known);
-                result.count += 1;
-                result.state = try self.after(result.state, kind, sender);
-            }
+            return observed;
+        }
 
-            if (result.count == 0) return error.MalformedBatch;
-            if (self.singlePacketBatch() and result.count != 1) return error.InvalidState;
+        fn step(self: *const Self, observed: *Observed, packet: []const u8, sender: Role) !void {
+            const header = try parseHeader(packet);
+            const kind = Profile.packetKind(header.packet_id);
+            try self.check(observed.*, kind, header, sender);
+            try self.validateControl(packet, header, kind);
 
-            return result;
+            if (kind) |known| observed.kinds.insert(known);
+            observed.count += 1;
+            observed.state = try self.after(observed.state, kind, sender);
         }
 
         // Without encryption the server's PlayStatus ends the login, so packs can follow in the same batch
@@ -707,12 +703,25 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return self.state.singlePacketBatch();
         }
 
-        fn check(self: *const Self, state: State, kind: ?PacketKind, header: protocol.packet.Header, sender: Role) !void {
+        fn check(self: *const Self, observed: Observed, kind: ?PacketKind, header: protocol.packet.Header, sender: Role) !void {
             if (self.policy.encryption == .disabled and (kind == .server_to_client_handshake or kind == .client_to_server_handshake)) return error.InvalidState;
             const direction = if (kind) |known| Profile.packetDirection(known) else .bidirectional;
-            if (!state.permitsWithDirection(Profile.features, sender, kind, direction)) return error.InvalidState;
+            if (!observed.state.permitsWithDirection(Profile.features, sender, kind, direction)) return error.InvalidState;
 
             if (header.sender_subclient != 0 or header.target_subclient != 0) return error.InvalidState;
+
+            const known = kind orelse return;
+            if (state_mod.oncePerSession(known) and self.seen(observed, known, sender, sender)) return error.InvalidState;
+            const needs: ?PacketKind = switch (known) {
+                .resource_pack_stack, .resource_pack_data_info, .resource_pack_chunk_data, .resource_pack_client_response => .resource_packs_info,
+                .resource_pack_chunk_request => .resource_pack_data_info,
+                else => null,
+            };
+            if (needs) |earlier| if (!self.seen(observed, earlier, .server, sender)) return error.InvalidState;
+        }
+
+        fn seen(self: *const Self, observed: Observed, kind: PacketKind, from: Role, sender: Role) bool {
+            return self.exchanged(kind, from) or (from == sender and observed.kinds.contains(kind));
         }
 
         fn validateControl(self: *const Self, bytes: []const u8, header: protocol.packet.Header, kind: ?PacketKind) !void {

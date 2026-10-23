@@ -91,7 +91,7 @@ while (try batches.next()) |frame| {
 
 `Limits.max_outgoing_batch_bytes` and `Limits.max_outgoing_packets_per_batch` cap what this side sends without loosening what it accepts. Batches that compression would not shrink go out uncompressed.
 
-Sessions enforce their protocol's handshake and packet-state transitions. Keep each session at a stable address and serialize operations on it. Pools can be shared across workers, but release every packet iterator and outgoing frame before destroying its session; destroy the pool after all sessions are gone. Borrowed packet bytes expire when the iterator is released, and outgoing bytes expire when the frame is released. Size `Limits` and pool slot counts for your workload.
+Sessions enforce their protocol's handshake and packet-state transitions. One-time steps such as Login, either handshake packet, StartGame and SetLocalPlayerAsInitialised are refused if repeated, resource-pack control packets must follow the offer, and a client key can be installed or authenticated only once. Install server encryption only after the cleartext ServerToClientHandshake frame is sent and released. Errors from `ingest` other than `PoolExhausted` close the session, while a failed `encode` leaves it unchanged. Keep each session at a stable address and serialize operations on it. Pools can be shared across workers, but release every packet iterator and outgoing frame before destroying its session; destroy the pool after all sessions are gone. Borrowed packet bytes expire when the iterator is released, and outgoing bytes expire when the frame is released. Size `Limits` and pool slot counts for your workload.
 
 ## Proxy support
 

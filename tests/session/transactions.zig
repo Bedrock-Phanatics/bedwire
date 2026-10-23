@@ -96,17 +96,29 @@ test "close retains held frame until release and clears peer identity" {
     try testing.expectError(error.PoolExhausted, pool.acquireTx());
 }
 
-test "fatal authentication clears a previously installed peer key" {
+test "fatal authentication leaves no peer key" {
     var pair = try support.Pair.init(testing.allocator, support.modern);
     defer pair.deinit();
     pair.server.state = .authenticating;
     pair.server.received.insert(.login);
-    try pair.server.installVerifiedClientKey(bedwire.auth.moj_root.key());
     try testing.expectError(error.MalformedConnectionRequest, pair.server.authenticateLogin(testing.allocator, &.{}, .{ .certificate_chain = .{ .now = 0 } }));
     try testing.expectEqual(bedwire.State.disconnected, pair.server.state);
     try testing.expect(pair.server.peer_key == null);
     try testing.expect(pair.server.crypto == null);
     try testing.expect(pair.pool.isIdle());
+}
+
+test "a client key cannot be replaced once installed" {
+    var pair = try support.Pair.init(testing.allocator, support.modern);
+    defer pair.deinit();
+    pair.server.state = .authenticating;
+    pair.server.received.insert(.login);
+    const key = bedwire.auth.moj_root.key();
+    try pair.server.installVerifiedClientKey(key);
+    try testing.expectError(error.InvalidState, pair.server.installVerifiedClientKey((try support.deterministicKey(3)).public_key));
+    try testing.expectError(error.InvalidState, pair.server.authenticateLogin(testing.allocator, &.{}, .{ .certificate_chain = .{ .now = 0 } }));
+    try testing.expectEqual(bedwire.State.authenticating, pair.server.state);
+    try testing.expectEqualSlices(u8, &key.toUncompressedSec1(), &pair.server.peer_key.?.toUncompressedSec1());
 }
 
 const Handler = struct {

@@ -576,7 +576,6 @@ fn authenticateUnderAllocationFailure(allocator: std.mem.Allocator) !void {
     var pair = try authenticatingPair(allocator, support.modern_oidc);
     defer pair.deinit();
 
-    try pair.server.installVerifiedClientKey((try support.deterministicKey(10)).public_key);
     var id = pair.server.authenticateLogin(allocator, request, .{ .oidc = .{ .now = 1100, .keys = &key_set } }) catch |err| {
         try testing.expectEqual(State.disconnected, pair.server.state);
         try testing.expect(pair.server.peer_key == null);

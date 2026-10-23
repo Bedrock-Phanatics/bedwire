@@ -271,6 +271,7 @@ test "resource pack session packets require profile decoding on ingress and egre
         var sender = try bedwire.Session.init(case.sender, .{ .pool = &pool });
         defer sender.deinit();
         sender.state = .resource_packs;
+        if (case.kind != .resource_packs_info) if (case.sender == .server) sender.sent.insert(.resource_packs_info) else sender.received.insert(.resource_packs_info);
         var packet_storage: [16]u8 = undefined;
         const malformed = support.packet(&packet_storage, support.packetId(support.modern, case.kind), "");
         try std.testing.expectError(error.EndOfStream, sender.encodeOne(malformed));
@@ -280,6 +281,7 @@ test "resource pack session packets require profile decoding on ingress and egre
         var receiver = try bedwire.Session.init(case.sender.peer(), .{ .pool = &pool });
         defer receiver.deinit();
         receiver.state = .resource_packs;
+        if (case.kind != .resource_packs_info) if (case.sender == .server) receiver.received.insert(.resource_packs_info) else receiver.sent.insert(.resource_packs_info);
         var frame_storage: [32]u8 = undefined;
         try std.testing.expectError(error.EndOfStream, receiver.ingest(frame(&frame_storage, malformed)));
         try std.testing.expectEqual(bedwire.State.disconnected, receiver.state);
