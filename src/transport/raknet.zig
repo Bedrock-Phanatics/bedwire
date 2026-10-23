@@ -29,13 +29,19 @@ pub fn RakNetWithProfile(comptime Profile: type, comptime Peer: type, comptime H
             while (packets.next()) |packet| try self.handler.onPacket(self.session, packet);
         }
 
+        /// Splits the group across frames as needed. A failure after the first frame closes the Session.
         pub fn send(self: *Self, packets: []const []const u8) !void {
-            const frame = try self.session.encode(packets);
-            defer frame.release();
-            self.peer.send(frame.bytes, .reliable_ordered, self.channel) catch |err| {
-                self.session.close();
-                return err;
-            };
+            var batches = try self.session.encodeBatches(packets);
+            var started = false;
+            errdefer if (started) self.session.close();
+            while (try batches.next()) |frame| {
+                defer frame.release();
+                started = true;
+                self.peer.send(frame.bytes, .reliable_ordered, self.channel) catch |err| {
+                    self.session.close();
+                    return err;
+                };
+            }
         }
 
         pub fn sendOne(self: *Self, packet: []const u8) !void {
@@ -56,13 +62,14 @@ const FakePeer = struct {
     frames: std.ArrayList([]u8) = .empty,
     allocator: std.mem.Allocator,
     fail: bool = false,
+    fail_after: usize = std.math.maxInt(usize),
 
     const Reliability = enum { unreliable, reliable, reliable_ordered };
 
     fn send(self: *FakePeer, bytes: []const u8, reliability: Reliability, channel: u8) !void {
         try testing.expectEqual(Reliability.reliable_ordered, reliability);
         try testing.expectEqual(@as(u8, 0), channel);
-        if (self.fail) return error.TransportClosed;
+        if (self.fail or self.frames.items.len == self.fail_after) return error.TransportClosed;
         try self.frames.append(self.allocator, try self.allocator.dupe(u8, bytes));
     }
 
@@ -213,4 +220,42 @@ test "reentrant deliver or ingest is rejected with InvalidState" {
 
     try adapter.deliver(frame);
     try testing.expectEqual(@as(?anyerror, error.InvalidState), handler.reentrant_err);
+}
+
+test "groups larger than one batch go out as ordered frames" {
+    const allocator = testing.allocator;
+    var split = limits;
+    split.max_outgoing_packets_per_batch = 2;
+
+    var pool = try session_mod.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+    var server = try Session.init(.server, .{ .limits = limits, .pool = &pool });
+    defer server.deinit();
+    server.state = .in_game;
+    var client = try Session.init(.client, .{ .limits = split, .pool = &pool });
+    defer client.deinit();
+    client.state = .in_game;
+
+    var peer: FakePeer = .{ .allocator = allocator };
+    defer peer.deinit();
+    var collector: Collector = .{ .allocator = allocator };
+    defer collector.deinit();
+    var adapter = RakNet(FakePeer, Collector){ .session = &client, .peer = &peer, .handler = &collector };
+
+    const group = [_][]const u8{ &.{ 9, 1 }, &.{ 9, 2 }, &.{ 9, 3 }, &.{ 9, 4 }, &.{ 9, 5 } };
+    try adapter.send(&group);
+    try testing.expectEqual(@as(usize, 3), peer.frames.items.len);
+
+    var received: usize = 0;
+    for (peer.frames.items) |frame| {
+        var packets = try server.ingest(frame);
+        defer packets.deinit();
+        while (packets.next()) |packet| : (received += 1) try testing.expectEqualSlices(u8, group[received], packet.bytes);
+    }
+    try testing.expectEqual(group.len, received);
+
+    peer.fail_after = peer.frames.items.len + 1;
+    try testing.expectError(error.TransportClosed, adapter.send(&group));
+    try testing.expectEqual(session_mod.State.disconnected, client.state);
+    try testing.expect(pool.isIdle());
 }

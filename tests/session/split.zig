@@ -137,11 +137,18 @@ test "a group with an unsendable packet fails before any frame" {
     const oversized = support.packet(&big, support.opaque_packet_id, &@as([260]u8, @splat(1)));
     for ([_][]const u8{ oversized, login.make(support.modern, .login), &.{} }, [_]anyerror{ error.LimitExceeded, error.InvalidState, error.MalformedBatch }) |bad, expected| {
         const mixed = [_][]const u8{ packets[0], packets[1], bad };
-        try testing.expectError(expected, link.sender.encodeBatches(&mixed));
+        try testing.expectError(expected, firstFrame(&link.sender, &mixed));
         try testing.expect(link.pool.isIdle());
         try testing.expectEqual(@as(u64, 0), link.sender.crypto.?.send_counter);
         try testing.expectEqual(bedwire.State.in_game, link.sender.state);
     }
+
+    var filler: Group = .{};
+    var long: [41][]const u8 = undefined;
+    @memcpy(long[0..40], filler.fill(40, 20, 9));
+    long[40] = login.make(support.modern, .login);
+    try testing.expectError(error.InvalidState, link.sender.encodeBatches(&long));
+    try testing.expectEqual(@as(u64, 0), link.sender.crypto.?.send_counter);
     try testing.expectError(error.MalformedBatch, link.sender.encodeBatches(&.{}));
     try testing.expectEqual(@as(usize, 1), try link.send(packets));
 }
@@ -176,6 +183,12 @@ test "a held frame or a busy pool pauses splitting without losing packets" {
 
     while (try batches.next()) |frame| try deliver(&link, frame, packets, &index);
     try testing.expectEqual(@as(usize, 9), index);
+}
+
+fn firstFrame(session: *Session, packets: []const []const u8) !void {
+    var batches = try session.encodeBatches(packets);
+    const frame = (try batches.next()) orelse return;
+    frame.release();
 }
 
 fn deliver(link: *Link, frame: Session.Frame, packets: []const []const u8, index: *usize) !void {

@@ -277,11 +277,18 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
             const budget = try self.splitBudget(@min(self.pool.limits.max_frame_bytes, self.limits.max_frame_bytes));
             const bounds: batch.Bounds = .outgoing(self.limits);
-            var observed: Observed = .{ .state = self.state, .startup = self.startup };
+            const cap = @min(budget, bounds.max_batch_bytes);
+            var total: usize = 0;
             for (packets) |packet| {
                 if (packet.len == 0) return error.MalformedBatch;
-                if (packet.len > bounds.max_packet_bytes or batch.entryLen(packet.len) > @min(budget, bounds.max_batch_bytes)) return error.LimitExceeded;
-                try self.step(&observed, packet, self.role);
+                const entry = batch.entryLen(packet.len);
+                if (packet.len > bounds.max_packet_bytes or entry > cap) return error.LimitExceeded;
+                total +|= entry;
+            }
+            // A single frame is all or nothing already, so only a group that splits needs this pass.
+            if (packets.len > bounds.max_packets_per_batch or total > cap) {
+                var observed: Observed = .{ .state = self.state, .startup = self.startup };
+                for (packets) |packet| try self.step(&observed, packet, self.role);
             }
 
             return .{ .session = self, .packets = packets };

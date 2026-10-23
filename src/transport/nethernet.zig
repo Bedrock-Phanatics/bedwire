@@ -52,13 +52,19 @@ pub fn NetherNetWithProfile(comptime Profile: type, comptime Connection: type, c
             return self.deliver(message.data);
         }
 
+        /// Splits the group across frames as needed. A failure after the first frame closes the Session.
         pub fn send(self: *Self, packets: []const []const u8) !void {
-            const frame = try self.session.encode(packets);
-            defer frame.release();
-            self.connection.send(frame.bytes, .reliable) catch |err| {
-                self.session.close();
-                return err;
-            };
+            var batches = try self.session.encodeBatches(packets);
+            var started = false;
+            errdefer if (started) self.session.close();
+            while (try batches.next()) |frame| {
+                defer frame.release();
+                started = true;
+                self.connection.send(frame.bytes, .reliable) catch |err| {
+                    self.session.close();
+                    return err;
+                };
+            }
         }
 
         pub fn sendOne(self: *Self, packet: []const u8) !void {
@@ -84,6 +90,8 @@ const Channel = struct {
     receive_error: ?anyerror = null,
     outbound: [4096]u8 = undefined,
     outbound_len: usize = 0,
+    sends: usize = 0,
+    fail_after: usize = std.math.maxInt(usize),
 
     fn receive(self: *Channel) !Message {
         if (self.receive_error) |err| return err;
@@ -93,6 +101,8 @@ const Channel = struct {
 
     fn send(self: *Channel, bytes: []const u8, reliability: Reliability) !void {
         try testing.expectEqual(Reliability.reliable, reliability);
+        if (self.sends == self.fail_after) return error.ConnectionClosed;
+        self.sends += 1;
         @memcpy(self.outbound[0..bytes.len], bytes);
         self.outbound_len = bytes.len;
     }
@@ -215,4 +225,27 @@ test "adapter sends reliable frames and stops once closed" {
     local.close();
     try testing.expectError(error.TransportClosed, adapter.sendOne(&.{ 9, 7 }));
     try testing.expectError(error.TransportClosed, adapter.deliver(&.{ 2, 9, 7 }));
+}
+
+test "a send that fails after its first frame closes the session" {
+    var split = limits;
+    split.max_outgoing_packets_per_batch = 1;
+    var pool = try session_mod.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 1, .tx_slots = 1 });
+    defer pool.deinit();
+    var local = try Session.init(.client, .{ .limits = split, .pool = &pool, .policy = .{ .encryption = .disabled, .batch_header = false } });
+    defer local.deinit();
+    local.state = .in_game;
+
+    var channel: Channel = .{};
+    var counter: Counter = .{};
+    var adapter = NetherNet(Channel, Counter){ .session = &local, .connection = &channel, .handler = &counter };
+
+    try adapter.send(&.{ &.{ 9, 1 }, &.{ 9, 2 } });
+    try testing.expectEqual(@as(usize, 2), channel.sends);
+    try testing.expectEqualSlices(u8, &.{ 2, 9, 2 }, channel.outbound[0..channel.outbound_len]);
+
+    channel.fail_after = 3;
+    try testing.expectError(error.ConnectionClosed, adapter.send(&.{ &.{ 9, 3 }, &.{ 9, 4 } }));
+    try testing.expectEqual(session_mod.State.disconnected, local.state);
+    try testing.expect(pool.isIdle());
 }

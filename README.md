@@ -85,9 +85,14 @@ A group that may not fit one batch can be split across frames in order. Every pa
 var batches = try session.encodeBatches(encoded_packets);
 while (try batches.next()) |frame| {
     defer frame.release();
-    try carrier.send(frame.bytes);
+    carrier.send(frame.bytes) catch |err| {
+        session.close();
+        return err;
+    };
 }
 ```
+
+The RakNet and NetherNet adapters' `send` split this way on their own and close the session if a group fails after its first frame.
 
 `Limits.max_outgoing_batch_bytes` and `Limits.max_outgoing_packets_per_batch` cap what this side sends without loosening what it accepts. Batches that compression would not shrink go out uncompressed.
 
