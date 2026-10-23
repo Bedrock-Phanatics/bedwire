@@ -102,13 +102,13 @@ test "encrypted deflate and snappy batches relay intact" {
 
 test "uncompressed batches follow the destination threshold, compressed ones keep their marker" {
     var chain: Chain = undefined;
-    try chain.init(.{ .threshold = 256, .encrypted = false }, .{ .threshold = 64, .encrypted = false });
+    try chain.init(.{ .threshold = 256, .encrypted = false }, .{ .threshold = 100, .encrypted = false });
     defer chain.deinit();
 
     var storage: [256]u8 = undefined;
     for ([_]struct { raw: usize, marker: u8 }{
-        .{ .raw = 63, .marker = 0xff },
-        .{ .raw = 64, .marker = 0 },
+        .{ .raw = 99, .marker = 0xff },
+        .{ .raw = 100, .marker = 0 },
         .{ .raw = 200, .marker = 0 },
     }) |case| {
         const packet = sized(&storage, case.raw);
@@ -133,6 +133,29 @@ test "uncompressed batches follow the destination threshold, compressed ones kee
     try testing.expectEqual(@as(u8, 0), frame.bytes[1]);
     var packets = try chain.peer.ingest(frame.bytes);
     try expectPackets(&packets, &.{packet});
+}
+
+test "relayed batches that would grow stay uncompressed" {
+    for ([_]Algorithm{ .deflate, .snappy }) |algorithm| {
+        var chain: Chain = undefined;
+        try chain.init(.{ .algorithm = algorithm, .threshold = 4096, .encrypted = false }, .{ .algorithm = algorithm, .threshold = 0, .encrypted = false });
+        defer chain.deinit();
+
+        var noise: [600]u8 = undefined;
+        var prng = std.Random.DefaultPrng.init(0x9e1);
+        prng.random().bytes(&noise);
+        var storage: [700]u8 = undefined;
+        const packet = support.packet(&storage, support.opaque_packet_id, &noise);
+        const sent = try chain.peer.encode(&.{packet});
+        defer sent.release();
+        try testing.expectEqual(@as(u8, 0xff), sent.bytes[1]);
+
+        const frame = try chain.inbound.relayTo(&chain.outbound, sent.bytes);
+        defer frame.release();
+        try testing.expectEqualSlices(u8, sent.bytes, frame.bytes);
+        var packets = try chain.upstream.ingest(frame.bytes);
+        try expectPackets(&packets, &.{packet});
+    }
 }
 
 test "absent and implicit framing relay unchanged" {

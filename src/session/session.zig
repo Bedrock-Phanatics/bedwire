@@ -265,6 +265,52 @@ pub fn SessionWithProfile(comptime Profile: type) type {
         /// A held Frame returns PoolExhausted. Send frames in order and close
         /// the Session if a frame is abandoned or sending fails.
         pub fn encode(self: *Self, packets: []const []const u8) !Self.Frame {
+            return (try self.encodeFrame(packets, false)).frame;
+        }
+
+        /// Every packet is checked before the first frame goes out, and each frame is sized to fit uncompressed.
+        pub fn encodeBatches(self: *Self, packets: []const []const u8) !Self.Batches {
+            if (self.state == .disconnected) return error.TransportClosed;
+            if (packets.len == 0) return error.MalformedBatch;
+            if (self.singlePacketBatch() and packets.len != 1) return error.InvalidState;
+
+            const budget = try self.splitBudget(@min(self.pool.limits.max_frame_bytes, self.limits.max_frame_bytes));
+            const bounds: batch.Bounds = .outgoing(self.limits);
+            var state = self.state;
+            for (packets) |packet| {
+                if (packet.len == 0) return error.MalformedBatch;
+                if (packet.len > bounds.max_packet_bytes or batch.entryLen(packet.len) > @min(budget, bounds.max_batch_bytes)) return error.LimitExceeded;
+                const header = try parseHeader(packet);
+                const kind = Profile.packetKind(header.packet_id);
+                try self.check(state, kind, header, self.role);
+                try self.validateControl(packet, header, kind);
+                state = try self.after(state, kind, self.role);
+            }
+
+            return .{ .session = self, .packets = packets };
+        }
+
+        /// Release each frame before asking for the next, and close the Session if sending one fails. PoolExhausted can be retried.
+        pub const Batches = struct {
+            session: *Self,
+            packets: []const []const u8,
+            index: usize = 0,
+
+            pub fn next(self: *@This()) !?Self.Frame {
+                if (self.index == self.packets.len) return null;
+                const encoded = try self.session.encodeFrame(self.packets[self.index..], true);
+                self.index += encoded.count;
+                return encoded.frame;
+            }
+
+            pub fn remaining(self: *const @This()) usize {
+                return self.packets.len - self.index;
+            }
+        };
+
+        const Encoded = struct { frame: Self.Frame, count: usize };
+
+        fn encodeFrame(self: *Self, packets: []const []const u8, split: bool) !Encoded {
             if (self.state == .disconnected) return error.TransportClosed;
             if (self.tx_slot != null) return error.PoolExhausted;
 
@@ -277,13 +323,18 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             const reserve: usize = if (self.compression.marks()) 2 else 1;
             const trailer: usize = if (self.crypto != null) 8 else 0;
             if (reserve + trailer >= max_egress) return error.LimitExceeded;
+            const room = max_egress - reserve - trailer;
 
             // Assemble after the frame prefix so an uncompressed batch is already in place.
-            var writer = batch.Writer.init(slot.assembly[reserve..], self.limits);
+            var dest = slot.assembly[reserve..];
+            if (split) dest = dest[0..@min(dest.len, try self.splitBudget(max_egress))];
+            var writer = batch.Writer.init(dest, self.limits);
             var observed: std.EnumSet(PacketKind) = .empty;
             var state = self.state;
+            const single = self.singlePacketBatch();
 
             for (packets) |packet| {
+                if (split and writer.count != 0 and (single or !writer.fits(packet.len))) break;
                 const header = try parseHeader(packet);
                 const kind = Profile.packetKind(header.packet_id);
                 try self.check(state, kind, header, self.role);
@@ -294,21 +345,24 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             }
 
             if (writer.count == 0) return error.MalformedBatch;
-            if (self.singlePacketBatch() and writer.count != 1) return error.InvalidState;
+            if (single and writer.count != 1) return error.InvalidState;
 
             const raw = writer.written();
-            const room = max_egress - reserve - trailer;
             var out = slot.assembly;
             var algorithm: Algorithm = .none;
             var len = reserve + raw.len;
-            if (self.compression.selected(raw.len) == .none) {
-                if (raw.len > room) return error.NoSpaceLeft;
-            } else {
-                const framed = try self.compression.encodeWithContext(raw, slot.egress[reserve..][0..room], &slot.scratch, slot.encoder);
+            if (self.compression.selected(raw.len) != .none) compressed: {
+                // A marked batch can always go out as it is, so give up once compression stops paying.
+                const limit = if (reserve == 2) @min(room, raw.len - 1) else room;
+                const framed = self.compression.encodeWithContext(raw, slot.egress[reserve..][0..limit], &slot.scratch, slot.encoder) catch |err| {
+                    if (err == error.NoSpaceLeft and reserve == 2) break :compressed;
+                    return err;
+                };
                 out = slot.egress;
                 algorithm = framed.algorithm;
                 len = reserve + framed.bytes.len;
             }
+            if (algorithm == .none and raw.len > room) return error.NoSpaceLeft;
 
             out[0] = batch.header;
             if (reserve == 2) out[1] = @backingInt(algorithm);
@@ -319,11 +373,21 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.observe(observed, self.role);
             if (state == .resource_packs and self.state == .authenticating) self.state = state;
 
-            return Self.Frame{
+            return .{ .count = writer.count, .frame = .{
                 .bytes = out[@intFromBool(!self.policy.batch_header)..len],
                 .session = self,
                 .token = self.tx_token,
-            };
+            } };
+        }
+
+        // Without a marker there's no uncompressed fallback, so leave room for stored DEFLATE blocks.
+        fn splitBudget(self: *const Self, max_egress: usize) !usize {
+            const reserve: usize = if (self.compression.marks()) 2 else 1;
+            const trailer: usize = if (self.crypto != null) 8 else 0;
+            if (reserve + trailer >= max_egress) return error.LimitExceeded;
+            const room = max_egress - reserve - trailer;
+            if (self.compression.selected(room) == .none or self.compression.marks()) return room;
+            return std.math.sub(usize, room, room / 256 + 64) catch error.LimitExceeded;
         }
 
         /// `dest` may use another profile of the same protocol version.

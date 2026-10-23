@@ -158,8 +158,14 @@ pub const Compression = struct {
         if (framed.bytes.len > spare.len) return error.NoSpaceLeft;
         const raw = spare[0..framed.bytes.len];
         @memcpy(raw, framed.bytes);
+        const limit = @min(out.len - 1, raw.len -| 1);
+        const compressed = dest.encodeWithContext(raw, out[1..][0..limit], scratch, encoder) catch |err| {
+            if (err != error.NoSpaceLeft) return err;
+            @memcpy(out[1..][0..raw.len], raw);
+            return len;
+        };
         out[0] = @backingInt(dest.algorithm);
-        return 1 + (try dest.encodeWithContext(raw, out[1..], scratch, encoder)).bytes.len;
+        return 1 + compressed.bytes.len;
     }
 
     fn copy(input: []const u8, dest: []u8) error{NoSpaceLeft}![]const u8 {

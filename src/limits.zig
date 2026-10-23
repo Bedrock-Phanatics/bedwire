@@ -7,6 +7,8 @@ pub const Limits = struct {
     max_batch_bytes: usize = 16 * 1024 * 1024,
     max_packet_bytes: usize = 4 * 1024 * 1024,
     max_packets_per_batch: usize = 1024,
+    max_outgoing_batch_bytes: ?usize = null,
+    max_outgoing_packets_per_batch: ?usize = null,
 
     max_jwt_header_bytes: usize = 8 * 1024,
     max_jwt_payload_bytes: usize = 1024 * 1024,
@@ -49,6 +51,8 @@ pub const Limits = struct {
 
         if (self.max_json_nesting > max_supported_json_nesting) return error.InvalidLimits;
         if (self.max_packet_bytes > self.max_batch_bytes) return error.InvalidLimits;
+        if (self.max_outgoing_batch_bytes) |bytes| if (bytes == 0 or bytes > self.max_batch_bytes) return error.InvalidLimits;
+        if (self.max_outgoing_packets_per_batch == 0) return error.InvalidLimits;
 
         _ = std.math.add(usize, self.max_jwt_header_bytes, self.max_jwt_payload_bytes) catch return error.InvalidLimits;
         _ = std.math.mul(usize, self.max_batch_bytes, 2) catch return error.InvalidLimits;
@@ -65,4 +69,8 @@ test "limits reject impossible configurations" {
     try std.testing.expectError(error.InvalidLimits, (Limits{ .max_jwks_keys = 0 }).validate());
     try std.testing.expectError(error.InvalidLimits, (Limits{ .max_connection_request_bytes = 0 }).validate());
     try std.testing.expectError(error.InvalidLimits, (Limits{ .max_kid_bytes = 0 }).validate());
+    try std.testing.expectError(error.InvalidLimits, (Limits{ .max_outgoing_batch_bytes = 0 }).validate());
+    try std.testing.expectError(error.InvalidLimits, (Limits{ .max_outgoing_batch_bytes = 32 * 1024 * 1024 }).validate());
+    try std.testing.expectError(error.InvalidLimits, (Limits{ .max_outgoing_packets_per_batch = 0 }).validate());
+    try (Limits{ .max_outgoing_batch_bytes = 1024, .max_outgoing_packets_per_batch = 4096 }).validate();
 }

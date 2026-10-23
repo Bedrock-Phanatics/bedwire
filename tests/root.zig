@@ -12,6 +12,7 @@ test {
     _ = @import("session/transactions.zig");
     _ = @import("session/campaigns.zig");
     _ = @import("session/relay.zig");
+    _ = @import("session/split.zig");
 
     _ = @import("auth/jwt.zig");
     _ = @import("auth/login.zig");

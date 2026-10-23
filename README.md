@@ -79,6 +79,18 @@ carrier.send(frame.bytes) catch |err| {
 };
 ```
 
+A group that may not fit one batch can be split across frames in order. Every packet is checked before the first frame, and each frame is sized to fit even if it doesn't compress:
+
+```zig
+var batches = try session.encodeBatches(encoded_packets);
+while (try batches.next()) |frame| {
+    defer frame.release();
+    try carrier.send(frame.bytes);
+}
+```
+
+`Limits.max_outgoing_batch_bytes` and `Limits.max_outgoing_packets_per_batch` cap what this side sends without loosening what it accepts. Batches that compression would not shrink go out uncompressed.
+
 Sessions enforce their protocol's handshake and packet-state transitions. Keep each session at a stable address and serialize operations on it. Pools can be shared across workers, but release every packet iterator and outgoing frame before destroying its session; destroy the pool after all sessions are gone. Borrowed packet bytes expire when the iterator is released, and outgoing bytes expire when the frame is released. Size `Limits` and pool slot counts for your workload.
 
 ## Proxy support

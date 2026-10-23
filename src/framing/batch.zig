@@ -32,6 +32,14 @@ pub const Bounds = struct {
             .max_packets_per_batch = limits.max_packets_per_batch,
         };
     }
+
+    pub fn outgoing(limits: Limits) Bounds {
+        return .{
+            .max_batch_bytes = limits.max_outgoing_batch_bytes orelse limits.max_batch_bytes,
+            .max_packet_bytes = limits.max_packet_bytes,
+            .max_packets_per_batch = limits.max_outgoing_packets_per_batch orelse limits.max_packets_per_batch,
+        };
+    }
 };
 
 /// Packet slices borrow the input.
@@ -76,7 +84,13 @@ pub const Writer = struct {
     limits: Bounds,
 
     pub fn init(dest: []u8, limits: Limits) Writer {
-        return .{ .dest = dest, .limits = .of(limits) };
+        return .{ .dest = dest, .limits = .outgoing(limits) };
+    }
+
+    pub fn fits(self: *const Writer, len: usize) bool {
+        if (self.count == self.limits.max_packets_per_batch) return false;
+        const end = self.cursor +| entryLen(len);
+        return end <= self.limits.max_batch_bytes and end <= self.dest.len;
     }
 
     pub fn append(self: *Writer, packet: []const u8) !void {
@@ -101,6 +115,10 @@ pub const Writer = struct {
         return self.dest[0..self.cursor];
     }
 };
+
+pub fn entryLen(len: usize) usize {
+    return varint.sizeU32(std.math.cast(u32, len) orelse std.math.maxInt(u32)) +| len;
+}
 
 const testing = std.testing;
 
@@ -189,4 +207,22 @@ test "writer refuses overflow and keeps earlier packets intact" {
 
     var bounded = Writer.init(&storage, .{ .max_batch_bytes = 2, .max_packet_bytes = 2 });
     try testing.expectError(error.LimitExceeded, bounded.append(&.{ 1, 2 }));
+}
+
+test "writer fits follows count, batch and destination bounds" {
+    var storage: [8]u8 = undefined;
+    var writer = Writer.init(&storage, .{ .max_outgoing_packets_per_batch = 2, .max_outgoing_batch_bytes = 6 });
+    try testing.expect(writer.fits(5));
+    try testing.expect(!writer.fits(6));
+    try writer.append(&.{ 1, 2 });
+    try testing.expect(writer.fits(2));
+    try testing.expect(!writer.fits(3));
+    try writer.append(&.{3});
+    try testing.expect(!writer.fits(1));
+
+    var small = Writer.init(storage[0..3], .{});
+    try testing.expect(small.fits(2));
+    try testing.expect(!small.fits(3));
+    try testing.expectEqual(@as(usize, 6), entryLen(5));
+    try testing.expectEqual(@as(usize, 130), entryLen(128));
 }
