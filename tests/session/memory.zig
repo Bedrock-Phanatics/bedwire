@@ -209,3 +209,34 @@ test "ingested packets never borrow the caller's frame" {
         try testing.expectEqualSlices(u8, packet, packets.next().?.bytes);
     }
 }
+
+test "borrowed ingest reads uncompressed plaintext in place and still copies the rest" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+
+    for ([_]bool{ false, true }) |compressed| {
+        var sender = try support.Session.init(.server, .{ .pool = &pool });
+        defer sender.deinit();
+        var receiver = try support.Session.init(.client, .{ .pool = &pool });
+        defer receiver.deinit();
+        for ([_]*support.Session{ &sender, &receiver }) |session| {
+            try session.compression.negotiate(.snappy, if (compressed) 0 else 4096);
+            session.state = .in_game;
+        }
+
+        var storage: [128]u8 = undefined;
+        const packet = support.packet(&storage, support.opaque_packet_id, &@as([100]u8, @splat('b')));
+        const frame = try sender.encodeOne(packet);
+        defer frame.release();
+        const copy = try testing.allocator.dupe(u8, frame.bytes);
+        defer testing.allocator.free(copy);
+
+        var packets = try receiver.ingestBorrowed(copy);
+        defer packets.deinit();
+        const received = packets.next().?;
+        try testing.expectEqualSlices(u8, packet, received.bytes);
+        const inside = @intFromPtr(received.bytes.ptr) >= @intFromPtr(copy.ptr) and @intFromPtr(received.bytes.ptr) < @intFromPtr(copy.ptr) + copy.len;
+        try testing.expectEqual(!compressed, inside);
+    }
+    try testing.expect(pool.isIdle());
+}

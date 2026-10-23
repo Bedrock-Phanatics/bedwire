@@ -214,6 +214,16 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
         /// Admits whole batches. Errors other than PoolExhausted close the Session.
         pub fn ingest(self: *Self, payload: []const u8) !Self.Packets {
+            return self.ingestFrame(payload, false);
+        }
+
+        /// Like ingest, but uncompressed plaintext packets are read in place, so keep
+        /// `payload` alive and unchanged until the iterator is released.
+        pub fn ingestBorrowed(self: *Self, payload: []const u8) !Self.Packets {
+            return self.ingestFrame(payload, true);
+        }
+
+        fn ingestFrame(self: *Self, payload: []const u8, comptime borrowed: bool) !Self.Packets {
             if (self.state == .disconnected) return error.TransportClosed;
             if (self.active_generation != null or self.rx_slot != null) return error.InvalidState;
 
@@ -241,7 +251,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
                 self.limits,
                 rx_slot.decoder,
             );
-            if (self.crypto == null and raw.ptr != rx_slot.batch.ptr) {
+            if (!borrowed and self.crypto == null and raw.ptr != rx_slot.batch.ptr) {
                 @memcpy(rx_slot.frame[0..raw.len], raw);
                 raw = rx_slot.frame[0..raw.len];
             }

@@ -25,7 +25,7 @@ pub fn NetherNetWithProfile(comptime Profile: type, comptime Connection: type, c
         const Self = @This();
 
         pub fn deliver(self: *Self, payload: []const u8) !void {
-            var packets = try self.session.ingest(payload);
+            var packets = try self.session.ingestBorrowed(payload);
             defer packets.deinit();
             errdefer self.session.close();
             while (packets.next()) |packet| try self.handler.onPacket(self.session, packet);

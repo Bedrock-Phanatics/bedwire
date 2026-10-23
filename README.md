@@ -67,6 +67,8 @@ while (packets.next()) |packet| {
 }
 ```
 
+If the frame stays alive and unchanged until the iterator is released, `session.ingestBorrowed(frame)` reads uncompressed plaintext batches in place instead of copying them into the pool. The RakNet and NetherNet adapters use it.
+
 To send an already encoded Bedrock packet:
 
 ```zig
