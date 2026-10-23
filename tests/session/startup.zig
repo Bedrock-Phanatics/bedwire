@@ -134,3 +134,52 @@ test "a truncated StartGame is refused" {
     try testing.expectEqual(@as(?u64, null), pair.server.startup.runtime_id);
     try testing.expectError(error.EndOfStream, pair.serverToClient(&.{truncated}));
 }
+
+test "random startup traffic never reaches the game without its conditions" {
+    const cases = @max(64, @import("build_options").fuzz_iterations / 100);
+    var prng = std.Random.DefaultPrng.init(0x57a7);
+    const random = prng.random();
+    const targets = [_]State{ .waiting_for_start_game, .spawn_ready, .in_game };
+
+    for (0..cases) |_| {
+        var pair = try support.Pair.init(testing.allocator, modern);
+        defer pair.deinit();
+        pair.server.state = .resource_packs;
+        pair.client.state = .resource_packs;
+
+        for (0..24) |_| {
+            var p: Packets = .{};
+            var build: support.Builder = .{};
+            const from_server = random.boolean();
+            const packet: []const u8 = switch (random.uintLessThan(u8, 9)) {
+                0 => p.startGame(random.intRangeAtMost(u8, 1, 3)),
+                1 => p.status(.playerspawn),
+                2 => p.status(.loginsuccess),
+                3 => p.initialized(random.intRangeAtMost(u8, 1, 3)),
+                4 => build.make(modern, .resource_packs_info),
+                5 => build.make(modern, .resource_pack_stack),
+                6 => build.make(modern, .resource_pack_client_response),
+                7 => build.make(modern, .request_chunk_radius),
+                else => p.gameplay(),
+            };
+            const sent = if (from_server) pair.serverToClient(&.{packet}) else pair.clientToServer(&.{packet});
+            if (sent) |packets| {
+                var received = packets;
+                received.deinit();
+            } else |_| {}
+
+            for ([_]*support.Session{ &pair.server, &pair.client }) |session| {
+                switch (random.uintLessThan(u8, 3)) {
+                    0 => _ = session.settle(),
+                    1 => session.advance(targets[random.uintLessThan(usize, targets.len)]) catch {},
+                    else => {},
+                }
+                if (session.state == .in_game) try testing.expect(session.startup.initialized and session.startup.spawned and session.startup.runtime_id != null);
+                if (session.state == .spawn_ready) try testing.expect(session.startup.runtime_id != null);
+                if (session.startup.initialized) try testing.expect(session.startup.spawned);
+            }
+            if (pair.server.state == .disconnected or pair.client.state == .disconnected) break;
+        }
+        try testing.expect(pair.pool.isIdle());
+    }
+}

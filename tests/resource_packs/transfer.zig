@@ -374,3 +374,47 @@ test "negotiation and transfer agree on completion" {
     try negotiation.respond(.completed, &.{});
     try testing.expect(negotiation.done());
 }
+
+test "random geometry, arrival order and junk never corrupt a completed pack" {
+    const cases = @max(64, @import("build_options").fuzz_iterations / 100);
+    var prng = std.Random.DefaultPrng.init(0xb0a7);
+    const random = prng.random();
+    var bytes: [5000]u8 = undefined;
+    var stored: [5000]u8 = undefined;
+    var junk: [800]u8 = undefined;
+
+    for (0..cases) |_| {
+        const size = random.intRangeAtMost(usize, 1, bytes.len);
+        random.bytes(bytes[0..size]);
+        const meta = try packs.Metadata.init("fuzz_1", size, random.intRangeAtMost(u32, 1, 700), if (random.boolean()) digest(bytes[0..size]) else null);
+        var transfer = try packs.Transfer.init(testing.allocator, meta, support.limits, .{ .window = random.intRangeAtMost(u8, 1, packs.max_window) });
+        defer transfer.deinit();
+        const storage: packs.Memory = .{ .bytes = stored[0..size] };
+
+        var pending: [packs.max_window]u32 = undefined;
+        var count: usize = 0;
+        while (!transfer.complete and !transfer.failed) {
+            while (transfer.nextRequest()) |request| : (count += 1) pending[count] = request.index;
+            if (random.uintLessThan(u8, 40) == 0) {
+                random.bytes(&junk);
+                const forged: packs.Chunk = .{
+                    .pack_id = if (random.boolean()) "fuzz_1" else "other",
+                    .index = random.uintLessThan(u32, meta.chunk_count + 4),
+                    .offset = random.uintLessThan(u64, size + 800),
+                    .data = junk[0..random.uintLessThan(usize, junk.len)],
+                };
+                _ = transfer.accept(forged, storage) catch {
+                    try testing.expect(transfer.failed);
+                    try testing.expectError(error.InvalidState, transfer.accept(forged, storage));
+                };
+                continue;
+            }
+            const pick = random.uintLessThan(usize, count);
+            const index = pending[pick];
+            pending[pick] = pending[count - 1];
+            count -= 1;
+            _ = try transfer.accept(try packs.serve(meta, bytes[0..size], .{ .pack_id = "fuzz_1", .index = index }, support.limits), storage);
+        }
+        if (transfer.complete) try testing.expectEqualSlices(u8, bytes[0..size], stored[0..size]);
+    }
+}

@@ -45,3 +45,25 @@ test "bounded auth input mutations clean up every accepted parse" {
         _ = bedwire.auth.chain.verifyChain(testing.allocator, bytes, token, .{ .now = 100 }, limits) catch {};
     }
 }
+
+test "mutated ClientData claims are either valid or refused, never mishandled" {
+    const base = "{\"DeviceOS\":7,\"ThirdPartyName\":\"Steve\",\"SkinData\":\"AAAAAAAAAAA=\",\"SkinImageWidth\":2,\"SkinImageHeight\":1," ++
+        "\"CapeData\":\"\",\"CapeImageWidth\":0,\"CapeImageHeight\":0,\"AnimatedImageData\":[{\"Image\":\"AAAAAA==\",\"ImageWidth\":1,\"ImageHeight\":1,\"Type\":1}]," ++
+        "\"PlayFabId\":\"5eb65e0f\",\"SelfSignedId\":\"b1b01c3d-6df3-3635-b286-9a2cfbcf76be\",\"PersonaPieces\":[],\"PremiumSkin\":false}";
+    const cases = @max(256, @import("build_options").fuzz_iterations / 10);
+    var prng = std.Random.DefaultPrng.init(0xc1d7);
+    const random = prng.random();
+    const alphabet = "{}[]\":,0123456789-=AZaz.";
+
+    var accepted: usize = 0;
+    for (0..cases) |_| {
+        var json: [base.len]u8 = base.*;
+        for (0..random.intRangeAtMost(usize, 1, 4)) |_| json[random.uintLessThan(usize, json.len)] = alphabet[random.uintLessThan(usize, alphabet.len)];
+        const parsed = std.json.parseFromSlice(std.json.Value, testing.allocator, &json, .{}) catch continue;
+        defer parsed.deinit();
+        if (bedwire.auth.client_data.validate(parsed.value, support.limits)) |_| {
+            accepted += 1;
+        } else |err| try testing.expectEqual(error.InvalidClientData, err);
+    }
+    try testing.expect(accepted > 0);
+}

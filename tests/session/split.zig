@@ -65,6 +65,17 @@ const Group = struct {
         }
         return self.packets[0..count];
     }
+
+    fn mixed(self: *Group, count: usize, random: std.Random) []const []const u8 {
+        for (0..count) |i| {
+            var body: [317]u8 = undefined;
+            const len = random.intRangeAtMost(usize, 2, body.len);
+            if (random.boolean()) random.bytes(body[0..len]) else @memset(body[0..len], @truncate(i));
+            std.mem.writeInt(u16, body[0..2], @intCast(i), .little);
+            self.packets[i] = support.packet(&self.storage[i], support.opaque_packet_id, body[0..len]);
+        }
+        return self.packets[0..count];
+    }
 };
 
 const variants = [_]struct { algorithm: ?Algorithm, encrypted: bool }{
@@ -289,4 +300,25 @@ test "implicit DEFLATE splits leave room for incompressible data" {
         while (received.next()) |packet| : (index += 1) try testing.expectEqualSlices(u8, packets[index], packet.bytes);
     }
     try testing.expectEqual(packets.len, index);
+}
+
+test "random groups, limits and codecs always arrive whole and in order" {
+    const cases = @max(64, @import("build_options").fuzz_iterations / 200);
+    var prng = std.Random.DefaultPrng.init(0x5917);
+    const random = prng.random();
+    var group: Group = .{};
+
+    for (0..cases) |_| {
+        var limits = support.limits;
+        limits.max_frame_bytes = random.intRangeAtMost(usize, 400, 16 * 1024);
+        limits.max_outgoing_packets_per_batch = random.intRangeAtMost(usize, 1, limits.max_packets_per_batch);
+        if (random.boolean()) limits.max_outgoing_batch_bytes = random.intRangeAtMost(usize, 400, 4096);
+        const variant = variants[random.uintLessThan(usize, variants.len)];
+
+        var link: Link = undefined;
+        try link.init(limits, variant.algorithm, variant.encrypted);
+        defer link.deinit();
+        _ = try link.send(group.mixed(random.intRangeAtMost(usize, 1, 128), random));
+        try testing.expect(link.pool.isIdle());
+    }
 }
