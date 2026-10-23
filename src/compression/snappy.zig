@@ -16,7 +16,8 @@ pub noinline fn compress(input: []const u8, output: []u8, table: *Table) ![]u8 {
     return if (input.len < 65536) compressBlock(input, output, table, false) else compressBlock(input, output, table, true);
 }
 
-noinline fn compressBlock(input: []const u8, output: []u8, table: *Table, comptime large: bool) ![]u8 {
+// Aligned so the hot loop sits the same however other code moves. Placement alone swung small encodes by 25%.
+noinline fn compressBlock(input: []const u8, output: []u8, table: *Table, comptime large: bool) align(64) ![]u8 {
     if (input.len > std.math.maxInt(u32)) return error.LimitExceeded;
 
     // Clear only the table entries this input can reach.

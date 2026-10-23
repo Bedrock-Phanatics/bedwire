@@ -314,7 +314,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
         const Encoded = struct { frame: Self.Frame, count: usize };
 
-        fn encodeFrame(self: *Self, packets: []const []const u8, split: bool) !Encoded {
+        fn encodeFrame(self: *Self, packets: []const []const u8, comptime split: bool) !Encoded {
             if (self.state == .disconnected) return error.TransportClosed;
             if (self.tx_slot != null) return error.PoolExhausted;
 
@@ -345,7 +345,20 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             if (writer.count == 0) return error.MalformedBatch;
             if (single and writer.count != 1) return error.InvalidState;
 
-            const raw = writer.written();
+            const out = try self.pack(slot, writer.written(), reserve, trailer, room);
+
+            self.tx_slot = slot_token;
+            self.tx_token +%= 1;
+            self.commit(observed, self.role);
+
+            return .{ .count = writer.count, .frame = .{
+                .bytes = out[@intFromBool(!self.policy.batch_header)..],
+                .session = self,
+                .token = self.tx_token,
+            } };
+        }
+
+        noinline fn pack(self: *Self, slot: *TxSlot, raw: []const u8, reserve: usize, trailer: usize, room: usize) ![]const u8 {
             var out = slot.assembly;
             var algorithm: Algorithm = .none;
             var len = reserve + raw.len;
@@ -365,16 +378,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             out[0] = batch.header;
             if (reserve == 2) out[1] = @backingInt(algorithm);
             if (self.crypto) |*crypto| len = 1 + (try crypto.seal(out[1 .. len + trailer], len - 1)).len;
-
-            self.tx_slot = slot_token;
-            self.tx_token +%= 1;
-            self.commit(observed, self.role);
-
-            return .{ .count = writer.count, .frame = .{
-                .bytes = out[@intFromBool(!self.policy.batch_header)..len],
-                .session = self,
-                .token = self.tx_token,
-            } };
+            return out[0..len];
         }
 
         // Without a marker there's no uncompressed fallback, so leave room for stored DEFLATE blocks.
@@ -706,16 +710,15 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return observed;
         }
 
-        fn step(self: *const Self, observed: *Observed, packet: []const u8, sender: Role) !void {
+        inline fn step(self: *const Self, observed: *Observed, packet: []const u8, sender: Role) !void {
             const header = try parseHeader(packet);
             const kind = Profile.packetKind(header.packet_id);
             try self.check(observed, kind, header, sender);
 
             if (kind) |known| {
-                if (controls(known)) {
-                    try self.control(&observed.startup, packet, header, known);
-                } else if (known == .start_game) {
-                    observed.startup.runtime_id = try runtimeId(packet, self.limits);
+                if (special_kinds.contains(known)) {
+                    @branchHint(.unlikely);
+                    try self.special(observed, packet, header, known, sender);
                 }
                 observed.kinds.insert(known);
             }
@@ -741,15 +744,22 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             if (!observed.state.permitsWithDirection(Profile.features, sender, kind, direction)) return error.InvalidState;
 
             if (header.sender_subclient != 0 or header.target_subclient != 0) return error.InvalidState;
+        }
 
-            const known = kind orelse return;
-            if (state_mod.oncePerSession(known) and self.seen(observed, known, sender, sender)) return error.InvalidState;
-            const needs: ?PacketKind = switch (known) {
+        fn special(self: *const Self, observed: *Observed, packet: []const u8, header: protocol.packet.Header, kind: PacketKind, sender: Role) !void {
+            if (state_mod.oncePerSession(kind) and self.seen(observed, kind, sender, sender)) return error.InvalidState;
+            const needs: ?PacketKind = switch (kind) {
                 .resource_pack_stack, .resource_pack_data_info, .resource_pack_chunk_data, .resource_pack_client_response => .resource_packs_info,
                 .resource_pack_chunk_request => .resource_pack_data_info,
                 else => null,
             };
             if (needs) |earlier| if (!self.seen(observed, earlier, .server, sender)) return error.InvalidState;
+
+            if (controls(kind)) {
+                try self.control(&observed.startup, packet, header, kind);
+            } else if (kind == .start_game) {
+                observed.startup.runtime_id = try runtimeId(packet, self.limits);
+            }
         }
 
         fn seen(self: *const Self, observed: *const Observed, kind: PacketKind, from: Role, sender: Role) bool {
@@ -781,6 +791,18 @@ pub fn SessionWithProfile(comptime Profile: type) type {
         }
     };
 }
+
+const special_kinds = blk: {
+    var kinds: std.EnumSet(PacketKind) = .empty;
+    for (std.enums.values(PacketKind)) |kind| {
+        const ordered = switch (kind) {
+            .resource_pack_stack, .resource_pack_data_info, .resource_pack_chunk_data, .resource_pack_client_response, .resource_pack_chunk_request, .start_game => true,
+            else => false,
+        };
+        if (ordered or controls(kind) or state_mod.oncePerSession(kind)) kinds.insert(kind);
+    }
+    break :blk kinds;
+};
 
 fn controls(kind: PacketKind) bool {
     return switch (kind) {
