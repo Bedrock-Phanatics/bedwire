@@ -2,7 +2,6 @@ const std = @import("std");
 const Limits = @import("../limits.zig").Limits;
 const spki = @import("../crypto/spki.zig");
 
-/// Owns its strings; copies share those allocations.
 pub const Identity = struct {
     allocator: std.mem.Allocator,
     display_name: []u8,
@@ -68,7 +67,6 @@ pub fn validateAndCreate(allocator: std.mem.Allocator, claims: Claims, limits: L
     };
 }
 
-/// Bedrock's UUIDv3 uses "pocket-auth-1-xuid:" followed by the XUID.
 pub fn deriveUuidV3(dest: *[36]u8, xuid: []const u8) void {
     var md5 = std.crypto.hash.Md5.init(.{});
     md5.update("pocket-auth-1-xuid:");

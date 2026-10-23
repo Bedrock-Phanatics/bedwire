@@ -1,8 +1,6 @@
 const std = @import("std");
 const Aes = std.crypto.core.aes.Aes256;
 
-/// The AES-256-CTR keystream continues across batches for the whole session.
-/// MAC is sha256(le_u64(counter) ++ payload ++ key)[0..8].
 pub const SessionCrypto = struct {
     key: [32]u8,
     aes: Ctx,
@@ -21,7 +19,6 @@ pub const SessionCrypto = struct {
         self.closed = true;
     }
 
-    /// Encrypts storage[0..payload_len] in place and appends the MAC.
     pub fn seal(self: *SessionCrypto, storage: []u8, payload_len: usize) ![]u8 {
         if (self.closed) return error.SessionClosed;
         if (payload_len > storage.len or storage.len - payload_len < 8) return error.NoSpaceLeft;
@@ -37,7 +34,7 @@ pub const SessionCrypto = struct {
         return bytes;
     }
 
-    /// Any failure closes the context; a bad MAC also restores the ciphertext.
+    /// Any failure closes the context and a bad MAC also restores the ciphertext.
     pub fn open(self: *SessionCrypto, bytes: []u8) ![]u8 {
         if (self.closed) return error.SessionClosed;
         errdefer self.closed = true;
@@ -63,7 +60,7 @@ pub const SessionCrypto = struct {
         return payload;
     }
 
-    /// Like open, but decrypts `source` into `dest` in one pass. A bad MAC wipes `dest`.
+    /// A bad MAC wipes `dest`.
     pub fn openFrom(self: *SessionCrypto, dest: []u8, source: []const u8) ![]u8 {
         if (self.closed) return error.SessionClosed;
         errdefer self.closed = true;
@@ -100,7 +97,6 @@ pub const SessionCrypto = struct {
 
 const Ctx = std.crypto.core.aes.AesEncryptCtx(Aes);
 
-/// Both directions share the key schedule and nonce; only their positions differ.
 const Stream = struct {
     counter: u64 = 2,
     block: [16]u8 = undefined,

@@ -1,7 +1,3 @@
-"""Cross-check Zig Snappy and split encrypted streams against Go and verify the Go fixtures.
-
-Fails if tests/compression/interop.json is stale; pass --update to rewrite it.
-"""
 import json
 import pathlib
 import subprocess

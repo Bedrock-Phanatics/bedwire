@@ -37,26 +37,26 @@ test "Snappy round-trips every literal and copy form" {
     try snappyRoundTrip("");
     try snappyRoundTrip("a");
     try snappyRoundTrip("abc");
-    try snappyRoundTrip(&@as([60]u8, @splat('a'))); // short literal boundary
-    try snappyRoundTrip(&@as([61]u8, @splat('a'))); // one-byte extended literal
-    try snappyRoundTrip(&@as([300]u8, @splat('b'))); // two-byte extended literal
-    try snappyRoundTrip(&@as([70000]u8, @splat('c'))); // three-byte extended literal
-    try snappyRoundTrip(repeat("abcd", 4096)); // long copy runs
-    try snappyRoundTrip(&noise); // incompressible
+    try snappyRoundTrip(&@as([60]u8, @splat('a')));
+    try snappyRoundTrip(&@as([61]u8, @splat('a')));
+    try snappyRoundTrip(&@as([300]u8, @splat('b')));
+    try snappyRoundTrip(&@as([70000]u8, @splat('c')));
+    try snappyRoundTrip(repeat("abcd", 4096));
+    try snappyRoundTrip(&noise);
 }
 
 test "Snappy rejects malformed streams without writing output" {
     var output: [64]u8 = undefined;
 
     const cases = [_][]const u8{
-        &.{}, // no length prefix
-        &.{0x04}, // length with no tokens
-        &.{ 0x04, 0x00 }, // literal shorter than advertised
-        &.{ 0x04, 0x0c, 'a', 'b', 'c' }, // literal longer than advertised
-        &.{ 0x04, 0x01, 0x00 }, // copy with zero offset
-        &.{ 0x04, 0x05, 0x01 }, // copy reaching before the output start
-        &.{ 0x04, 0xfc }, // literal length header with no bytes
-        &.{ 0x04, 0x00, 'a', 0x00, 'b' }, // trailing token past the advertised size
+        &.{},
+        &.{0x04},
+        &.{ 0x04, 0x00 },
+        &.{ 0x04, 0x0c, 'a', 'b', 'c' },
+        &.{ 0x04, 0x01, 0x00 },
+        &.{ 0x04, 0x05, 0x01 },
+        &.{ 0x04, 0xfc },
+        &.{ 0x04, 0x00, 'a', 0x00, 'b' },
     };
 
     for (cases) |input| {
@@ -66,14 +66,12 @@ test "Snappy rejects malformed streams without writing output" {
 
 test "Snappy refuses to decompress past the caller's buffer" {
     var output: [4]u8 = undefined;
-    // Advertises 32 bytes with room for only 4.
     try testing.expectError(error.LimitExceeded, snappy.decompress(&.{0x20}, &output, limits));
 }
 
 test "Snappy self-references decode correctly when the copy overlaps" {
     var output: [64]u8 = undefined;
 
-    // One literal followed by a seven-byte back-reference.
     const input = [_]u8{ 0x08, 0x00, 'a', (3 << 2) | 1, 0x01 };
     try testing.expectEqualSlices(u8, "aaaaaaaa", try snappy.decompress(&input, &output, limits));
 }
@@ -324,4 +322,28 @@ test "reusable DEFLATE contexts interoperate and preserve input and output limit
     }
     try testing.expectEqualSlices(u8, "reused", try decoder.decompress(try encoder.compress("reused", &encoded, &history), &output, &history, limits));
     try testing.expect(!failing.has_induced_failure);
+}
+
+test "Snappy short copies decode the same into exact and roomy outputs" {
+    const allocator = testing.allocator;
+    var input: [6000]u8 = undefined;
+    var prng = std.Random.DefaultPrng.init(0xc0b1);
+    prng.random().bytes(&input);
+    var at: usize = 2100;
+    for ([_]usize{ 2047, 2048, 9, 1, 3, 8, 100, 2047 }, [_]usize{ 4, 11, 12, 64, 65, 68, 69, 260 }) |offset, len| {
+        for (0..len) |i| input[at + i] = input[at + i - offset];
+        at += len + 50;
+    }
+
+    const encoded = try allocator.alloc(u8, try snappy.maxEncodedLen(input.len));
+    defer allocator.free(encoded);
+    const table = try allocator.create(snappy.Table);
+    defer allocator.destroy(table);
+    const compressed = try snappy.compress(&input, encoded, table);
+
+    for ([_]usize{ input.len, input.len + 128 }) |room| {
+        const decoded = try allocator.alloc(u8, room);
+        defer allocator.free(decoded);
+        try testing.expectEqualSlices(u8, &input, try snappy.decompress(compressed, decoded, limits));
+    }
 }

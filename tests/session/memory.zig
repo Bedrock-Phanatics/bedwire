@@ -23,7 +23,6 @@ test "steady-state ingest and encode make no allocator calls" {
         pair.client.state = .in_game;
         pair.server.state = .in_game;
 
-        // Block allocations during steady-state work.
         failing.fail_index = failing.alloc_index;
         failing.resize_fail_index = failing.resize_index;
 

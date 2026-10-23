@@ -1,9 +1,7 @@
 const std = @import("std");
 
 pub const Limits = struct {
-    /// Includes the 0xfe header.
     max_frame_bytes: usize = 4 * 1024 * 1024,
-    /// Decompressed size.
     max_batch_bytes: usize = 16 * 1024 * 1024,
     max_packet_bytes: usize = 4 * 1024 * 1024,
     max_packets_per_batch: usize = 1024,

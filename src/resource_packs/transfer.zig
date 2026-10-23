@@ -13,7 +13,6 @@ pub const Metadata = struct {
     chunk_size: u32,
     chunk_count: u32,
     size: u64,
-    /// SHA-256 of the archive. Null skips verification for peers that send none.
     hash: ?[32]u8,
 
     pub fn init(pack_id: []const u8, size: u64, chunk_size: u32, hash: ?[32]u8) !Metadata {
@@ -22,7 +21,6 @@ pub const Metadata = struct {
         return .{ .pack_id = pack_id, .chunk_size = chunk_size, .chunk_count = count, .size = size, .hash = hash };
     }
 
-    /// `pack_id` borrows the packet. A hash that isn't 32 bytes or is all zeroes counts as absent.
     pub fn fromDataInfo(info: DataInfo) Metadata {
         const hashed = info.file_hash.len == 32 and !std.mem.allEqual(u8, info.file_hash, 0);
         return .{
@@ -53,7 +51,6 @@ pub const Metadata = struct {
     }
 };
 
-/// `data` borrows the packet.
 pub const Chunk = struct {
     pack_id: []const u8,
     index: u32,
@@ -100,7 +97,6 @@ pub const Archive = struct {
 pub const max_window = 64;
 
 pub const Options = struct {
-    /// Chunk requests kept in flight, 1 through `max_window`.
     window: u8 = 8,
 };
 
@@ -113,7 +109,6 @@ pub const Transfer = struct {
     hash: std.crypto.hash.sha2.Sha256 = .init(.{}),
     prefix: u32 = 0,
     requested: u32 = 0,
-    /// Bit n marks chunk prefix + n as stored but not yet hashed.
     ahead: u64 = 0,
     failed: bool = false,
     complete: bool = false,
@@ -140,7 +135,6 @@ pub const Transfer = struct {
         return .{ .pack_id = self.metadata.pack_id, .index = self.requested };
     }
 
-    /// Repeats come back as duplicate and are ignored. Any other rejection, including a storage error, fails the transfer for good.
     pub fn accept(self: *Transfer, chunk: Chunk, storage: anytype) !Progress {
         if (self.failed or self.complete) return error.InvalidState;
         errdefer self.failed = true;
@@ -233,7 +227,6 @@ pub const Delivery = struct {
         return self.remaining == 0;
     }
 
-    /// The chunk's `pack_id` echoes the request. DuplicateRequest and source errors leave the Delivery usable.
     pub fn serve(self: *Delivery, request: Request, source: anytype, dest: []u8) !Chunk {
         if (!self.matches(request.pack_id) or request.index >= self.metadata.chunk_count) return error.InvalidChunk;
 

@@ -89,7 +89,7 @@ const native_options: NativeOptions = .{};
 const Allocation = struct { allocator: std.mem.Allocator, len: usize };
 const allocation_header = std.mem.alignForward(usize, @sizeOf(Allocation), 16);
 
-// libdeflate callbacks have no user data; each allocation remembers its owner for later destruction.
+// libdeflate callbacks have no user data, so each allocation remembers its owner for later destruction.
 threadlocal var context_allocator: ?std.mem.Allocator = null;
 
 fn allocateContext(len: usize) callconv(.c) ?*anyopaque {
@@ -119,12 +119,10 @@ pub fn compress(input: []const u8, output: []u8, history: *[history_len]u8) ![]u
     return compressPure(input, output, history, default_level);
 }
 
-/// Batches up to this size skip std's encoder at level 1, whose setup costs far more than they do.
 pub const fixed_limit = 512;
 
 fn compressPure(input: []const u8, output: []u8, history: *[history_len]u8, level: u4) ![]u8 {
     if (level == 1 and input.len <= fixed_limit) {
-        // Callers that leave no room to grow have an uncompressed fallback, the rest get stored blocks from std.
         if (compressFixed(input, output)) |bytes| return bytes else |err| if (output.len <= input.len) return err;
     }
     return compressLevel(input, output, history, level);
@@ -132,7 +130,7 @@ fn compressPure(input: []const u8, output: []u8, history: *[history_len]u8, leve
 
 const fixed_table_bits = 10;
 
-/// One final block with the fixed Huffman codes and greedy 4-byte matching. Inputs must fit the 32 KiB window.
+/// Inputs must fit the 32 KiB window.
 pub fn compressFixed(input: []const u8, output: []u8) ![]u8 {
     std.debug.assert(input.len <= 1 << 15);
     var bits: Bits = .{ .bytes = output };

@@ -7,7 +7,6 @@ const session = @import("session.zig");
 const BufferPool = @import("pool.zig").BufferPool;
 
 pub const Direction = enum { client_to_server, server_to_client };
-/// `established` follows a login on transports that skip Bedrock encryption, and traffic stays readable.
 pub const Phase = enum { awaiting_request, awaiting_settings, awaiting_login, awaiting_handshake, encrypted, established };
 
 pub const Options = struct {
@@ -29,7 +28,6 @@ pub fn TapWithProfile(comptime Profile: type) type {
             bytes: []const u8,
         };
 
-        /// Releasing any iterator copy invalidates its packet bytes.
         pub const Packets = struct {
             reader: batch.Reader,
             tap: *Self,
@@ -80,7 +78,6 @@ pub fn TapWithProfile(comptime Profile: type) type {
         generation: u64 = 0,
         login_bytes: ?[]const u8 = null,
 
-        /// Serialize calls on one Tap. Taps may share a pool.
         pub fn init(options: Options) !Self {
             const limits = if (options.limits) |l| blk: {
                 try l.validate();
@@ -106,7 +103,6 @@ pub fn TapWithProfile(comptime Profile: type) type {
             return self.current_phase;
         }
 
-        /// Packet bytes borrow the pool; input stays untouched.
         pub fn observe(self: *Self, direction: Direction, payload: []const u8) !Packets {
             if (self.active_generation != null) return error.InvalidState;
             if (self.current_phase == .encrypted) return error.Opaque;

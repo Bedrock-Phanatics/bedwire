@@ -38,11 +38,11 @@ test "empty batches are refused in both directions" {
 
 test "malformed and truncated length prefixes are rejected" {
     const cases = [_][]const u8{
-        &.{ 0xfe, 0 }, // zero-length packet
-        &.{ 0xfe, 4, 60, 1 }, // length past the end of the batch
-        &.{ 0xfe, 0x80 }, // dangling continuation byte
-        &.{ 0xfe, 0x80, 0x00, 60 }, // overlong length prefix
-        &.{ 0xfe, 2, @as(u8, @intCast(support.packetId(support.modern, .player_action))), 1, 5 }, // trailing prefix with no payload
+        &.{ 0xfe, 0 },
+        &.{ 0xfe, 4, 60, 1 },
+        &.{ 0xfe, 0x80 },
+        &.{ 0xfe, 0x80, 0x00, 60 },
+        &.{ 0xfe, 2, @as(u8, @intCast(support.packetId(support.modern, .player_action))), 1, 5 },
     };
 
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
@@ -149,7 +149,6 @@ test "invalid packet headers are refused on both paths" {
     pair.client.state = .in_game;
     pair.server.state = .in_game;
 
-    // 0x4000 exceeds the 14-bit header field.
     try testing.expectError(error.MalformedBatch, pair.client.encodeOne(&.{ 0x80, 0x80, 0x02 }));
     try testing.expectError(error.MalformedBatch, pair.server.ingest(&.{ 0xfe, 3, 0x80, 0x80, 0x02 }));
 }

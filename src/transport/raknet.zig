@@ -5,7 +5,6 @@ const session_mod = @import("../session/session.zig");
 const Packet = session_mod.Packet;
 const Session = session_mod.Session;
 
-/// send must copy or consume its bytes. Handlers must not keep packet bytes or destroy the Session mid-callback.
 pub fn RakNet(comptime Peer: type, comptime Handler: type) type {
     return RakNetWithProfile(@import("bedrock_protocol").Current, Peer, Handler);
 }
@@ -29,7 +28,6 @@ pub fn RakNetWithProfile(comptime Profile: type, comptime Peer: type, comptime H
             while (packets.next()) |packet| try self.handler.onPacket(self.session, packet);
         }
 
-        /// Splits the group across frames as needed. A failure after the first frame closes the Session.
         pub fn send(self: *Self, packets: []const []const u8) !void {
             var batches = try self.session.encodeBatches(packets);
             var started = false;

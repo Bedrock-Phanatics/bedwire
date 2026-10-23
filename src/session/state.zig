@@ -37,7 +37,6 @@ pub const State = enum {
         return self != .closing and self != .disconnected;
     }
 
-    // Keep key changes in their own batches.
     pub fn singlePacketBatch(self: State) bool {
         return switch (self) {
             .transport_ready, .network_settings, .authenticating, .encrypted_handshake => true,
@@ -50,7 +49,6 @@ pub const State = enum {
         return self.permitsWithDirection(session_features, sender, kind, packet_direction);
     }
 
-    /// Unknown packet IDs are left to the application.
     pub fn permitsWithDirection(self: State, session_features: SessionFeatures, sender: Role, kind: ?PacketKind, packet_direction: PacketDirection) bool {
         if (self == .disconnected) return false;
         if (kind == .disconnect) return true;

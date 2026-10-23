@@ -5,9 +5,6 @@ const session_mod = @import("../session/session.zig");
 const Packet = session_mod.Packet;
 const Session = session_mod.Session;
 
-/// send must copy or consume its bytes, and received data must outlive delivery.
-/// Vanilla NetherNet sessions use `.{ .encryption = .disabled, .batch_header = false }`.
-/// Handlers must not keep packet bytes, and unreliable messages close the Session.
 pub fn NetherNet(comptime Connection: type, comptime Handler: type) type {
     return NetherNetWithProfile(@import("bedrock_protocol").Current, Connection, Handler);
 }
@@ -38,11 +35,9 @@ pub fn NetherNetWithProfile(comptime Profile: type, comptime Connection: type, c
             defer self.pumping = false;
 
             const message = self.connection.receive() catch |err| {
-                // Receive can return Canceled or UnexpectedSignal after a successful poll.
                 if (err != error.Canceled and err != error.UnexpectedSignal) self.session.close();
                 return err;
             };
-            // A consumed message cannot be retried after admission fails.
             errdefer self.session.close();
             if (message.reliability != .reliable) {
                 self.session.close();
@@ -52,7 +47,6 @@ pub fn NetherNetWithProfile(comptime Profile: type, comptime Connection: type, c
             return self.deliver(message.data);
         }
 
-        /// Splits the group across frames as needed. A failure after the first frame closes the Session.
         pub fn send(self: *Self, packets: []const []const u8) !void {
             var batches = try self.session.encodeBatches(packets);
             var started = false;

@@ -20,11 +20,13 @@ pub noinline fn compress(input: []const u8, output: []u8, table: *Table) ![]u8 {
 noinline fn compressBlock(input: []const u8, output: []u8, table: *Table, comptime large: bool) align(64) ![]u8 {
     if (input.len > std.math.maxInt(u32)) return error.LimitExceeded;
 
-    // Clear only the table entries this input can reach.
+    const Entry = if (large) u32 else u16;
+    const entries: *[1 << max_table_bits]Entry = @ptrCast(table);
+
     var table_bits: u5 = 8;
     while (table_bits < max_table_bits and @as(usize, 1) << table_bits < input.len) table_bits += 1;
     const shift: u5 = @intCast(32 - @as(u6, table_bits));
-    if (input.len >= 4) @memset(table[0 .. @as(usize, 1) << table_bits], std.math.maxInt(u32));
+    if (input.len >= 4) @memset(entries[0 .. @as(usize, 1) << table_bits], std.math.maxInt(Entry));
 
     var writer: Cursor = .{ .bytes = output };
     try writer.varInt(@intCast(input.len));
@@ -33,18 +35,17 @@ noinline fn compressBlock(input: []const u8, output: []u8, table: *Table, compti
     var literal_start: usize = 0;
     var skip: usize = 32;
 
-    while (input.len - cursor >= 4) {
+    // Bounded by addition so a long stride can step past the end safely.
+    while (cursor + 4 <= input.len) {
         const word = std.mem.readInt(u32, input[cursor..][0..4], .little);
         const slot = (word *% 0x1e35a7bd) >> shift;
-        const previous: usize = table[slot];
-        table[slot] = @intCast(cursor);
+        const previous: usize = entries[slot];
+        entries[slot] = @intCast(cursor);
 
         const candidate = previous < cursor and cursor - previous <= 65535;
-        if (!candidate or !std.mem.eql(u8, input[previous..][0..4], input[cursor..][0..4])) {
-            if (large) {
-                cursor += @min(skip >> 5, input.len - cursor);
-                skip = @min(skip + 1, 4096);
-            } else cursor += 1;
+        if (!candidate or std.mem.readInt(u32, input[previous..][0..4], .little) != word) {
+            cursor += skip >> 5;
+            skip += 1;
             continue;
         }
 
@@ -65,20 +66,9 @@ noinline fn compressBlock(input: []const u8, output: []u8, table: *Table, compti
         }
         while (len < input.len - cursor and input[previous + len] == input[cursor + len]) len += 1;
 
-        const offset: u16 = @intCast(cursor - previous);
-
+        try writer.copy(@intCast(cursor - previous), len);
         cursor += len;
         literal_start = cursor;
-
-        var encoded_offset: [2]u8 = undefined;
-        std.mem.writeInt(u16, &encoded_offset, offset, .little);
-
-        while (len != 0) {
-            const count = @min(len, 64);
-            try writer.byte((@as(u8, @intCast(count - 1)) << 2) | 2);
-            try writer.raw(&encoded_offset);
-            len -= count;
-        }
     }
 
     try writer.literal(input[literal_start..]);
@@ -86,7 +76,6 @@ noinline fn compressBlock(input: []const u8, output: []u8, table: *Table, compti
     return output[0..writer.cursor];
 }
 
-/// Output contents are unspecified on error.
 pub noinline fn decompress(input: []const u8, output: []u8, limits: Limits) ![]u8 {
     return output[0..try decode(input, output, limits)];
 }
@@ -109,6 +98,26 @@ const Cursor = struct {
 
     fn varInt(self: *Cursor, value: u32) !void {
         self.cursor += try varint.writeU32(self.bytes[self.cursor..], value);
+    }
+
+    fn copy(self: *Cursor, offset: u16, length: usize) !void {
+        var len = length;
+        while (len >= 68) : (len -= 64) try self.copyLong(offset, 64);
+        if (len > 64) {
+            try self.copyLong(offset, 60);
+            len -= 60;
+        }
+        if (len < 12 and offset < 2048) {
+            try self.byte(@intCast(1 | ((len - 4) << 2) | ((offset >> 8) << 5)));
+            try self.byte(@truncate(offset));
+        } else try self.copyLong(offset, len);
+    }
+
+    fn copyLong(self: *Cursor, offset: u16, len: usize) !void {
+        var encoded: [3]u8 = undefined;
+        encoded[0] = (@as(u8, @intCast(len - 1)) << 2) | 2;
+        std.mem.writeInt(u16, encoded[1..3], offset, .little);
+        try self.raw(&encoded);
     }
 
     fn literal(self: *Cursor, bytes: []const u8) !void {
@@ -162,7 +171,8 @@ const Scanner = struct {
     }
 };
 
-fn decode(input: []const u8, output: []u8, limits: Limits) !usize {
+// Aligned like the encoder, since code placement alone moved decode by 10%.
+noinline fn decode(input: []const u8, output: []u8, limits: Limits) align(64) !usize {
     if (input.len > limits.max_frame_bytes) return error.LimitExceeded;
 
     var scanner: Scanner = .{ .bytes = input };
@@ -190,8 +200,10 @@ fn decode(input: []const u8, output: []u8, limits: Limits) !usize {
                     len = @intCast(value + 1);
                 }
                 if (len > expected - cursor) return error.MalformedCompressedData;
-                const bytes = try scanner.take(len);
-                @memcpy(output[cursor..][0..len], bytes);
+                if (len <= 16 and input.len - scanner.cursor >= 16 and output.len - cursor >= 16) {
+                    output[cursor..][0..16].* = input[scanner.cursor..][0..16].*;
+                    scanner.cursor += len;
+                } else @memcpy(output[cursor..][0..len], try scanner.take(len));
             },
             1 => {
                 len = 4 + ((tag >> 2) & 7);
@@ -211,7 +223,13 @@ fn decode(input: []const u8, output: []u8, limits: Limits) !usize {
         if (kind != 0) {
             const valid = offset > 0 and offset <= cursor and len <= expected - cursor;
             if (!valid) return error.MalformedCompressedData;
-            if (offset >= len) {
+            if (offset >= 8 and output.len - cursor >= 72) {
+                // Eight bytes at a time is safe for any overlap of at least eight, and tags never exceed 64.
+                var copied: usize = 0;
+                while (copied < len) : (copied += 8) {
+                    output[cursor + copied ..][0..8].* = output[cursor - offset + copied ..][0..8].*;
+                }
+            } else if (offset >= len) {
                 @memcpy(output[cursor..][0..len], output[cursor - offset ..][0..len]);
             } else if (offset == 1) {
                 @memset(output[cursor..][0..len], output[cursor - 1]);

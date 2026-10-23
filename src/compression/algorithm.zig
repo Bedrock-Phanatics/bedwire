@@ -21,7 +21,6 @@ pub const Algorithm = enum(u8) {
 pub const CompressionMode = @FieldType(SessionFeatures, "compression_mode");
 pub const SessionFeatures = @import("bedrock_protocol").SessionFeatures;
 
-/// An encode needs either the DEFLATE window or the Snappy table.
 pub const Scratch = extern union {
     history: [flate.history_len]u8,
     table: snappy.Table,
@@ -93,7 +92,6 @@ pub const Compression = struct {
         } };
     }
 
-    /// Uncompressed input is returned without copying.
     pub fn decode(
         self: Compression,
         input: []const u8,
@@ -122,7 +120,6 @@ pub const Compression = struct {
         };
     }
 
-    // Receivers go by the marker, not the threshold, so compressed frames carry over as-is.
     pub fn relaysTo(self: Compression, dest: Compression) bool {
         if (self.mode != dest.mode or self.algorithm != dest.algorithm) return false;
         return self.mode != .marked or (self.negotiated and dest.negotiated);

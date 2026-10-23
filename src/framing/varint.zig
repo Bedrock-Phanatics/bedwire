@@ -4,7 +4,6 @@ pub const max_u32_bytes = 5;
 
 pub const Decoded = struct { value: u32, len: usize };
 
-/// Rejects non-canonical encodings.
 pub fn readU32(input: []const u8) !Decoded {
     var value: u32 = 0;
     var shift: u5 = 0;

@@ -13,7 +13,6 @@ pub fn main(init: std.process.Init) !void {
     try writeFrames(init.io, init.gpa, args[1]);
 }
 
-/// Per stream a u8 algorithm, u32 frame count and u32-prefixed frames, then a u32 count and the u32-prefixed packets.
 fn writeFrames(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !void {
     const limits: bedwire.Limits = .{ .max_frame_bytes = 4096, .max_batch_bytes = 64 * 1024, .max_packet_bytes = 4096, .max_outgoing_packets_per_batch = 16 };
     var pool = try bedwire.BufferPool.init(allocator, limits, .{ .rx_slots = 1, .tx_slots = 1 });
@@ -24,10 +23,8 @@ fn writeFrames(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !void
     var storage: [112][1200]u8 = undefined;
     var packets: [112][]const u8 = undefined;
     for (&packets, 0..) |*packet, i| {
-        // The last run is tiny so its batch stays small enough for fixed DEFLATE blocks.
         const len = 3 + random.uintLessThan(usize, if (i >= 96) 24 else 1100);
         const header = try bedwire.framing.varint.writeU32(&storage[i], 1020);
-        // Runs of noise packets make whole batches that can't shrink and go out marked uncompressed.
         for (storage[i][header..len], 0..) |*byte, j| byte.* = if (i / 16 % 2 == 1) random.int(u8) else @truncate(j / 8);
         packet.* = storage[i][0..len];
     }

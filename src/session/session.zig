@@ -49,9 +49,7 @@ pub const Packets = Session.Packets;
 pub const Packet = Session.Packet;
 
 pub const SessionPolicy = struct {
-    /// `disabled` is for transports that encrypt on their own, such as NetherNet.
     encryption: enum { required, optional, disabled } = .required,
-    /// NetherNet sends batches without the 0xfe header.
     batch_header: bool = true,
     connection_request_format: wire.ConnectionRequestFormat = .envelope,
 };
@@ -61,8 +59,8 @@ pub fn SessionWithProfile(comptime Profile: type) type {
     return struct {
         const Self = @This();
 
-        /// Bytes survive close, but expire on release or Session.deinit.
-        /// Copies share a lease; keep the Session at a stable address.
+        /// Bytes survive close but expire on release or Session.deinit.
+        /// Copies share a lease, so keep the Session at a stable address.
         pub const Frame = struct {
             bytes: []const u8,
             session: *Self,
@@ -73,15 +71,12 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             }
         };
 
-        /// Bytes expire on Packets.deinit or Session.deinit.
         pub const Packet = struct {
             kind: ?PacketKind,
             id: PacketId,
             bytes: []const u8,
         };
 
-        /// Copies share a lease, so deinit of any copy invalidates all packet slices.
-        /// EOF and close keep the lease alive.
         pub const Packets = struct {
             reader: batch.Reader,
             session: *Self,
@@ -131,8 +126,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             }
         };
 
-        /// Serialize calls, including release. Sessions may share a pool.
-        /// Keep the Session at a stable address while leases exist.
         policy: SessionPolicy,
         limits: Limits,
         role: Role,
@@ -180,7 +173,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.* = undefined;
         }
 
-        /// Close keeps borrowed buffers alive.
         pub fn close(self: *Self) void {
             self.state = .disconnected;
             if (self.crypto) |*crypto| crypto.deinit();
@@ -212,13 +204,11 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return self.received.contains(kind);
         }
 
-        /// Admits whole batches. Errors other than PoolExhausted close the Session.
         pub fn ingest(self: *Self, payload: []const u8) !Self.Packets {
             return self.ingestFrame(payload, false);
         }
 
-        /// Like ingest, but uncompressed plaintext packets are read in place, so keep
-        /// `payload` alive and unchanged until the iterator is released.
+        /// Reads uncompressed plaintext packets in place, so keep `payload` alive and unchanged until the iterator is released.
         pub fn ingestBorrowed(self: *Self, payload: []const u8) !Self.Packets {
             return self.ingestFrame(payload, true);
         }
@@ -240,7 +230,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             const rx_slot = self.pool.getRx(rx_token) orelse return error.InvalidState;
             if (body.len > rx_slot.frame.len or body.len > self.limits.max_frame_bytes) return error.LimitExceeded;
 
-            // Plaintext decompresses straight from the caller, only stored batches need a copy.
             var session_payload: []const u8 = body;
             if (self.crypto) |*crypto| session_payload = try crypto.openFrom(rx_slot.frame, body);
 
@@ -270,13 +259,11 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             };
         }
 
-        /// A held Frame returns PoolExhausted. Send frames in order and close
-        /// the Session if a frame is abandoned or sending fails.
+        /// A held Frame returns PoolExhausted. Send frames in order and close the Session if a frame is abandoned or sending fails.
         pub fn encode(self: *Self, packets: []const []const u8) !Self.Frame {
             return (try self.encodeFrame(packets, false)).frame;
         }
 
-        /// Every packet is checked before the first frame goes out, and each frame is sized to fit uncompressed.
         pub fn encodeBatches(self: *Self, packets: []const []const u8) !Self.Batches {
             if (self.state == .disconnected) return error.TransportClosed;
             if (packets.len == 0) return error.MalformedBatch;
@@ -292,7 +279,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
                 if (packet.len > bounds.max_packet_bytes or entry > cap) return error.LimitExceeded;
                 total +|= entry;
             }
-            // A single frame is all or nothing already, so only a group that splits needs this pass.
             if (packets.len > bounds.max_packets_per_batch or total > cap) {
                 var observed: Observed = .{ .state = self.state, .startup = self.startup };
                 for (packets) |packet| try self.step(&observed, packet, self.role);
@@ -301,7 +287,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return .{ .session = self, .packets = packets };
         }
 
-        /// Release each frame before asking for the next, and close the Session if sending one fails. PoolExhausted can be retried.
         pub const Batches = struct {
             session: *Self,
             packets: []const []const u8,
@@ -336,7 +321,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             if (reserve + trailer >= max_egress) return error.LimitExceeded;
             const room = max_egress - reserve - trailer;
 
-            // Assemble after the frame prefix so an uncompressed batch is already in place.
             var dest = slot.assembly[reserve..];
             if (split) dest = dest[0..@min(dest.len, try self.splitBudget(max_egress))];
             var writer = batch.Writer.init(dest, self.limits);
@@ -370,7 +354,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             var algorithm: Algorithm = .none;
             var len = reserve + raw.len;
             if (self.compression.selected(raw.len) != .none) compressed: {
-                // A marked batch can always go out as it is, so give up once compression stops paying.
                 const limit = if (reserve == 2) @min(room, raw.len - 1) else room;
                 const framed = self.compression.encodeWithContext(raw, slot.egress[reserve..][0..limit], &slot.scratch, slot.encoder) catch |err| {
                     if (err == error.NoSpaceLeft and reserve == 2) break :compressed;
@@ -388,7 +371,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return out[0..len];
         }
 
-        // Without a marker there's no uncompressed fallback, so leave room for stored DEFLATE blocks.
         fn splitBudget(self: *const Self, max_egress: usize) !usize {
             const reserve: usize = if (self.compression.marks()) 2 else 1;
             const trailer: usize = if (self.crypto != null) 8 else 0;
@@ -398,7 +380,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return std.math.sub(usize, room, room / 256 + 64) catch error.LimitExceeded;
         }
 
-        /// `dest` may use another profile of the same protocol version.
         pub fn canRelayTo(self: *const Self, dest: anytype) bool {
             return @intFromPtr(self) != @intFromPtr(dest) and
                 self.version() == dest.version() and
@@ -407,8 +388,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
                 self.compression.relaysTo(dest.compression);
         }
 
-        /// Packets aren't checked or observed, so a relayed Disconnect won't close either side.
-        /// Errors after decryption close this Session; earlier ones leave it free to ingest.
         pub fn relayTo(self: *Self, dest: anytype, payload: []const u8) !@TypeOf(dest.*).Frame {
             if (self.state == .disconnected or dest.state == .disconnected) return error.TransportClosed;
             if (!self.canRelayTo(dest)) return error.IncompatibleRelay;
@@ -464,7 +443,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return self.encode(&.{packet});
         }
 
-        /// Decoded slices expire when Packets.deinit is called.
         pub fn decodePacket(self: *const Self, packet: Self.Packet) !protocol.BorrowedEnvelope {
             if (packet.bytes.len > self.limits.max_packet_bytes) return error.LimitExceeded;
             if (Profile.packetKind(packet.id) != packet.kind) return error.InvalidProfile;
@@ -473,7 +451,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return decoded;
         }
 
-        /// Failed settings leave the state unchanged.
         pub fn negotiateFromSettings(self: *Self, packet: Self.Packet) !void {
             if (packet.kind != .network_settings) return error.InvalidState;
             const decoded = try self.decodePacket(packet);
@@ -572,7 +549,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return identity;
         }
 
-        /// Use when the host already authenticated the client.
         pub fn installVerifiedClientKey(self: *Self, key: spki.Ecdsa.PublicKey) !void {
             if (self.role != .server or self.state != .authenticating) return error.InvalidState;
             if (!self.didReceive(.login)) return error.InvalidState;
@@ -584,7 +560,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.peer_key = key;
         }
 
-        /// Call once the cleartext ServerToClientHandshake frame is sent and released.
         pub fn installServerCrypto(self: *Self, secret: spki.Ecdsa.SecretKey, salt: [16]u8) !void {
             const ordered =
                 self.role == .server and
@@ -598,7 +573,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             try self.enableCrypto(secret, peer, salt);
         }
 
-        /// Like installServerCrypto, for hosts that authenticated the client and derived the key themselves.
         pub fn installServerKey(self: *Self, key: [32]u8) !void {
             const ordered =
                 self.role == .server and
@@ -640,7 +614,6 @@ pub fn SessionWithProfile(comptime Profile: type) type {
                         (self.role == .client or self.peer_key != null),
                     else => false,
                 },
-                // Packless startups never see an offer, so there is nothing to complete.
                 .waiting_for_start_game => self.state == .resource_packs and
                     (self.startup.packs_completed or !self.exchanged(.resource_packs_info, .server)),
                 .spawn_ready => self.state == .waiting_for_start_game and self.startup.runtime_id != null,
@@ -837,7 +810,6 @@ fn controls(kind: PacketKind) bool {
     };
 }
 
-/// StartGame leads with the entity IDs so the rest of a large packet is left to the application.
 fn runtimeId(packet: []const u8, limits: Limits) !u64 {
     const envelope = protocol.packet.decode(packet, .{ .max_packet_bytes = @max(packet.len, 1) }) catch return error.MalformedBatch;
     var reader = try protocol.Reader.init(envelope.payload, protocolLimits(limits));
@@ -850,7 +822,6 @@ fn parseHeader(packet: []const u8) !protocol.packet.Header {
     return decoded.header;
 }
 
-/// Shared by sessions and taps after stage validation.
 pub fn verifyLoginRequest(allocator: std.mem.Allocator, bytes: []const u8, policy: TrustPolicy, session_policy: SessionPolicy, limits: Limits) !identity_mod.Identity {
     const req = try wire.decodeConnectionRequest(bytes, limits);
     var envelope = try wire.parseChainEnvelope(allocator, req.chain_data, limits);

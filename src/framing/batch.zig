@@ -11,7 +11,6 @@ pub fn strip(frame: []const u8, limits: Limits) ![]const u8 {
     return frame[1..];
 }
 
-/// NetherNet frames carry no header byte.
 pub fn body(frame: []const u8, with_header: bool, limits: Limits) ![]const u8 {
     if (with_header) return strip(frame, limits);
     if (frame.len == 0) return error.MalformedBatch;
@@ -19,7 +18,6 @@ pub fn body(frame: []const u8, with_header: bool, limits: Limits) ![]const u8 {
     return frame;
 }
 
-/// The subset of Limits that framing needs, so iterators stay small.
 pub const Bounds = struct {
     max_batch_bytes: usize,
     max_packet_bytes: usize,
@@ -42,7 +40,6 @@ pub const Bounds = struct {
     }
 };
 
-/// Packet slices borrow the input.
 pub const Reader = struct {
     bytes: []const u8,
     cursor: usize = 0,

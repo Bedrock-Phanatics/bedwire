@@ -36,8 +36,6 @@ pub fn encodedPublicKey(key: spki.Ecdsa.PublicKey) [160]u8 {
     return encoded;
 }
 
-/// The backend must trust this key explicitly; these are not Microsoft credentials.
-/// `player_address` is signed in as `PlayerAddress`, since the backend only sees the proxy's.
 pub fn buildProxyConnectionRequest(
     comptime Profile: type,
     allocator: std.mem.Allocator,
@@ -146,7 +144,7 @@ pub const Handshake = struct {
     }
 };
 
-/// Vanilla emits padded standard base64; some implementations drop the padding.
+/// Vanilla emits padded standard base64 but some implementations drop the padding.
 fn decodeSalt(encoded: []const u8) ![16]u8 {
     const decoder = switch (encoded.len) {
         22 => std.base64.standard_no_pad.Decoder,

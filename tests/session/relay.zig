@@ -15,7 +15,6 @@ const Leg = struct {
     compression: ?Compression = null,
 };
 
-/// peer -> inbound => outbound -> upstream
 const Chain = struct {
     pool: bedwire.BufferPool,
     peer: Session,
@@ -377,7 +376,6 @@ test "relay respects held leases" {
     try testing.expectEqualSlices(u8, packet, held.next().?.bytes);
     held.deinit();
 
-    // Keeps the upstream keystream in step.
     var drained = try chain.upstream.ingest(blocker.bytes);
     drained.deinit();
     blocker.release();

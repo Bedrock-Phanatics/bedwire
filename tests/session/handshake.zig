@@ -125,7 +125,6 @@ test "legacy profile skips negotiation and starts authenticating" {
     try testing.expectEqual(State.authenticating, pair.server.state);
     try testing.expectError(error.InvalidState, pair.client.negotiateCompression(.deflate, 0));
 
-    // Legacy batches use implicit DEFLATE without a marker.
     var packets = try pair.clientToServer(&.{build.make(descriptor, .login)});
     defer packets.deinit();
     try testing.expectEqual(bedwire.PacketKind.login, packets.next().?.kind);
@@ -163,7 +162,6 @@ test "out-of-stage packets are refused and close the session" {
         try testing.expectEqual(State.transport_ready, pair.client.state);
     }
 
-    // Right stage, wrong sender.
     {
         var pair = try support.Pair.init(testing.allocator, support.modern);
         defer pair.deinit();
@@ -174,7 +172,6 @@ test "out-of-stage packets are refused and close the session" {
         try testing.expectEqual(State.disconnected, pair.client.state);
     }
 
-    // Handshake packets are invalid once in game.
     {
         var pair = try support.Pair.init(testing.allocator, support.modern);
         defer pair.deinit();
@@ -245,7 +242,6 @@ test "every invalid advance is refused" {
         }
     }
 
-    // Reachable states still require their packet exchange.
     pair.server.state = .resource_packs;
     try testing.expectError(error.InvalidState, pair.server.advance(.spawn_ready));
     try testing.expectError(error.InvalidState, pair.server.advance(.in_game));
@@ -332,11 +328,9 @@ test "crypto installation refuses to run out of order" {
 
     try testing.expectError(error.InvalidState, pair.server.installServerCrypto(server_key.secret_key, @splat(9)));
 
-    // Sending the handshake alone does not authenticate the client key.
     try pair.serverToClientDiscard(&.{build.make(support.modern, .server_to_client_handshake)});
     try testing.expectError(error.Unauthenticated, pair.server.installServerCrypto(server_key.secret_key, @splat(9)));
 
-    // A proxy can supply an already verified client key.
     try pair.server.installVerifiedClientKey(client_key.public_key);
     try pair.server.installServerCrypto(server_key.secret_key, @splat(9));
     try testing.expectError(error.InvalidState, pair.server.installServerCrypto(server_key.secret_key, @splat(9)));

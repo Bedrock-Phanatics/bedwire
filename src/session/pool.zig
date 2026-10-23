@@ -3,13 +3,11 @@ const Limits = @import("../limits.zig").Limits;
 const flate = @import("../compression/flate.zig");
 const Scratch = @import("../compression/algorithm.zig").Scratch;
 
-/// Space for the header, compression marker, and MAC.
 pub const frame_overhead = 1 + 1 + 8;
 
 pub const PoolConfig = struct {
     rx_slots: u8,
     tx_slots: u8,
-    /// DEFLATE level for session encoding and relay recompression, 1 through 9.
     deflate_level: u4 = flate.default_level,
 
     pub fn conservative() PoolConfig {
@@ -37,14 +35,11 @@ pub const TxSlot = struct {
     encoder: flate.Encoder = .{},
 };
 
-/// Each availability mask gets its own cache line so RX and TX traffic and the
-/// read-mostly fields don't contend.
 pub const Mask = struct {
     bits: std.atomic.Value(u64) align(std.atomic.cache_line),
 };
 
 /// Keep the pool at a stable address and destroy it after its users and leases.
-/// Releasing a token invalidates slices into that slot.
 pub const BufferPool = struct {
     allocator: std.mem.Allocator,
     limits: Limits,

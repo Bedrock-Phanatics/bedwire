@@ -15,7 +15,6 @@ pub const Negotiation = struct {
     allocator: std.mem.Allocator,
     packs: []Pack,
     phase: Phase = .offered,
-    /// Mirrors ResourcePacksInfo's flag. A refusal then fails instead of completing.
     required: bool = false,
 
     pub const Pack = struct {

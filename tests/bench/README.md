@@ -250,3 +250,34 @@ Two smaller changes measured with best-of-15 micro benchmarks:
 `ingestBorrowed` reads a 16 KiB uncompressed plaintext batch in 396 ns instead
 of 595 (116 instead of 122 for 262 bytes), and decrypting straight into the
 pool cut a 16 KiB encrypted ingest from 11,790 to 11,590 ns.
+
+### Snappy
+
+Three encoder changes and one decoder change, measured with two interleaved
+matrix runs against the build above (medians in ns/op, raw CSVs in
+`results/windows-x86_64-v050-snappy-*`):
+
+- Matches of 4 to 11 bytes within 2 KiB use Snappy's two-byte copy tag instead
+  of the three-byte one, which is most of what movement batches contain.
+- Inputs under 64 KiB use a `u16` hash table, halving the per-call clearing.
+- Every input size now strides ahead after 32 misses in a row, like the large
+  path already did. A match resets the stride, so match-dense data is still
+  probed byte by byte. The loop is bounded by addition so the bookkeeping is one
+  shift and one add.
+- Short literals and copies with an offset of at least eight are decoded as
+  fixed 16-byte and 8-byte moves when both buffers have room, instead of sized
+  `memcpy` calls. Both coders are 64-byte aligned since placement alone moved
+  them by 10-25%.
+
+| Case | Frame bytes | Encode | Decode | Round trip |
+| --- | --- | ---: | ---: | ---: |
+| Medium realistic | 12,196 to 10,242 | 21,271 to 22,603 | 26,485 to 21,656 | 49,173 to 43,456 |
+| Medium realistic + AES | 12,204 to 10,250 | 29,601 to 29,913 | 36,699 to 28,921 | 65,107 to 57,424 |
+| Small realistic + AES | 231 to 204 | 714 to 669 | 731 to 591 | 1,425 to 1,220 |
+| Large realistic | 75,322 to 75,295 | 45,819 to 38,872 | 19,263 to 14,357 | 64,531 to 54,209 |
+| Medium noise | unchanged | 21,656 to 2,195 | 878 to 913 | 22,361 to 2,869 |
+
+Movement batches come out 12-16% smaller and decode 13-25% faster, at a cost of
+up to 11% on plain encode. In raw codec runs, incompressible 60 KiB inputs went
+from 139 µs to 3 µs. Compressible and text-like inputs were 3-24% faster with
+equal or smaller output.

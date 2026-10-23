@@ -169,7 +169,6 @@ test "a Snappy bomb is refused on its advertised length alone" {
     session.state = .in_game;
     try session.compression.negotiate(.snappy, 0);
 
-    // Advertises 16 MiB, then provides one literal byte.
     const frame = [_]u8{ 0xfe, @backingInt(Algorithm.snappy), 0x80, 0x80, 0x80, 0x08, 0x00, 0x41 };
     try testing.expectError(error.LimitExceeded, session.ingest(&frame));
 }

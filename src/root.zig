@@ -1,5 +1,3 @@
-//! Minecraft Bedrock session layer between transports and packet codecs.
-
 const std = @import("std");
 
 pub const Limits = @import("limits.zig").Limits;

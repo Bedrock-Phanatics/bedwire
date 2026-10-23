@@ -9,7 +9,6 @@ pub const opaque_packet_id: u16 = 1020;
 pub const opaque_packet_id_2: u16 = 1021;
 pub const runtime_id: u64 = 1;
 
-/// Small limits that still exercise compression and multi-packet batches.
 pub const limits: bedwire.Limits = .{
     .max_frame_bytes = 16 * 1024,
     .max_batch_bytes = 64 * 1024,
@@ -168,7 +167,6 @@ pub const Builder = struct {
             protocol.typed.encode(&writer, .{ .header = .{ .packet_id = profile.packetId(kind).? }, .packet = value }) catch unreachable;
             return writer.written();
         }
-        // StartGame only needs its leading entity IDs here, unique 1 and runtime 1.
         if (kind == .start_game) return packet(&self.storage, packetId(profile, kind), "\x02\x01");
         return packet(&self.storage, packetId(profile, kind), "\x00");
     }
