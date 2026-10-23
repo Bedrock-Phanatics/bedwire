@@ -31,7 +31,7 @@ pub const SessionCrypto = struct {
         try self.outbound.check(bytes.len);
 
         @memcpy(bytes[payload_len..], &self.checksum(self.send_counter, bytes[0..payload_len]));
-        self.outbound.xor(self.aes, self.key[0..12].*, bytes);
+        self.outbound.xor(self.aes, self.key[0..12].*, bytes, bytes);
         self.send_counter += 1;
 
         return bytes;
@@ -48,14 +48,37 @@ pub const SessionCrypto = struct {
         var original = self.inbound;
         defer std.crypto.secureZero(u8, std.mem.asBytes(&original));
 
-        self.inbound.xor(self.aes, self.key[0..12].*, bytes);
+        self.inbound.xor(self.aes, self.key[0..12].*, bytes, bytes);
 
         const payload = bytes[0 .. bytes.len - 8];
         const actual: [8]u8 = bytes[bytes.len - 8 ..][0..8].*;
         const expected = self.checksum(self.recv_counter, payload);
 
         if (!std.crypto.timing_safe.eql([8]u8, actual, expected)) {
-            original.xor(self.aes, self.key[0..12].*, bytes);
+            original.xor(self.aes, self.key[0..12].*, bytes, bytes);
+            return error.ChecksumMismatch;
+        }
+
+        self.recv_counter += 1;
+        return payload;
+    }
+
+    /// Like open, but decrypts `source` into `dest` in one pass. A bad MAC wipes `dest`.
+    pub fn openFrom(self: *SessionCrypto, dest: []u8, source: []const u8) ![]u8 {
+        if (self.closed) return error.SessionClosed;
+        errdefer self.closed = true;
+        if (source.len < 8) return error.MalformedBatch;
+        if (dest.len < source.len) return error.NoSpaceLeft;
+        if (self.recv_counter == std.math.maxInt(u64)) return error.CounterExhausted;
+        try self.inbound.check(source.len);
+
+        const bytes = dest[0..source.len];
+        self.inbound.xor(self.aes, self.key[0..12].*, bytes, source);
+
+        const payload = bytes[0 .. bytes.len - 8];
+        const actual: [8]u8 = bytes[bytes.len - 8 ..][0..8].*;
+        if (!std.crypto.timing_safe.eql([8]u8, actual, self.checksum(self.recv_counter, payload))) {
+            std.crypto.secureZero(u8, bytes);
             return error.ChecksumMismatch;
         }
 
@@ -90,27 +113,30 @@ const Stream = struct {
         if (blocks > (@as(u64, 1) << 32) - self.counter) return error.CounterExhausted;
     }
 
-    fn xor(self: *Stream, aes: Ctx, nonce: [12]u8, bytes: []u8) void {
-        var rest = bytes;
+    fn xor(self: *Stream, aes: Ctx, nonce: [12]u8, dest: []u8, source: []const u8) void {
+        var out = dest;
+        var in = source;
         if (self.position != 16) {
-            const count = @min(rest.len, 16 - self.position);
-            xorInto(rest[0..count], self.block[self.position..][0..count]);
+            const count = @min(in.len, 16 - self.position);
+            xorInto(out[0..count], in[0..count], self.block[self.position..][0..count]);
             self.position += count;
-            rest = rest[count..];
+            out = out[count..];
+            in = in[count..];
         }
 
-        const whole = rest.len & ~@as(usize, 15);
+        const whole = in.len & ~@as(usize, 15);
         if (whole != 0) {
-            std.crypto.core.modes.ctrSlice(Ctx, aes, rest[0..whole], rest[0..whole], self.iv(nonce), .big, 12, 4);
+            std.crypto.core.modes.ctrSlice(Ctx, aes, out[0..whole], in[0..whole], self.iv(nonce), .big, 12, 4);
             self.counter += whole / 16;
-            rest = rest[whole..];
+            out = out[whole..];
+            in = in[whole..];
         }
 
-        if (rest.len != 0) {
+        if (in.len != 0) {
             aes.encrypt(&self.block, &self.iv(nonce));
             self.counter += 1;
-            xorInto(rest, self.block[0..rest.len]);
-            self.position = rest.len;
+            xorInto(out[0..in.len], in, self.block[0..in.len]);
+            self.position = in.len;
         }
     }
 
@@ -122,6 +148,6 @@ const Stream = struct {
     }
 };
 
-fn xorInto(bytes: []u8, keystream: []const u8) void {
-    for (bytes, keystream) |*byte, key_byte| byte.* ^= key_byte;
+fn xorInto(dest: []u8, source: []const u8, keystream: []const u8) void {
+    for (dest, source, keystream) |*byte, input, key_byte| byte.* = input ^ key_byte;
 }

@@ -249,3 +249,45 @@ test "the keystream and checksum match the pinned wire format across chunk sizes
     const hex = std.fmt.bytesToHex(digest.finalResult(), .lower);
     try testing.expectEqualStrings("daa00ef99bc884ab72ffda77f5a752ad2352c616b8dfab44388d5e6fb587b59d", &hex);
 }
+
+test "decrypting from a separate buffer matches decrypting in place" {
+    var sender = SessionCrypto.init(@splat(0x42));
+    var in_place = SessionCrypto.init(@splat(0x42));
+    var separate = SessionCrypto.init(@splat(0x42));
+
+    var prng = std.Random.DefaultPrng.init(0x0b5);
+    for ([_]usize{ 1, 15, 16, 17, 100, 1500, 4096 }) |len| {
+        var storage: [4200]u8 = undefined;
+        prng.random().bytes(storage[0..len]);
+        var original: [4200]u8 = undefined;
+        @memcpy(original[0..len], storage[0..len]);
+        const sealed = try sender.seal(storage[0 .. len + 8], len);
+
+        var copy: [4208]u8 = undefined;
+        @memcpy(copy[0..sealed.len], sealed);
+        var dest: [4208]u8 = undefined;
+        const expected = try in_place.open(copy[0..sealed.len]);
+        const actual = try separate.openFrom(&dest, sealed);
+        try testing.expectEqualSlices(u8, original[0..len], expected);
+        try testing.expectEqualSlices(u8, expected, actual);
+    }
+}
+
+test "a bad checksum from a separate buffer wipes the output and closes" {
+    var sender = SessionCrypto.init(@splat(0x42));
+    var receiver = SessionCrypto.init(@splat(0x42));
+    var storage: [40]u8 = @splat(0x61);
+    var sealed = try sender.seal(storage[0..40], 32);
+    sealed[3] ^= 1;
+    const before = sealed[0..40].*;
+
+    var dest: [40]u8 = undefined;
+    try testing.expectError(error.NoSpaceLeft, receiver.openFrom(dest[0..39], sealed));
+    try testing.expectError(error.SessionClosed, receiver.openFrom(&dest, sealed));
+
+    var fresh = SessionCrypto.init(@splat(0x42));
+    try testing.expectError(error.ChecksumMismatch, fresh.openFrom(&dest, sealed));
+    try testing.expect(std.mem.allEqual(u8, &dest, 0));
+    try testing.expectEqualSlices(u8, &before, sealed);
+    try testing.expectError(error.SessionClosed, fresh.openFrom(&dest, sealed));
+}

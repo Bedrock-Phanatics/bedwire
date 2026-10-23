@@ -232,10 +232,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
             // Plaintext decompresses straight from the caller, only stored batches need a copy.
             var session_payload: []const u8 = body;
-            if (self.crypto) |*crypto| {
-                @memcpy(rx_slot.frame[0..body.len], body);
-                session_payload = try crypto.open(rx_slot.frame[0..body.len]);
-            }
+            if (self.crypto) |*crypto| session_payload = try crypto.openFrom(rx_slot.frame, body);
 
             var raw = try self.compression.decodeWithContext(
                 session_payload,
@@ -425,9 +422,10 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             errdefer self.close();
 
             const out = slot.egress;
-            @memcpy(out[1..][0..body.len], body);
             var framed: []u8 = out[1..][0..body.len];
-            if (self.crypto) |*crypto| framed = try crypto.open(framed);
+            if (self.crypto) |*crypto| {
+                framed = try crypto.openFrom(out[1..], body);
+            } else @memcpy(framed, body);
 
             var len = 1 + try self.compression.relayWithContext(
                 dest.compression,
