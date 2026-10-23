@@ -23,6 +23,7 @@ pub const BufferPool = @import("session/session.zig").BufferPool;
 pub const PoolConfig = @import("session/session.zig").PoolConfig;
 pub const Role = @import("session/state.zig").Role;
 pub const State = @import("session/state.zig").State;
+pub const Startup = @import("session/state.zig").Startup;
 pub const PacketKind = protocol.PacketKind;
 
 pub const framing = struct {

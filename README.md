@@ -93,6 +93,17 @@ while (try batches.next()) |frame| {
 
 Sessions enforce their protocol's handshake and packet-state transitions. One-time steps such as Login, either handshake packet, StartGame and SetLocalPlayerAsInitialised are refused if repeated, resource-pack control packets must follow the offer, and a client key can be installed or authenticated only once. Install server encryption only after the cleartext ServerToClientHandshake frame is sent and released. Errors from `ingest` other than `PoolExhausted` close the session, while a failed `encode` leaves it unchanged. Keep each session at a stable address and serialize operations on it. Pools can be shared across workers, but release every packet iterator and outgoing frame before destroying its session; destroy the pool after all sessions are gone. Borrowed packet bytes expire when the iterator is released, and outgoing bytes expire when the frame is released. Size `Limits` and pool slot counts for your workload.
 
+## Startup
+
+`session.startup` records what the startup packets established, whichever side sent them:
+
+- the client's acknowledgment of the final resource pack stack
+- StartGame's runtime ID
+- PlayStatus PlayerSpawn, which may arrive before StartGame
+- a SetLocalPlayerAsInitialised that names that runtime ID after the spawn
+
+`advance()` refuses `.waiting_for_start_game` while an offered stack is unacknowledged, `.spawn_ready` before StartGame, and `.in_game` before the initialization ack. Call `session.settle()` after each batch to take every transition already allowed, or keep calling `advance()` yourself. A server that never offers packs, such as a packless relay, can advance straight to `.waiting_for_start_game`. Bedwire checks protocol readiness only. Loading the world and attaching the player stay with the application.
+
 ## Proxy support
 
 `Tap` observes the unencrypted handshake without modifying forwarded frames. Use `PoolConfig.observer()` for an observation-only pool. Once the handshake establishes encryption, the tap becomes opaque; forwarding encrypted traffic remains the application's responsibility.

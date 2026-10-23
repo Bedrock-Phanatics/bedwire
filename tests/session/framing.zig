@@ -70,7 +70,7 @@ test "a batch that smuggles one illegal packet delivers none of them" {
     pair.client.state = .spawn_ready;
     const frame = try pair.client.encode(&.{
         support.packet(&legal, 1020, "ok"),
-        support.packet(&illegal, support.packetId(support.modern, .set_local_player_as_initialised), "ok"),
+        support.packet(&illegal, support.packetId(support.modern, .request_chunk_radius), "ok"),
     });
     defer frame.release();
     @memcpy(pair.relay[0..frame.bytes.len], frame.bytes);

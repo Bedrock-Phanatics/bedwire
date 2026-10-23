@@ -21,6 +21,7 @@ const PacketId = u10;
 pub const PacketKind = protocol.PacketKind;
 pub const Role = state_mod.Role;
 pub const State = state_mod.State;
+pub const Startup = state_mod.Startup;
 pub const Algorithm = compression.Algorithm;
 
 pub const BufferPool = pool_mod.BufferPool;
@@ -141,6 +142,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
         peer_key: ?spki.Ecdsa.PublicKey = null,
         sent: std.EnumSet(PacketKind) = .empty,
         received: std.EnumSet(PacketKind) = .empty,
+        startup: Startup = .{},
 
         pool: *BufferPool,
         rx_slot: ?RxToken = null,
@@ -275,7 +277,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
             const budget = try self.splitBudget(@min(self.pool.limits.max_frame_bytes, self.limits.max_frame_bytes));
             const bounds: batch.Bounds = .outgoing(self.limits);
-            var observed: Observed = .{ .state = self.state };
+            var observed: Observed = .{ .state = self.state, .startup = self.startup };
             for (packets) |packet| {
                 if (packet.len == 0) return error.MalformedBatch;
                 if (packet.len > bounds.max_packet_bytes or batch.entryLen(packet.len) > @min(budget, bounds.max_batch_bytes)) return error.LimitExceeded;
@@ -324,7 +326,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             var dest = slot.assembly[reserve..];
             if (split) dest = dest[0..@min(dest.len, try self.splitBudget(max_egress))];
             var writer = batch.Writer.init(dest, self.limits);
-            var observed: Observed = .{ .state = self.state };
+            var observed: Observed = .{ .state = self.state, .startup = self.startup };
             const single = self.singlePacketBatch();
 
             for (packets) |packet| {
@@ -615,9 +617,11 @@ pub fn SessionWithProfile(comptime Profile: type) type {
                         (self.role == .client or self.peer_key != null),
                     else => false,
                 },
-                .waiting_for_start_game => self.state == .resource_packs,
-                .spawn_ready => self.state == .waiting_for_start_game and self.exchanged(.start_game, .server),
-                .in_game => self.state == .spawn_ready,
+                // Packless startups never see an offer, so there is nothing to complete.
+                .waiting_for_start_game => self.state == .resource_packs and
+                    (self.startup.packs_completed or !self.exchanged(.resource_packs_info, .server)),
+                .spawn_ready => self.state == .waiting_for_start_game and self.startup.runtime_id != null,
+                .in_game => self.state == .spawn_ready and self.startup.initialized,
                 .closing => self.state.active(),
                 else => false,
             };
@@ -626,7 +630,21 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             self.state = next;
         }
 
+        pub fn settle(self: *Self) State {
+            while (true) {
+                const next: State = switch (self.state) {
+                    .resource_packs => if (self.startup.packs_completed) .waiting_for_start_game else break,
+                    .waiting_for_start_game => if (self.startup.runtime_id != null) .spawn_ready else break,
+                    .spawn_ready => if (self.startup.initialized) .in_game else break,
+                    else => break,
+                };
+                self.state = next;
+            }
+            return self.state;
+        }
+
         fn commit(self: *Self, observed: Observed, sender: Role) void {
+            self.startup = observed.startup;
             if (sender == self.role) {
                 self.sent = self.sent.unionWith(observed.kinds);
             } else {
@@ -667,11 +685,12 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             kinds: std.EnumSet(PacketKind) = .empty,
             count: usize = 0,
             state: State,
+            startup: Startup,
         };
 
         fn admit(self: *const Self, raw: []const u8, sender: Role) !Observed {
             var reader = try batch.Reader.init(raw, self.limits);
-            var observed: Observed = .{ .state = self.state };
+            var observed: Observed = .{ .state = self.state, .startup = self.startup };
             while (try reader.next()) |packet| try self.step(&observed, packet, sender);
 
             if (observed.count == 0) return error.MalformedBatch;
@@ -684,9 +703,12 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             const header = try parseHeader(packet);
             const kind = Profile.packetKind(header.packet_id);
             try self.check(observed.*, kind, header, sender);
-            try self.validateControl(packet, header, kind);
+            const decoded = try self.validateControl(packet, header, kind);
 
-            if (kind) |known| observed.kinds.insert(known);
+            if (kind) |known| {
+                try self.track(&observed.startup, known, packet, decoded);
+                observed.kinds.insert(known);
+            }
             observed.count += 1;
             observed.state = try self.after(observed.state, kind, sender);
         }
@@ -724,8 +746,27 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return self.exchanged(kind, from) or (from == sender and observed.kinds.contains(kind));
         }
 
-        fn validateControl(self: *const Self, bytes: []const u8, header: protocol.packet.Header, kind: ?PacketKind) !void {
-            const known = kind orelse return;
+        fn track(self: *const Self, startup: *Startup, kind: PacketKind, packet: []const u8, decoded: ?protocol.BorrowedEnvelope) !void {
+            switch (kind) {
+                .resource_pack_client_response => if (decoded.?.value.typed.resource_pack_client_response.response == .resource_pack_stack_finished) {
+                    if (!self.exchanged(.resource_pack_stack, .server)) return error.InvalidState;
+                    startup.packs_completed = true;
+                },
+                .start_game => startup.runtime_id = try runtimeId(packet, self.limits),
+                .play_status => if (decoded.?.value.typed.play_status.status == .playerspawn) {
+                    startup.spawned = true;
+                },
+                .set_local_player_as_initialised => {
+                    const id = decoded.?.value.typed.set_local_player_as_initialised.player_id;
+                    if (!startup.spawned or startup.runtime_id != id) return error.InvalidState;
+                    startup.initialized = true;
+                },
+                else => {},
+            }
+        }
+
+        fn validateControl(self: *const Self, bytes: []const u8, header: protocol.packet.Header, kind: ?PacketKind) !?protocol.BorrowedEnvelope {
+            const known = kind orelse return null;
             switch (known) {
                 .request_network_settings,
                 .network_settings,
@@ -736,16 +777,27 @@ pub fn SessionWithProfile(comptime Profile: type) type {
                 .resource_packs_info,
                 .resource_pack_stack,
                 .resource_pack_client_response,
+                .play_status,
+                .set_local_player_as_initialised,
                 => {},
-                else => return,
+                else => return null,
             }
             if (bytes.len > self.limits.max_packet_bytes) return error.LimitExceeded;
             const decoded = try Profile.decodeBorrowed(bytes, protocolLimits(self.limits));
             if (decoded.header.toWire() != header.toWire() or decoded.kind != kind) return error.InvalidProfile;
             if (decoded.value != .typed) return error.InvalidProfile;
             if (protocol.typed.packetKind(decoded.value.typed) != known) return error.InvalidProfile;
+            return decoded;
         }
     };
+}
+
+/// StartGame leads with the entity IDs so the rest of a large packet is left to the application.
+fn runtimeId(packet: []const u8, limits: Limits) !u64 {
+    const envelope = protocol.packet.decode(packet, .{ .max_packet_bytes = @max(packet.len, 1) }) catch return error.MalformedBatch;
+    var reader = try protocol.Reader.init(envelope.payload, protocolLimits(limits));
+    _ = try reader.readVarI64();
+    return reader.readVarU64();
 }
 
 fn parseHeader(packet: []const u8) !protocol.packet.Header {

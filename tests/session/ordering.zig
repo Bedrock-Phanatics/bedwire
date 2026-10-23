@@ -46,8 +46,8 @@ test "StartGame and the initialization ack happen once" {
 
     var a: [8]u8 = undefined;
     var b: [8]u8 = undefined;
-    const start = support.packet(&a, support.packetId(modern, .start_game), "\x00");
-    const again = support.packet(&b, support.packetId(modern, .start_game), "\x00");
+    const start = support.packet(&a, support.packetId(modern, .start_game), "\x02\x01");
+    const again = support.packet(&b, support.packetId(modern, .start_game), "\x02\x01");
     try testing.expectError(error.InvalidState, pair.server.encode(&.{ start, again }));
     try testing.expect(!pair.server.didSend(.start_game));
 

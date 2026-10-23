@@ -7,6 +7,7 @@ pub const Session = bedwire.SessionWithProfile(modern);
 pub const PacketKind = bedwire.PacketKind;
 pub const opaque_packet_id: u16 = 1020;
 pub const opaque_packet_id_2: u16 = 1021;
+pub const runtime_id: u64 = 1;
 
 /// Small limits that still exercise compression and multi-packet batches.
 pub const limits: bedwire.Limits = .{
@@ -158,6 +159,8 @@ pub const Builder = struct {
             .server_to_client_handshake => .{ .server_to_client_handshake = .{ .handshake_web_token = "fixture" } },
             .client_to_server_handshake => .{ .client_to_server_handshake = .{} },
             .disconnect => .{ .disconnect = .{ .reason = .unknown, .messages = .empty } },
+            .play_status => .{ .play_status = .{ .status = .loginsuccess } },
+            .set_local_player_as_initialised => .{ .set_local_player_as_initialised = .{ .player_id = runtime_id } },
             else => null,
         };
         if (typed) |value| {
@@ -165,7 +168,15 @@ pub const Builder = struct {
             protocol.typed.encode(&writer, .{ .header = .{ .packet_id = profile.packetId(kind).? }, .packet = value }) catch unreachable;
             return writer.written();
         }
+        // StartGame only needs its leading entity IDs here, unique 1 and runtime 1.
+        if (kind == .start_game) return packet(&self.storage, packetId(profile, kind), "\x02\x01");
         return packet(&self.storage, packetId(profile, kind), "\x00");
+    }
+
+    pub fn spawn(self: *Builder, comptime profile: type) []const u8 {
+        var writer = protocol.Writer.init(&self.storage);
+        protocol.typed.encode(&writer, .{ .header = .{ .packet_id = profile.packetId(.play_status).? }, .packet = .{ .play_status = .{ .status = .playerspawn } } }) catch unreachable;
+        return writer.written();
     }
 
     pub fn makeId(self: *Builder, id: u16) []u8 {

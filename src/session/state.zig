@@ -115,6 +115,13 @@ pub const State = enum {
     }
 };
 
+pub const Startup = struct {
+    packs_completed: bool = false,
+    runtime_id: ?u64 = null,
+    spawned: bool = false,
+    initialized: bool = false,
+};
+
 pub fn oncePerSession(kind: PacketKind) bool {
     return switch (kind) {
         .request_network_settings, .network_settings, .login, .server_to_client_handshake, .client_to_server_handshake, .start_game, .set_local_player_as_initialised => true,

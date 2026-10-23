@@ -294,6 +294,7 @@ test "external profile completes negotiation authentication crypto and spawn flo
     var pair = try support.Pair.init(allocator, External);
     defer pair.deinit();
     var build: support.Builder = .{};
+    var second: support.Builder = .{};
 
     const client_keys = [3]support.Ecdsa.KeyPair{
         try support.deterministicKey(1),
@@ -360,16 +361,18 @@ test "external profile completes negotiation authentication crypto and spawn flo
     try pair.client.advance(.resource_packs);
     try pair.server.advance(.resource_packs);
     try pair.serverToClientDiscard(&.{build.make(External, .resource_packs_info)});
-    try pair.clientToServerDiscard(&.{build.make(External, .resource_pack_client_response)});
     try pair.serverToClientDiscard(&.{build.make(External, .resource_pack_stack)});
     try pair.clientToServerDiscard(&.{build.make(External, .resource_packs_ready_for_validation)});
+    try pair.clientToServerDiscard(&.{build.make(External, .resource_pack_client_response)});
     try pair.client.advance(.waiting_for_start_game);
     try pair.server.advance(.waiting_for_start_game);
     try pair.serverToClientDiscard(&.{build.make(External, .start_game)});
     try pair.client.advance(.spawn_ready);
     try pair.server.advance(.spawn_ready);
     try pair.clientToServerDiscard(&.{build.make(External, .request_chunk_radius)});
-    try pair.serverToClientDiscard(&.{build.make(External, .chunk_radius_updated)});
+    try pair.serverToClientDiscard(&.{ build.make(External, .chunk_radius_updated), second.spawn(External) });
+    try std.testing.expectError(error.InvalidState, pair.client.advance(.in_game));
+    try pair.clientToServerDiscard(&.{build.make(External, .set_local_player_as_initialised)});
     try pair.client.advance(.in_game);
     try pair.server.advance(.in_game);
 

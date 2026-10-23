@@ -10,6 +10,7 @@ fn completeHandshake(allocator: std.mem.Allocator, algorithm: bedwire.compressio
     defer pair.deinit();
 
     var build: support.Builder = .{};
+    var second: support.Builder = .{};
     const descriptor = support.modern;
 
     const client_keys = [3]support.Ecdsa.KeyPair{
@@ -62,9 +63,9 @@ fn completeHandshake(allocator: std.mem.Allocator, algorithm: bedwire.compressio
     try pair.server.advance(.resource_packs);
 
     try pair.serverToClientDiscard(&.{build.make(descriptor, .resource_packs_info)});
-    try pair.clientToServerDiscard(&.{build.make(descriptor, .resource_pack_client_response)});
     try pair.serverToClientDiscard(&.{build.make(descriptor, .resource_pack_stack)});
     try pair.clientToServerDiscard(&.{build.make(descriptor, .resource_packs_ready_for_validation)});
+    try pair.clientToServerDiscard(&.{build.make(descriptor, .resource_pack_client_response)});
 
     try pair.client.advance(.waiting_for_start_game);
     try pair.server.advance(.waiting_for_start_game);
@@ -74,7 +75,9 @@ fn completeHandshake(allocator: std.mem.Allocator, algorithm: bedwire.compressio
     try pair.server.advance(.spawn_ready);
 
     try pair.clientToServerDiscard(&.{build.make(descriptor, .request_chunk_radius)});
-    try pair.serverToClientDiscard(&.{build.make(descriptor, .chunk_radius_updated)});
+    try pair.serverToClientDiscard(&.{ build.make(descriptor, .chunk_radius_updated), second.spawn(descriptor) });
+    try testing.expectError(error.InvalidState, pair.client.advance(.in_game));
+    try pair.clientToServerDiscard(&.{build.make(descriptor, .set_local_player_as_initialised)});
 
     try pair.client.advance(.in_game);
     try pair.server.advance(.in_game);
@@ -417,7 +420,7 @@ test "gameplay enforces known packet directions between client and server" {
 
     var storage1: [16]u8 = undefined;
     var storage2: [16]u8 = undefined;
-    const pkt_status = support.packet(&storage1, support.packetId(descriptor, .play_status), "\x00");
+    const pkt_status = support.packet(&storage1, support.packetId(descriptor, .play_status), "\x00\x00\x00\x00");
     const pkt_radius = support.packet(&storage2, support.packetId(descriptor, .chunk_radius_updated), "\x00");
     var p2 = try pair.serverToClient(&.{ pkt_status, pkt_radius });
     try testing.expectEqual(bedwire.PacketKind.play_status, p2.next().?.kind);
