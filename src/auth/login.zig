@@ -67,7 +67,7 @@ pub fn buildProxyConnectionRequest(
         try std.fmt.bufPrint(&address_storage, ",\"PlayerAddress\":\"{f}\"", .{address})
     else
         "";
-    const payload = try std.fmt.allocPrint(
+    const payload = try printExact(
         allocator,
         "{{\"exp\":{d},\"identityPublicKey\":\"{s}\"{s},\"extraData\":{{\"displayName\":{f},\"identity\":{f},\"XUID\":{f}}}}}",
         .{ expires_at, encodedPublicKey(key.public_key), address_claim, std.json.fmt(identity.display_name, .{}), std.json.fmt(identity.uuid, .{}), std.json.fmt(identity.xuid, .{}) },
@@ -78,19 +78,25 @@ pub fn buildProxyConnectionRequest(
     const client_data = try sign(allocator, key, header, client_data_payload, limits);
     defer allocator.free(client_data);
 
-    const chain_json = try std.fmt.allocPrint(allocator, "{{\"chain\":[\"{s}\"]}}", .{link});
+    const chain_json = try printExact(allocator, "{{\"chain\":[\"{s}\"]}}", .{link});
     defer allocator.free(chain_json);
     if (chain_json.len > limits.max_jwt_payload_bytes) return error.LimitExceeded;
 
     const envelope = if (format == .envelope)
         // Backends that map the envelope strictly require a Token even when the chain carries the identity
-        try std.fmt.allocPrint(allocator, "{{\"AuthenticationType\":2,\"Certificate\":{f},\"Token\":\"\"}}", .{std.json.fmt(chain_json, .{})})
+        try printExact(allocator, "{{\"AuthenticationType\":2,\"Certificate\":{f},\"Token\":\"\"}}", .{std.json.fmt(chain_json, .{})})
     else
         null;
     defer if (envelope) |bytes| allocator.free(bytes);
     const chain_data = envelope orelse chain_json;
     if (chain_data.len > limits.max_jwt_payload_bytes) return error.LimitExceeded;
     return wire.encodeConnectionRequest(allocator, .{ .chain_data = chain_data, .client_data = client_data }, limits);
+}
+
+fn printExact(allocator: std.mem.Allocator, comptime format: []const u8, args: anytype) ![]u8 {
+    const bytes = try allocator.alloc(u8, std.fmt.count(format, args));
+    _ = std.fmt.bufPrint(bytes, format, args) catch unreachable;
+    return bytes;
 }
 
 pub fn encodeLoginPacket(comptime Profile: type, dest: []u8, connection_request: []const u8, limits: Limits) ![]const u8 {
