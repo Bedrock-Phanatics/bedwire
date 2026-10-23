@@ -141,7 +141,7 @@ The application fetches and refreshes trusted keys. Authentication returns an ow
 
 ## Compression
 
-Sessions support Snappy and raw DEFLATE. The default pure Zig DEFLATE encoder uses level 1; set `PoolConfig.deflate_level` to a value from 1 to 9 to configure it. The optional libdeflate backend uses reusable level-3 contexts allocated with the pool. It can improve compression throughput at the cost of additional memory per slot, and is not necessarily faster for every workload.
+Sessions support Snappy and raw DEFLATE. The default pure Zig DEFLATE encoder uses level 1; set `PoolConfig.deflate_level` to a value from 1 to 9 to configure it. At level 1, batches up to 512 bytes are written as one fixed-Huffman block instead of going through std's encoder, which is 20 to 50 times cheaper for them but can be up to a third larger. Levels 2 to 9 always use std's encoder. The optional libdeflate backend uses reusable level-3 contexts allocated with the pool. It can improve compression throughput at the cost of additional memory per slot, and is not necessarily faster for every workload.
 
 ## Testing and benchmarks
 

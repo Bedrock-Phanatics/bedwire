@@ -34,7 +34,7 @@ pub const Encoder = struct {
 
     pub fn compress(self: Encoder, input: []const u8, output: []u8, history: *[history_len]u8) ![]u8 {
         if (native) if (self.handle) |handle| return compressNative(handle, input, output);
-        return compressLevel(input, output, history, self.level);
+        return compressPure(input, output, history, self.level);
     }
 };
 
@@ -116,8 +116,134 @@ extern "c" fn libdeflate_deflate_compress(*anyopaque, [*]const u8, usize, [*]u8,
 extern "c" fn libdeflate_deflate_decompress_ex(*anyopaque, [*]const u8, usize, [*]u8, usize, *usize, *usize) c_int;
 
 pub fn compress(input: []const u8, output: []u8, history: *[history_len]u8) ![]u8 {
-    return compressLevel(input, output, history, default_level);
+    return compressPure(input, output, history, default_level);
 }
+
+/// Batches up to this size skip std's encoder at level 1, whose setup costs far more than they do.
+pub const fixed_limit = 512;
+
+fn compressPure(input: []const u8, output: []u8, history: *[history_len]u8, level: u4) ![]u8 {
+    if (level == 1 and input.len <= fixed_limit) {
+        // Callers that leave no room to grow have an uncompressed fallback, the rest get stored blocks from std.
+        if (compressFixed(input, output)) |bytes| return bytes else |err| if (output.len <= input.len) return err;
+    }
+    return compressLevel(input, output, history, level);
+}
+
+const fixed_table_bits = 10;
+
+/// One final block with the fixed Huffman codes and greedy 4-byte matching. Inputs must fit the 32 KiB window.
+pub fn compressFixed(input: []const u8, output: []u8) ![]u8 {
+    std.debug.assert(input.len <= 1 << 15);
+    var bits: Bits = .{ .bytes = output };
+    try bits.put(0b011, 3);
+
+    var table_bits: u5 = 6;
+    while (table_bits < fixed_table_bits and @as(usize, 1) << table_bits < input.len) table_bits += 1;
+    const shift: u5 = @intCast(32 - @as(u6, table_bits));
+    var table: [1 << fixed_table_bits]u16 = undefined;
+    @memset(table[0 .. @as(usize, 1) << table_bits], std.math.maxInt(u16));
+
+    var cursor: usize = 0;
+    while (input.len - cursor >= 4) {
+        const word = std.mem.readInt(u32, input[cursor..][0..4], .little);
+        const slot = (word *% 0x1e35a7bd) >> shift;
+        const previous: usize = table[slot];
+        table[slot] = @intCast(cursor);
+        if (previous >= cursor or std.mem.readInt(u32, input[previous..][0..4], .little) != word) {
+            try bits.literal(input[cursor]);
+            cursor += 1;
+            continue;
+        }
+        var len: usize = 4;
+        const longest = @min(258, input.len - cursor);
+        while (len < longest and input[previous + len] == input[cursor + len]) len += 1;
+        try bits.match(len, cursor - previous);
+        cursor += len;
+    }
+    for (input[cursor..]) |byte| try bits.literal(byte);
+    try bits.code(256);
+    return output[0..try bits.finish()];
+}
+
+const Bits = struct {
+    bytes: []u8,
+    len: usize = 0,
+    buffer: u64 = 0,
+    count: u6 = 0,
+
+    fn put(self: *Bits, value: u64, n: u6) !void {
+        self.buffer |= value << self.count;
+        self.count += n;
+        while (self.count >= 8) {
+            if (self.len == self.bytes.len) return error.NoSpaceLeft;
+            self.bytes[self.len] = @truncate(self.buffer);
+            self.len += 1;
+            self.buffer >>= 8;
+            self.count -= 8;
+        }
+    }
+
+    fn code(self: *Bits, symbol: u16) !void {
+        const entry = fixed_codes[symbol];
+        try self.put(entry.code, entry.len);
+    }
+
+    fn literal(self: *Bits, byte: u8) !void {
+        try self.code(byte);
+    }
+
+    fn match(self: *Bits, len: usize, distance: usize) !void {
+        if (len == 258) {
+            try self.code(285);
+        } else {
+            const l = len - 3;
+            if (l < 8) {
+                try self.code(@intCast(257 + l));
+            } else {
+                const n: u6 = std.math.log2_int(usize, l);
+                try self.code(@intCast(257 + 4 * (@as(usize, n) - 1) + ((l >> (n - 2)) & 3)));
+                try self.put(l & ((@as(usize, 1) << (n - 2)) - 1), n - 2);
+            }
+        }
+        const d = distance - 1;
+        if (d < 4) {
+            try self.put(@bitReverse(@as(u5, @intCast(d))), 5);
+        } else {
+            const n: u6 = std.math.log2_int(usize, d);
+            try self.put(@bitReverse(@as(u5, @intCast(2 * @as(usize, n) + ((d >> (n - 1)) & 1)))), 5);
+            try self.put(d & ((@as(usize, 1) << (n - 1)) - 1), n - 1);
+        }
+    }
+
+    fn finish(self: *Bits) !usize {
+        if (self.count != 0) {
+            if (self.len == self.bytes.len) return error.NoSpaceLeft;
+            self.bytes[self.len] = @truncate(self.buffer);
+            self.len += 1;
+        }
+        return self.len;
+    }
+};
+
+const Code = struct { code: u16, len: u6 };
+
+// RFC 1951 3.2.6, with each code reversed since DEFLATE writes Huffman codes from their top bit.
+const fixed_codes = blk: {
+    var codes: [288]Code = undefined;
+    for (&codes, 0..) |*entry, symbol| {
+        const value: u16, const len: u6 = if (symbol < 144)
+            .{ 0x30 + symbol, 8 }
+        else if (symbol < 256)
+            .{ 0x190 + symbol - 144, 9 }
+        else if (symbol < 280)
+            .{ symbol - 256, 7 }
+        else
+            .{ 0xc0 + symbol - 280, 8 };
+        entry.* = .{ .code = @bitReverse(value) >> @intCast(16 - len), .len = len };
+    }
+    break :blk codes;
+};
 
 /// Keep std's large compressor stack frame out of callers.
 noinline fn compressLevel(input: []const u8, output: []u8, history: *[history_len]u8, level: u4) ![]u8 {
@@ -159,4 +285,50 @@ pub fn decompress(input: []const u8, output: []u8, history: *[history_len]u8, li
     if (reader.seek != reader.end) return error.MalformedCompressedData;
 
     return bounded[0..len];
+}
+
+test "fixed blocks inflate back to the input across sizes and match shapes" {
+    var prng = std.Random.DefaultPrng.init(0xf1ed);
+    const random = prng.random();
+    var input: [1 << 15]u8 = undefined;
+    var output: [(1 << 15) + (1 << 13)]u8 = undefined;
+    var restored: [1 << 15]u8 = undefined;
+    var history: [history_len]u8 = undefined;
+
+    for ([_]usize{ 0, 1, 3, 4, 5, 64, 300, 1000, 4096, 1 << 15 }) |len| for (0..4) |shape| {
+        for (input[0..len], 0..) |*byte, i| byte.* = switch (shape) {
+            0 => random.int(u8),
+            1 => 'z',
+            2 => @truncate(i / 7),
+            else => if (random.uintLessThan(u8, 4) == 0) random.int(u8) else @truncate(i % 300),
+        };
+        const packed_bytes = try compressFixed(input[0..len], &output);
+        const unpacked = try decompress(packed_bytes, &restored, &history, .{});
+        try std.testing.expectEqualSlices(u8, input[0..len], unpacked);
+    };
+}
+
+test "level 1 sends small batches through fixed blocks and falls back to std when they grow" {
+    var history: [history_len]u8 = undefined;
+    var restored: [600]u8 = undefined;
+    var input: [fixed_limit + 1]u8 = undefined;
+    var prng = std.Random.DefaultPrng.init(9);
+    prng.random().bytes(&input);
+    var output: [700]u8 = undefined;
+
+    const tiny = try compress("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &output, &history);
+    try std.testing.expect(tiny.len < 10);
+    try std.testing.expectEqualSlices(u8, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", try decompress(tiny, &restored, &history, .{}));
+
+    const noise = try compress(input[0..fixed_limit], &output, &history);
+    try std.testing.expectEqualSlices(u8, input[0..fixed_limit], try decompress(noise, &restored, &history, .{}));
+    try std.testing.expectError(error.NoSpaceLeft, compress(input[0..fixed_limit], output[0 .. fixed_limit - 1], &history));
+}
+
+test "fixed blocks report a full output instead of truncating" {
+    var input: [512]u8 = undefined;
+    var prng = std.Random.DefaultPrng.init(3);
+    prng.random().bytes(&input);
+    var output: [511]u8 = undefined;
+    try std.testing.expectError(error.NoSpaceLeft, compressFixed(&input, &output));
 }

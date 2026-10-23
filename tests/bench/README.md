@@ -224,3 +224,29 @@ medians in ns/op; raw CSVs are the `windows-x86_64-v050-*` files under
   including SHA-256 and the copy into storage, ran at 1.21-1.53 GB/s. Chunks
   arriving in reverse order inside the window cost 2-12%, since they are read back
   for hashing once the gap fills.
+
+### Small DEFLATE batches
+
+std's DEFLATE encoder costs about 7 µs before it reads a byte, since it clears a
+64 KiB hash table and builds dynamic Huffman codes for every call. At level 1,
+batches up to 512 bytes now go out as one fixed-Huffman block with greedy
+matching instead. Two interleaved matrix runs against the build above, medians
+in ns/op, raw CSVs in `results/windows-x86_64-v050-fixed-*`:
+
+| Small batch | Encode before | Encode after | Round trip before | Round trip after | Frame bytes |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Realistic | 10,393 | 558 | 14,518 | 2,236 | 143 to 170 |
+| Realistic + AES | 11,507 | 785 | 15,400 | 2,731 | 151 to 178 |
+| Compressible | 6,305 | 190 | 6,623 | 380 | 11, unchanged |
+| Noise | 18,270 | 507 | 18,284 | 575 | 260, uncompressed |
+
+Fixed blocks decode faster too (4,140 to 1,680 ns for the realistic batch).
+The cost is ratio: the realistic batch grew 19%, and on generated MovePlayer
+batches the gap is 6% at 105 bytes and 29% at 525. Medium and large batches
+still use std's encoder and did not move. Levels 2 to 9 keep std's encoder for
+every batch.
+
+Two smaller changes measured with best-of-15 micro benchmarks:
+`ingestBorrowed` reads a 16 KiB uncompressed plaintext batch in 396 ns instead
+of 595 (116 instead of 122 for 262 bytes), and decrypting straight into the
+pool cut a 16 KiB encrypted ingest from 11,790 to 11,590 ns.

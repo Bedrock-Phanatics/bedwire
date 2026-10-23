@@ -21,10 +21,11 @@ fn writeFrames(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !void
 
     var prng = std.Random.DefaultPrng.init(0x1e7);
     const random = prng.random();
-    var storage: [96][1200]u8 = undefined;
-    var packets: [96][]const u8 = undefined;
+    var storage: [112][1200]u8 = undefined;
+    var packets: [112][]const u8 = undefined;
     for (&packets, 0..) |*packet, i| {
-        const len = 3 + random.uintLessThan(usize, 1100);
+        // The last run is tiny so its batch stays small enough for fixed DEFLATE blocks.
+        const len = 3 + random.uintLessThan(usize, if (i >= 96) 24 else 1100);
         const header = try bedwire.framing.varint.writeU32(&storage[i], 1020);
         // Runs of noise packets make whole batches that can't shrink and go out marked uncompressed.
         for (storage[i][header..len], 0..) |*byte, j| byte.* = if (i / 16 % 2 == 1) random.int(u8) else @truncate(j / 8);
