@@ -702,11 +702,14 @@ pub fn SessionWithProfile(comptime Profile: type) type {
         fn step(self: *const Self, observed: *Observed, packet: []const u8, sender: Role) !void {
             const header = try parseHeader(packet);
             const kind = Profile.packetKind(header.packet_id);
-            try self.check(observed.*, kind, header, sender);
-            const decoded = try self.validateControl(packet, header, kind);
+            try self.check(observed, kind, header, sender);
 
             if (kind) |known| {
-                try self.track(&observed.startup, known, packet, decoded);
+                if (controls(known)) {
+                    try self.control(&observed.startup, packet, header, known);
+                } else if (known == .start_game) {
+                    observed.startup.runtime_id = try runtimeId(packet, self.limits);
+                }
                 observed.kinds.insert(known);
             }
             observed.count += 1;
@@ -725,7 +728,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             return self.state.singlePacketBatch();
         }
 
-        fn check(self: *const Self, observed: Observed, kind: ?PacketKind, header: protocol.packet.Header, sender: Role) !void {
+        fn check(self: *const Self, observed: *const Observed, kind: ?PacketKind, header: protocol.packet.Header, sender: Role) !void {
             if (self.policy.encryption == .disabled and (kind == .server_to_client_handshake or kind == .client_to_server_handshake)) return error.InvalidState;
             const direction = if (kind) |known| Profile.packetDirection(known) else .bidirectional;
             if (!observed.state.permitsWithDirection(Profile.features, sender, kind, direction)) return error.InvalidState;
@@ -742,53 +745,51 @@ pub fn SessionWithProfile(comptime Profile: type) type {
             if (needs) |earlier| if (!self.seen(observed, earlier, .server, sender)) return error.InvalidState;
         }
 
-        fn seen(self: *const Self, observed: Observed, kind: PacketKind, from: Role, sender: Role) bool {
+        fn seen(self: *const Self, observed: *const Observed, kind: PacketKind, from: Role, sender: Role) bool {
             return self.exchanged(kind, from) or (from == sender and observed.kinds.contains(kind));
         }
 
-        fn track(self: *const Self, startup: *Startup, kind: PacketKind, packet: []const u8, decoded: ?protocol.BorrowedEnvelope) !void {
-            switch (kind) {
-                .resource_pack_client_response => if (decoded.?.value.typed.resource_pack_client_response.response == .resource_pack_stack_finished) {
+        // Kept out of line so the large decoded envelope stays off the hot path's stack.
+        noinline fn control(self: *const Self, startup: *Startup, bytes: []const u8, header: protocol.packet.Header, kind: PacketKind) !void {
+            if (bytes.len > self.limits.max_packet_bytes) return error.LimitExceeded;
+            const decoded = try Profile.decodeBorrowed(bytes, protocolLimits(self.limits));
+            if (decoded.header.toWire() != header.toWire() or decoded.kind != kind) return error.InvalidProfile;
+            if (decoded.value != .typed) return error.InvalidProfile;
+            if (protocol.typed.packetKind(decoded.value.typed) != kind) return error.InvalidProfile;
+
+            switch (decoded.value.typed) {
+                .resource_pack_client_response => |packet| if (packet.response == .resource_pack_stack_finished) {
                     if (!self.exchanged(.resource_pack_stack, .server)) return error.InvalidState;
                     startup.packs_completed = true;
                 },
-                .start_game => startup.runtime_id = try runtimeId(packet, self.limits),
-                .play_status => if (decoded.?.value.typed.play_status.status == .playerspawn) {
+                .play_status => |packet| if (packet.status == .playerspawn) {
                     startup.spawned = true;
                 },
-                .set_local_player_as_initialised => {
-                    const id = decoded.?.value.typed.set_local_player_as_initialised.player_id;
-                    if (!startup.spawned or startup.runtime_id != id) return error.InvalidState;
+                .set_local_player_as_initialised => |packet| {
+                    if (!startup.spawned or startup.runtime_id != packet.player_id) return error.InvalidState;
                     startup.initialized = true;
                 },
                 else => {},
             }
         }
+    };
+}
 
-        fn validateControl(self: *const Self, bytes: []const u8, header: protocol.packet.Header, kind: ?PacketKind) !?protocol.BorrowedEnvelope {
-            const known = kind orelse return null;
-            switch (known) {
-                .request_network_settings,
-                .network_settings,
-                .login,
-                .server_to_client_handshake,
-                .client_to_server_handshake,
-                .disconnect,
-                .resource_packs_info,
-                .resource_pack_stack,
-                .resource_pack_client_response,
-                .play_status,
-                .set_local_player_as_initialised,
-                => {},
-                else => return null,
-            }
-            if (bytes.len > self.limits.max_packet_bytes) return error.LimitExceeded;
-            const decoded = try Profile.decodeBorrowed(bytes, protocolLimits(self.limits));
-            if (decoded.header.toWire() != header.toWire() or decoded.kind != kind) return error.InvalidProfile;
-            if (decoded.value != .typed) return error.InvalidProfile;
-            if (protocol.typed.packetKind(decoded.value.typed) != known) return error.InvalidProfile;
-            return decoded;
-        }
+fn controls(kind: PacketKind) bool {
+    return switch (kind) {
+        .request_network_settings,
+        .network_settings,
+        .login,
+        .server_to_client_handshake,
+        .client_to_server_handshake,
+        .disconnect,
+        .resource_packs_info,
+        .resource_pack_stack,
+        .resource_pack_client_response,
+        .play_status,
+        .set_local_player_as_initialised,
+        => true,
+        else => false,
     };
 }
 
