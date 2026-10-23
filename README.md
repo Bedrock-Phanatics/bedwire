@@ -128,6 +128,8 @@ Chunks may arrive in any order inside the window. Repeats are reported and ignor
 
 Login verification supports Microsoft OIDC/JWKS or legacy certificate chains, according to the selected protocol profile. For OIDC, parse a trusted JWKS with `bedwire.auth.KeySet.parse()` and supply it through `bedwire.TrustPolicy` to `session.authenticateLoginPacket()` or `tap.authenticateLoginPacket()` while the login packet's iterator is alive.
 
+ClientData is verified with the identity key and its client-controlled claims are checked before an identity is returned. Absent claims are allowed, but present ones must have the right type and size, and every skin, cape and animation frame must decode to exactly width × height × 4 bytes. Proxies can run the same check on relayed metadata with `bedwire.auth.client_data.validate()`.
+
 The application fetches and refreshes trusted keys. Authentication returns an owned `Identity` that must be released with `identity.deinit()`. Do not treat offline or proxy-issued identities as Microsoft-authenticated.
 
 ## Compression

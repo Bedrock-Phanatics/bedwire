@@ -4,6 +4,7 @@ const jwt = @import("jwt.zig");
 const jwks = @import("jwks.zig");
 const identity = @import("identity.zig");
 const spki = @import("../crypto/spki.zig");
+const claims = @import("client_data.zig");
 
 pub const Identity = identity.Identity;
 
@@ -56,8 +57,7 @@ pub fn verifyOidc(
     const iss = try jwt.string(token.payload.value, "iss");
     if (!std.mem.eql(u8, iss, policy.issuer)) return error.InvalidClaims;
 
-    const aud = try jwt.string(token.payload.value, "aud");
-    if (!std.mem.eql(u8, aud, policy.audience)) return error.InvalidClaims;
+    if (!audienceIncludes(token.payload.value.object.get("aud") orelse return error.InvalidClaims, policy.audience)) return error.InvalidClaims;
 
     const cpk_str = try jwt.string(token.payload.value, "cpk");
     const client_key = spki.fromBase64(cpk_str) catch return error.InvalidPublicKey;
@@ -67,6 +67,7 @@ pub fn verifyOidc(
 
     client.verifyEcdsa(client_key) catch return error.InvalidSignature;
     try client.validateTime(policy.now, false);
+    try claims.validate(client.payload.value, limits);
 
     const display_name = (jwt.string(token.payload.value, "xname") catch null) orelse
         (try jwt.string(token.payload.value, "displayName"));
@@ -80,7 +81,7 @@ pub fn verifyOidc(
     const uuid_slice: []const u8 = blk: {
         if (token.payload.value.object.get("leguuid")) |leg_val| {
             if (leg_val != .string) return error.InvalidClaims;
-            if (!identity.validateUuid(leg_val.string)) return error.InvalidClaims;
+            if (!identity.validateUuid(leg_val.string) or std.mem.eql(u8, leg_val.string, nil_uuid)) return error.InvalidClaims;
             break :blk leg_val.string;
         }
         identity.deriveUuidV3(&uuid_buf, xuid);
@@ -94,4 +95,21 @@ pub fn verifyOidc(
         .key = client_key,
         .online = true,
     }, limits);
+}
+
+const nil_uuid = "00000000-0000-0000-0000-000000000000";
+
+fn audienceIncludes(aud: std.json.Value, expected: []const u8) bool {
+    switch (aud) {
+        .string => |value| return std.mem.eql(u8, value, expected),
+        .array => |list| {
+            var found = false;
+            for (list.items) |item| {
+                if (item != .string) return false;
+                found = found or std.mem.eql(u8, item.string, expected);
+            }
+            return found;
+        },
+        else => return false,
+    }
 }

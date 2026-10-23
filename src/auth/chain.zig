@@ -5,6 +5,7 @@ const jwt = @import("jwt.zig");
 const spki = @import("../crypto/spki.zig");
 
 const moj_root = @import("moj_root.zig");
+const claims = @import("client_data.zig");
 const identity_mod = @import("identity.zig");
 pub const Identity = identity_mod.Identity;
 
@@ -81,6 +82,7 @@ pub fn verifyChain(
         defer client.deinit();
         try client.verify(next_key.?);
         try client.validateTime(policy.now, false);
+        try claims.validate(client.payload.value, limits);
 
         const extra = token.payload.value.object.get("extraData") orelse return error.InvalidClaims;
         return identity_mod.validateAndCreate(allocator, .{

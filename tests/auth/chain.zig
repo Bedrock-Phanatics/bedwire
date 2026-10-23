@@ -247,3 +247,15 @@ test "a long display name is refused by the identity limit" {
 
     try testing.expectError(error.InvalidClaims, auth.verifyChain(allocator, chain, client_data, .{ .now = 100, .allow_offline = true }, tight));
 }
+
+test "a chain-signed ClientData with a malformed skin is refused" {
+    const allocator = testing.allocator;
+    const k = try keys();
+
+    const chain = try support.buildChain(allocator, k);
+    defer allocator.free(chain);
+    const client_data = try support.signToken(allocator, k[0], "{\"alg\":\"ES384\"}", "{\"SkinData\":\"AAAA\",\"SkinImageWidth\":1,\"SkinImageHeight\":1}");
+    defer allocator.free(client_data);
+
+    try testing.expectError(error.InvalidClientData, auth.verifyChain(allocator, chain, client_data, .{ .now = 100, .root = k[1].public_key }, support.limits));
+}

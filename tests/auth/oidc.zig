@@ -16,6 +16,7 @@ const Options = struct {
     now: i64 = 1100,
     clock_skew: i64 = 60,
     client_data_seed: u8 = 10,
+    client_data: []const u8 = "{}",
     tamper: bool = false,
 };
 
@@ -34,7 +35,7 @@ fn verify(allocator: std.mem.Allocator, payload: []const u8, options: Options) !
     defer allocator.free(token);
     if (options.tamper) token[token.len - 5] ^= 0x01;
 
-    const client_data = try support.buildClientData(allocator, try support.deterministicKey(options.client_data_seed));
+    const client_data = try support.signToken(allocator, try support.deterministicKey(options.client_data_seed), "{\"alg\":\"ES384\"}", options.client_data);
     defer allocator.free(client_data);
 
     return oidc.verifyOidc(allocator, token, client_data, .{
@@ -122,4 +123,34 @@ fn verifyValid(allocator: std.mem.Allocator) !void {
 
 test "oidc verifier handles allocation failures cleanly" {
     try testing.checkAllAllocationFailures(testing.allocator, verifyValid, .{});
+}
+
+test "the audience may be a list that includes the multiplayer audience" {
+    const listed = "{" ++ iss ++ ",\"aud\":[\"other\",\"api://auth-minecraft-services/multiplayer\"],\"cpk\":\"$cpk\",\"xname\":\"Alex\",\"exp\":2000,\"xid\":\"987654321\"}";
+    var id = try verify(testing.allocator, listed, .{});
+    id.deinit();
+
+    const refused = [_][]const u8{
+        "\"aud\":[\"other\"]",
+        "\"aud\":[\"api://auth-minecraft-services/multiplayer\",7]",
+        "\"aud\":[]",
+        "\"aud\":7",
+    };
+    inline for (refused) |audience| {
+        const payload = "{" ++ iss ++ "," ++ audience ++ ",\"cpk\":\"$cpk\",\"xname\":\"Alex\",\"exp\":2000,\"xid\":\"987654321\"}";
+        try testing.expectError(error.InvalidClaims, verify(testing.allocator, payload, .{}));
+    }
+}
+
+test "the nil UUID is not a legacy UUID" {
+    try testing.expectError(error.InvalidClaims, verify(testing.allocator, "{" ++ claims ++ ",\"exp\":2000,\"xid\":\"987654321\",\"leguuid\":\"00000000-0000-0000-0000-000000000000\"}", .{}));
+}
+
+test "signed ClientData claims are validated after the signature" {
+    var id = try verify(testing.allocator, valid, .{ .client_data = "{\"DeviceOS\":7,\"SkinData\":\"AAAAAA==\",\"SkinImageWidth\":1,\"SkinImageHeight\":1}" });
+    id.deinit();
+
+    try testing.expectError(error.InvalidClientData, verify(testing.allocator, valid, .{ .client_data = "{\"SkinData\":\"AAAAAA==\",\"SkinImageWidth\":64,\"SkinImageHeight\":64}" }));
+    try testing.expectError(error.InvalidClientData, verify(testing.allocator, valid, .{ .client_data = "{\"DeviceOS\":\"Android\"}" }));
+    try testing.expectError(error.InvalidJson, verify(testing.allocator, valid, .{ .client_data = "{\"DeviceOS\":7,\"DeviceOS\":1}" }));
 }
