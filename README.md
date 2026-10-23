@@ -148,9 +148,10 @@ zig build test
 zig build test -Doptimize=ReleaseSafe
 python tools/interop/check.py
 zig build bench-baseline
+zig build bench-scale
 ```
 
-The interoperability checker requires Python 3 and Go 1.25+. To build the benchmark without running it, use `zig build bench-baseline-build`; the executable is `zig-out/bin/bedwire-baseline` (or `.exe` on Windows). Add `-Dlibdeflate=true` to test the optional backend.
+The interoperability checker requires Python 3 and Go 1.25+. Besides the Snappy fixtures, an independent Go reader decrypts, decompresses and splits a stream of Bedwire's frames and compares every packet. `bench-scale` measures split packet groups, thousands of sessions on one pool, and resource pack transfers. To build the benchmark without running it, use `zig build bench-baseline-build`; the executable is `zig-out/bin/bedwire-baseline` (or `.exe` on Windows). Add `-Dlibdeflate=true` to test the optional backend.
 
 Recorded measurements, methodology, workload limits and raw results are in:
 

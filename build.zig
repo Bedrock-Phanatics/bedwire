@@ -94,6 +94,17 @@ pub fn build(b: *std.Build) !void {
     b.step("bench-pool", "Run the pool contention benchmark")
         .dependOn(&b.addRunArtifact(pool_bench).step);
 
+    const scale_bench = b.addExecutable(.{ .name = "bedwire-scale", .root_module = b.createModule(.{
+        .root_source_file = b.path("tests/bench/scale.zig"),
+        .target = target,
+        .optimize = .fast,
+        .imports = &.{.{ .name = "bedwire", .module = bench_bedwire }},
+    }) });
+    b.step("bench-scale-build", "Build the packet group, session scale and resource pack benchmark")
+        .dependOn(&b.addInstallArtifact(scale_bench, .{}).step);
+    b.step("bench-scale", "Run the packet group, session scale and resource pack benchmark")
+        .dependOn(&b.addRunArtifact(scale_bench).step);
+
     if (b.option([]const u8, "libdeflate-path", "libdeflate source directory for optional codec benchmarks")) |source| {
         const root: std.Build.LazyPath = .{ .cwd_relative = source };
         const libdeflate = native orelse buildLibdeflate(b, target, root);

@@ -1,0 +1,59 @@
+
+# packet groups, server encode + client ingest, ReleaseFast
+group              mode         path       frames  wire bytes  ns/packet    packets/s
+1024 x 48 B        plain        split           1       50178       38.5     25981934
+1024 x 48 B        plain        split64K        1       50178       37.9     26391412
+1024 x 48 B        plain        single       1024       52224       98.3     10173011
+1024 x 48 B        deflate      split           1       35751      996.5      1003489
+1024 x 48 B        deflate      split64K        1       35751      998.6      1001426
+1024 x 48 B        deflate      single       1024       52224      279.9      3572494
+1024 x 48 B        snappy+aes   split           1       49362      260.6      3836672
+1024 x 48 B        snappy+aes   split64K        1       49362      258.2      3872634
+1024 x 48 B        snappy+aes   single       1024       60416      463.3      2158207
+1024 x 48 B        deflate+aes  split           1       35759     1049.7       952646
+1024 x 48 B        deflate+aes  split64K        1       35759     1045.1       956881
+1024 x 48 B        deflate+aes  single       1024       60416      578.6      1728290
+256 x 32 B-6 KiB   plain        split           1      799509      187.1      5345026
+256 x 32 B-6 KiB   plain        split64K       13      799533      167.5      5969453
+256 x 32 B-6 KiB   plain        single        256      800019      167.1      5984105
+256 x 32 B-6 KiB   deflate      split           1      764863    82103.2        12180
+256 x 32 B-6 KiB   deflate      split64K       13      773770    72976.4        13703
+256 x 32 B-6 KiB   deflate      single        256      799789    70988.3        14087
+256 x 32 B-6 KiB   snappy+aes   split           1      799517     4657.8       214694
+256 x 32 B-6 KiB   snappy+aes   split64K       13      799637    13698.9        72999
+256 x 32 B-6 KiB   snappy+aes   single        256      802067    16074.2        62212
+256 x 32 B-6 KiB   deflate+aes  split           1      764871   104761.6         9545
+256 x 32 B-6 KiB   deflate+aes  split64K       13      773874    91806.8        10892
+256 x 32 B-6 KiB   deflate+aes  single        256      801837    79446.6        12587
+64 x 16 KiB        plain        split           2     1048772      936.7      1067556
+64 x 16 KiB        plain        split64K       22     1048812      654.7      1527446
+64 x 16 KiB        plain        single         64     1048896      866.6      1153881
+64 x 16 KiB        deflate      split           2     1010426   486380.4         2056
+64 x 16 KiB        deflate      split64K       22     1023671   445093.6         2247
+64 x 16 KiB        deflate      single         64     1037565   374033.0         2674
+64 x 16 KiB        snappy+aes   split           2     1048788    25091.4        39854
+64 x 16 KiB        snappy+aes   split64K       22     1048988    75834.1        13187
+64 x 16 KiB        snappy+aes   single         64     1049408    91854.3        10887
+64 x 16 KiB        deflate+aes  split           2     1010442   528549.6         1892
+64 x 16 KiB        deflate+aes  split64K       22     1023847   474925.5         2106
+64 x 16 KiB        deflate+aes  single         64     1038077   384310.9         2602
+
+# sessions sharing one pool (2 RX, 2 TX slots), snappy+aes, one 96 B packet each way per session per round
+Session is 912 bytes; SessionCrypto is 368 bytes of it
+   pairs     pool bytes    bytes/session    ns/packet      packets/s
+     100        1573060              912        677.8        1475335
+    1000        1573060              912        722.1        1384754
+   10000        1573060              912        824.9        1212291
+
+# resource pack transfer, Delivery from memory into Transfer with SHA-256, 32 MiB archive
+     chunk  window order           MB/s
+     65536       1 in order        1244
+     65536       8 in order        1398
+     65536       8 reversed        1353
+     65536      32 in order        1423
+     65536      32 reversed        1336
+   1048576       1 in order        1407
+   1048576       8 in order        1382
+   1048576       8 reversed        1211
+   1048576      32 in order        1354
+   1048576      32 reversed        1270

@@ -158,3 +158,69 @@ runs went from 41.6 to 4.9 ns per pair at 4 threads and 56.1 to 6.4 at 8
 threads (one slot). Same-direction contention is unchanged, since threads still
 share one mask; give each worker its own pool when that matters. The pool grew
 from 256 to 512 bytes.
+
+## 0.5.0 pass
+
+Interleaved before/after runs of the matrix, three each, on the same Windows
+x86_64 Ryzen 5 5500 host and ReleaseFast build. "Before" is `a6678d0`. Times are
+medians in ns/op; raw CSVs are the `windows-x86_64-v050-*` files under
+`results/`. The desktop was not idle, so differences under about 10% are noise.
+
+| Case | Before | After | Gain |
+| --- | ---: | ---: | ---: |
+| Medium noise DEFLATE decode | 89,188 | 871 | 102x |
+| Medium noise DEFLATE round trip | 284,437 | 184,817 | 1.54x |
+| Medium noise DEFLATE + AES round trip | 302,484 | 208,261 | 1.45x |
+| Large noise DEFLATE decode | 1,388,960 | 7,469 | 186x |
+| Large noise DEFLATE + AES round trip | 6,678,050 | 5,755,643 | 1.16x |
+| Small noise DEFLATE decode | 103 | 55 | 1.87x |
+
+- A marked batch that compression would not shrink now goes out with the `0xff`
+  marker. Receivers skip decompression entirely, and noise frames stop growing
+  (a large DEFLATE frame went from 262,583 to 262,149 bytes). The compressor is
+  given one byte less than the raw batch, so it gives up early, and batches under
+  65 bytes skip std's DEFLATE setup. An independent Go reader in
+  `tools/interop` decodes these frames.
+- Every realistic and compressible case stayed within noise (-7.5% to +6%, with
+  one large Snappy round trip outlier whose encode and decode halves did not move).
+- The new ordering and startup checks first cost 40-60% on small typed batches,
+  because the 832-byte decoded envelope was passed by value for every packet.
+  Control packets are now decoded out of line, the per-packet step is inline and
+  the codecs sit in their own function. Snappy's compressor is aligned to 64
+  bytes, since code placement alone moved small Snappy encodes by 25%.
+  Best-of-15 micro benchmarks of four-packet frames against `a6678d0`:
+  compressible Snappy encode 170 to 162 ns, typed uncompressed round trip 189
+  to 183 ns, and noise uncompressed round trip 173 to 180 ns, the cost of the
+  checks themselves.
+
+`zig build bench-scale` covers what the matrix doesn't. Two runs are in
+`results/windows-x86_64-v050-scale-run*.txt`; these figures are from the second.
+
+| Group | Mode | Split ns/packet | 64 KiB split | One frame per packet |
+| --- | --- | ---: | ---: | ---: |
+| 1,024 x 48 B | none | 45 | 57 | 113 |
+| 1,024 x 48 B | Snappy + AES | 300 | 273 | 496 |
+| 1,024 x 48 B | DEFLATE + AES | 1,109 | 1,137 | 590 |
+| 256 x 32 B-6 KiB | none | 190 | 165 | 167 |
+| 256 x 32 B-6 KiB | Snappy + AES | 4,529 | 12,070 | 13,547 |
+| 64 x 16 KiB | none | 990 | 640 | 608 |
+| 64 x 16 KiB | DEFLATE | 420,604 | 365,780 | 301,734 |
+
+- Each row includes server encode and client ingest. Splitting a group of small
+  packets into one frame is 2.5x faster than a frame each uncompressed and 1.7x
+  with Snappy + AES, and with DEFLATE it sends 32% fewer bytes. The per-packet frames there go uncompressed because they
+  are under 65 bytes, which is cheaper but larger.
+- Very large uncompressed or DEFLATE frames lose cache locality. Capping
+  batches with `Limits.max_outgoing_batch_bytes` near 64 KiB keeps most of the
+  split gain for uncompressed traffic. Snappy is the exception: Bedwire only
+  skips ahead on misses for inputs of 64 KiB or more, so its large frames are
+  about 3x cheaper per byte on this half-noise data.
+- 100, 1,000 and 10,000 session pairs on one pool (two RX and two TX slots)
+  exchanging one 96-byte Snappy + AES packet each way: 590, 585 and 607 ns per
+  packet in the second run (678, 722 and 825 in the first). The pool holds
+  1,573,060 bytes, and each `Session` is 912 bytes, 368 of them its cipher
+  state. Steady state made no allocator calls.
+- Resource pack transfer of a 32 MiB archive from `Delivery` into `Transfer`,
+  including SHA-256 and the copy into storage, ran at 1.21-1.53 GB/s. Chunks
+  arriving in reverse order inside the window cost 2-12%, since they are read back
+  for hashing once the gap fills.
