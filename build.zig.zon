@@ -1,6 +1,6 @@
 .{
     .name = .bedwire,
-    .version = "0.5.0",
+    .version = "0.5.1",
     .fingerprint = 0x24f12bffadd8faea,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
