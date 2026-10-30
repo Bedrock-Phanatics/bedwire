@@ -296,3 +296,17 @@ test "every DEFLATE level round-trips and out-of-range levels are refused" {
         try testing.expectEqualSlices(u8, packet, packets.next().?.bytes);
     }
 }
+
+test "clients get a smaller frame limit until they are in game" {
+    const limits: bedwire.Limits = .{ .max_frame_bytes = 4096, .max_batch_bytes = 4096, .max_packet_bytes = 4096, .max_handshake_frame_bytes = 64 };
+
+    var pool = try bedwire.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
+    defer pool.deinit();
+    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = limits });
+    defer session.deinit();
+
+    var frame: [128]u8 = @splat(0);
+    frame[0] = 0xfe;
+    try testing.expectError(error.LimitExceeded, session.ingest(&frame));
+    try testing.expectEqual(bedwire.State.disconnected, session.state);
+}

@@ -229,6 +229,8 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 
             const rx_slot = self.pool.getRx(rx_token) orelse return error.InvalidState;
             if (body.len > rx_slot.frame.len or body.len > self.limits.max_frame_bytes) return error.LimitExceeded;
+            if (self.role == .server and self.state != .in_game and body.len > self.limits.max_handshake_frame_bytes)
+                return error.LimitExceeded;
 
             var session_payload: []const u8 = body;
             if (self.crypto) |*crypto| session_payload = try crypto.openFrom(rx_slot.frame, body);

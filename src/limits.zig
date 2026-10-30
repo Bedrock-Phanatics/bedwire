@@ -2,6 +2,9 @@ const std = @import("std");
 
 pub const Limits = struct {
     max_frame_bytes: usize = 4 * 1024 * 1024,
+    /// Frames a client may send before it is in game. Login is the largest of them, and a smaller cap bounds how much
+    /// decompression work an unauthenticated peer can force, since empty DEFLATE blocks cost CPU without output.
+    max_handshake_frame_bytes: usize = 1024 * 1024,
     max_batch_bytes: usize = 16 * 1024 * 1024,
     max_packet_bytes: usize = 4 * 1024 * 1024,
     max_packets_per_batch: usize = 1024,
@@ -31,12 +34,14 @@ pub const Limits = struct {
     pub fn validate(self: Limits) !void {
         const positive =
             self.max_frame_bytes > 0 and
+            self.max_handshake_frame_bytes > 0 and
             self.max_batch_bytes > 0 and
             self.max_packet_bytes > 0 and
             self.max_packets_per_batch > 0 and
             self.max_jwt_header_bytes > 0 and
             self.max_jwt_payload_bytes > 0 and
             self.max_json_nesting > 0 and
+            self.max_json_values > 0 and
             self.max_chain_length > 0 and
             self.max_identity_bytes > 0 and
             self.max_resource_pack_bytes > 0 and
