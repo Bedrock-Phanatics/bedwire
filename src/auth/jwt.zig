@@ -156,6 +156,7 @@ pub fn parseJson(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits
     if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUtf8;
 
     var depth: usize = 0;
+    var values: usize = 1;
     var quoted = false;
     var escaped = false;
 
@@ -177,7 +178,12 @@ pub fn parseJson(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits
             '"' => quoted = true,
             '{', '[' => {
                 depth += 1;
-                if (depth > limits.max_json_nesting) return error.LimitExceeded;
+                values += 1;
+                if (depth > limits.max_json_nesting or values > limits.max_json_values) return error.LimitExceeded;
+            },
+            ',' => {
+                values += 1;
+                if (values > limits.max_json_values) return error.LimitExceeded;
             },
             '}', ']' => {
                 if (depth == 0) return error.InvalidJson;
@@ -215,4 +221,13 @@ fn decodeSegment(allocator: std.mem.Allocator, input: []const u8, limit: usize) 
     decoder.decode(bytes, input) catch return error.InvalidToken;
 
     return bytes;
+}
+
+test "documents with too many values are refused before parsing" {
+    const limits: Limits = .{ .max_json_values = 4 };
+    const fits = try parseJson(std.testing.allocator, "{\"a\":[1,2]}", limits);
+    fits.deinit();
+    try std.testing.expectError(error.LimitExceeded, parseJson(std.testing.allocator, "{\"a\":[1,2,3,4]}", limits));
+    const quoted = try parseJson(std.testing.allocator, "{\"a\":\"1,2,3,4,5\"}", limits);
+    quoted.deinit();
 }

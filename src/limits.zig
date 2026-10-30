@@ -11,6 +11,8 @@ pub const Limits = struct {
     max_jwt_header_bytes: usize = 8 * 1024,
     max_jwt_payload_bytes: usize = 1024 * 1024,
     max_json_nesting: usize = 64,
+    /// Values one JSON document may hold, since parsing builds a tree many times the size of its input.
+    max_json_values: usize = 16 * 1024,
     max_chain_length: usize = 8,
     max_identity_bytes: usize = 1024,
 
