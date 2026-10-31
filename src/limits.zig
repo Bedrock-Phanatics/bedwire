@@ -4,7 +4,8 @@ pub const Limits = struct {
     max_frame_bytes: usize = 4 * 1024 * 1024,
     /// Frames a client may send before it is in game. Login is the largest of them, and a smaller cap bounds how much
     /// decompression work an unauthenticated peer can force, since empty DEFLATE blocks cost CPU without output.
-    max_handshake_frame_bytes: usize = 1024 * 1024,
+    /// A full size login of incompressible skin data still deflates to under three quarters of its size.
+    max_handshake_frame_bytes: usize = 3 * 1024 * 1024,
     max_batch_bytes: usize = 16 * 1024 * 1024,
     max_packet_bytes: usize = 4 * 1024 * 1024,
     max_packets_per_batch: usize = 1024,
@@ -12,7 +13,8 @@ pub const Limits = struct {
     max_outgoing_packets_per_batch: ?usize = null,
 
     max_jwt_header_bytes: usize = 8 * 1024,
-    max_jwt_payload_bytes: usize = 1024 * 1024,
+    /// Client data carries the skin, geometry and animations, which large persona and marketplace skins push past 1 MiB.
+    max_jwt_payload_bytes: usize = 3 * 1024 * 1024,
     max_json_nesting: usize = 64,
     /// Values one JSON document may hold, since parsing builds a tree many times the size of its input.
     max_json_values: usize = 16 * 1024,
@@ -26,7 +28,7 @@ pub const Limits = struct {
 
     max_jwks_bytes: usize = 64 * 1024,
     max_jwks_keys: usize = 16,
-    max_connection_request_bytes: usize = 2 * 1024 * 1024,
+    max_connection_request_bytes: usize = 3 * 1024 * 1024,
     max_kid_bytes: usize = 64,
 
     pub const max_supported_json_nesting: usize = 128;
