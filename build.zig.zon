@@ -1,12 +1,12 @@
 .{
     .name = .bedwire,
-    .version = "0.5.6",
+    .version = "0.6.0",
     .fingerprint = 0x24f12bffadd8faea,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .bedrock_protocol = .{
-            .url = "https://codeload.github.com/Bedrock-Phanatics/protocol-zig/tar.gz/02346348b20725f7ba90a3d3bde8940d8315fd30",
-            .hash = "bedrock_protocol-0.9.1-LNPkasqGDQAe-h3nh1MVVxfh1F_hY4FFzzr0JngLGzla",
+            .url = "https://codeload.github.com/Bedrock-Phanatics/protocol-zig/tar.gz/0a69519d7241a3831b56b523c8df554c8b012d8a",
+            .hash = "bedrock_protocol-0.10.0-LNPkaiX6DQA8mGKalc1oWQXM8ItJt23ueBOwWllkCLKk",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "tests", "tools", "bench", "vendor", "README.md" },

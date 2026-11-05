@@ -783,6 +783,7 @@ pub fn SessionWithProfile(comptime Profile: type) type {
 }
 
 const special_kinds = blk: {
+    @setEvalBranchQuota(std.enums.values(PacketKind).len * 64);
     var kinds: std.EnumSet(PacketKind) = .empty;
     for (std.enums.values(PacketKind)) |kind| {
         const ordered = switch (kind) {
