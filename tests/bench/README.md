@@ -13,7 +13,7 @@ zig build bench-baseline-build
 ```
 
 On Windows, use `zig-out/bin/bedwire-baseline.exe`. `zig build bench-baseline`
-also runs the matrix. Both always use ReleaseFast for Bedwire and protocol-zig.
+also runs the matrix. Both always use ReleaseFast for Bedwire.
 The older `bench` and `bench-build` steps remain available.
 
 The matrix has 135 cases: three sizes, three contents, five compression/crypto

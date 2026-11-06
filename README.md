@@ -2,9 +2,9 @@
 
 Minecraft Bedrock session networking for Zig 0.17.0.
 
-Bedwire sits between a transport such as RakNet or NetherNet and [protocol-zig](https://github.com/Bedrock-Phanatics/protocol-zig). It handles Bedrock batch framing, compression, encryption, login authentication and session state. The application owns network I/O, transport reliability and backpressure, and trusted-key retrieval.
+Bedwire sits between a transport such as RakNet or NetherNet and the application's packet codec. It handles Bedrock batch framing, compression, encryption, login authentication and session state. The application owns network I/O, transport reliability and backpressure, trusted-key retrieval, and encoding and decoding gameplay packets.
 
-- Client and server sessions with configurable protocol profiles and resource limits
+- Client and server sessions with runtime protocol settings and resource limits
 - Snappy and DEFLATE compression, with optional libdeflate
 - AES session encryption and JWT-based login verification
 - Reusable buffer pools and borrowed packet data
@@ -63,7 +63,7 @@ defer packets.deinit();
 
 while (packets.next()) |packet| {
     std.log.info("packet {d}: {d} bytes", .{ packet.id, packet.bytes.len });
-    // Call session.decodePacket(packet) when typed fields are needed.
+    // packet.kind is set for control packets; everything else is opaque bytes for your codec.
 }
 ```
 
@@ -97,6 +97,12 @@ while (try batches.next()) |frame| {
 The RakNet and NetherNet adapters' `send` split this way on their own and close the session if a group fails after its first frame.
 
 `Limits.max_outgoing_batch_bytes` and `Limits.max_outgoing_packets_per_batch` cap what this side sends without loosening what it accepts. Batches that compression would not shrink go out uncompressed.
+
+## Packets and protocol versions
+
+Bedwire knows only the handshake contract, which has been stable across Bedrock releases: the packet header varint (10-bit ID and two sub-client indices) and the control packets the session machine needs, listed in `bedwire.PacketKind` with their fixed IDs and directions. `bedwire.control` reads and writes the few fields it uses, such as NetworkSettings, Login, PlayStatus and the resource pack chunk packets, with bounded readers that reject truncation, trailing bytes and oversized lengths. Version-specific packets, including Disconnect, ResourcePacksInfo and ResourcePackStack, pass through undecoded, so a new Minecraft release needs no Bedwire update unless that contract changes.
+
+Version differences are runtime settings. `SessionOptions.features` (`bedwire.SessionFeatures`, modern defaults) selects the network settings request, compression framing, login flow and resource pack flow. `SessionOptions.protocol_version` is only compared by `canRelayTo`, while `Tap` requires `protocol_version` and refuses clients announcing another. `SessionPolicy.directions` can point at a shared `bedwire.Directions` table of the non-control IDs each side may send; without one, any such ID may travel either way once the session admits gameplay. Control packets always follow their fixed rules.
 
 Sessions enforce their protocol's handshake and packet-state transitions. One-time steps such as Login, either handshake packet and StartGame are refused if repeated, pack downloads must follow the offer, and a client key can be authenticated once and never replaced. Install server encryption only after the cleartext ServerToClientHandshake frame is sent and released. Errors from `ingest` other than `PoolExhausted` close the session, while a failed `encode` leaves it unchanged. Keep each session at a stable address and serialize operations on it. Pools can be shared across workers, but release every packet iterator and outgoing frame before destroying its session; destroy the pool after all sessions are gone. Borrowed packet bytes expire when the iterator is released, and outgoing bytes expire when the frame is released. Size `Limits` and pool slot counts for your workload. Before a client is in game its frames are held to `max_handshake_frame_bytes`, and every JSON document in a login to `max_json_values` values, so an unauthenticated peer can't force much decompression or parsing work.
 
@@ -133,7 +139,7 @@ Chunks may arrive in any order inside the window. Repeats are reported and ignor
 
 ## Authentication
 
-Login verification supports Microsoft OIDC/JWKS or legacy certificate chains, according to the selected protocol profile. For OIDC, parse a trusted JWKS with `bedwire.auth.KeySet.parse()` and supply it through `bedwire.TrustPolicy` to `session.authenticateLoginPacket()` or `tap.authenticateLoginPacket()` while the login packet's iterator is alive.
+Login verification supports Microsoft OIDC/JWKS or legacy certificate chains, according to `SessionFeatures.login_flow`. For OIDC, parse a trusted JWKS with `bedwire.auth.KeySet.parse()` and supply it through `bedwire.TrustPolicy` to `session.authenticateLoginPacket()` or `tap.authenticateLoginPacket()` while the login packet's iterator is alive.
 
 ClientData is verified with the identity key and its client-controlled claims are checked before an identity is returned. Absent claims are allowed, but present ones must have the right type and size, and every skin, cape and animation frame must decode to exactly width × height × 4 bytes. Proxies can run the same check on relayed metadata with `bedwire.auth.client_data.validate()`.
 
