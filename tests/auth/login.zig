@@ -4,7 +4,7 @@ const support = @import("../support.zig");
 
 const testing = std.testing;
 
-fn buildRequest(comptime Profile: type, allocator: std.mem.Allocator, format: bedwire.auth.ConnectionRequestFormat, limits: bedwire.Limits) ![]u8 {
+fn buildRequest(profile: support.Profile, allocator: std.mem.Allocator, format: bedwire.auth.ConnectionRequestFormat, limits: bedwire.Limits) ![]u8 {
     const proxy_key = try support.deterministicKey(9);
     const original_key = try support.deterministicKey(1);
     var identity = try bedwire.auth.identity.validateAndCreate(allocator, .{
@@ -15,7 +15,7 @@ fn buildRequest(comptime Profile: type, allocator: std.mem.Allocator, format: be
         .online = true,
     }, limits);
     defer identity.deinit();
-    return bedwire.auth.login.buildProxyConnectionRequest(Profile, allocator, proxy_key, &identity, "{\"SkinId\":\"demo\"}", .{ .ip4 = .{ .bytes = .{ 203, 0, 113, 5 }, .port = 51234 } }, 200, format, limits);
+    return bedwire.auth.login.buildProxyConnectionRequest(profile.features, allocator, proxy_key, &identity, "{\"SkinId\":\"demo\"}", .{ .ip4 = .{ .bytes = .{ 203, 0, 113, 5 }, .port = 51234 } }, 200, format, limits);
 }
 
 test "proxy-issued Login round trips through the selected profile and trusted backend" {
@@ -26,11 +26,11 @@ test "proxy-issued Login round trips through the selected profile and trusted ba
     defer allocator.free(request);
 
     var storage: [support.limits.max_packet_bytes]u8 = undefined;
-    const packet = try bedwire.auth.login.encodeLoginPacket(support.modern, &storage, request, support.limits);
-    const decoded = try support.modern.decodeBorrowed(packet, .{});
-    try testing.expectEqual(bedwire.PacketKind.login, decoded.kind.?);
-    try testing.expectEqual(@as(i32, @intCast(support.modern.protocol_number)), decoded.value.typed.login.client_network_version);
-    const parsed_request = try bedwire.auth.decodeConnectionRequest(decoded.value.typed.login.connection_request, support.limits);
+    const packet = try bedwire.auth.login.encodeLoginPacket(support.modern.protocol_version, &storage, request, support.limits);
+    try testing.expectEqual(bedwire.PacketKind.login, bedwire.PacketKind.fromId((try bedwire.control.parse(packet)).header.packet_id).?);
+    const decoded = try bedwire.control.decode(bedwire.control.Login, packet, support.limits);
+    try testing.expectEqual(@as(i32, @intCast(support.modern.protocol_version)), decoded.protocol_version);
+    const parsed_request = try bedwire.auth.decodeConnectionRequest(decoded.connection_request, support.limits);
     var envelope = try bedwire.auth.parseChainEnvelope(allocator, parsed_request.chain_data, support.limits);
     defer envelope.deinit();
     try testing.expectEqual(@as(u8, 2), envelope.authentication_type);
@@ -46,7 +46,7 @@ test "proxy-issued Login round trips through the selected profile and trusted ba
     defer pair.deinit();
     pair.server.state = .authenticating;
     pair.server.received.insert(.login);
-    var verified = try pair.server.authenticateLogin(allocator, decoded.value.typed.login.connection_request, .{ .certificate_chain = .{
+    var verified = try pair.server.authenticateLogin(allocator, decoded.connection_request, .{ .certificate_chain = .{
         .now = 100,
         .trusted_issuer_key = proxy_key.public_key,
     } });
@@ -92,10 +92,10 @@ test "legacy profile uses a direct chain and OIDC cannot issue proxy credentials
     const request = try buildRequest(support.legacy, allocator, .legacy_chain, support.limits);
     defer allocator.free(request);
     var storage: [support.limits.max_packet_bytes]u8 = undefined;
-    const packet = try bedwire.auth.login.encodeLoginPacket(support.legacy, &storage, request, support.limits);
-    const decoded = try support.legacy.decodeBorrowed(packet, .{});
-    try testing.expectEqual(@as(i32, @intCast(support.legacy.protocol_number)), decoded.value.typed.login.client_network_version);
-    const parsed = try bedwire.auth.decodeConnectionRequest(decoded.value.typed.login.connection_request, support.limits);
+    const packet = try bedwire.auth.login.encodeLoginPacket(support.legacy.protocol_version, &storage, request, support.limits);
+    const decoded = try bedwire.control.decode(bedwire.control.Login, packet, support.limits);
+    try testing.expectEqual(@as(i32, @intCast(support.legacy.protocol_version)), decoded.protocol_version);
+    const parsed = try bedwire.auth.decodeConnectionRequest(decoded.connection_request, support.limits);
     var identity = try bedwire.auth.verifyChain(allocator, parsed.chain_data, parsed.client_data, .{
         .now = 100,
         .trusted_issuer_key = key.public_key,
@@ -131,13 +131,13 @@ test "proxy Login construction enforces limits and cleans up allocation failures
         .online = false,
     }, support.limits);
     defer identity.deinit();
-    try testing.expectError(error.InvalidJson, bedwire.auth.login.buildProxyConnectionRequest(support.modern, allocator, key, &identity, "{", null, 200, .envelope, support.limits));
+    try testing.expectError(error.InvalidJson, bedwire.auth.login.buildProxyConnectionRequest(support.modern.features, allocator, key, &identity, "{", null, 200, .envelope, support.limits));
 
     const request = try buildRequest(support.modern, allocator, .envelope, support.limits);
     defer allocator.free(request);
     tight = support.limits;
     tight.max_packet_bytes = 8;
     var storage: [128]u8 = undefined;
-    try testing.expect(std.meta.isError(bedwire.auth.login.encodeLoginPacket(support.modern, &storage, request, tight)));
+    try testing.expect(std.meta.isError(bedwire.auth.login.encodeLoginPacket(support.modern.protocol_version, &storage, request, tight)));
     try testing.checkAllAllocationFailures(allocator, buildAndFree, .{});
 }

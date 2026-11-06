@@ -6,15 +6,10 @@ const Packet = session_mod.Packet;
 const Session = session_mod.Session;
 
 pub fn RakNet(comptime Peer: type, comptime Handler: type) type {
-    return RakNetWithProfile(@import("bedrock_protocol").Current, Peer, Handler);
-}
-
-pub fn RakNetWithProfile(comptime Profile: type, comptime Peer: type, comptime Handler: type) type {
     comptime validate(Handler);
-    const ProfileSession = session_mod.SessionWithProfile(Profile);
 
     return struct {
-        session: *ProfileSession,
+        session: *Session,
         peer: *Peer,
         handler: *Handler,
         channel: u8 = 0,

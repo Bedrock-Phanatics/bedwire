@@ -90,11 +90,11 @@ test "an unknown algorithm marker is refused" {
 }
 
 test "a version that does not support Snappy refuses to negotiate it" {
-    const Profile = support.Profile(818, .{ .supports_snappy = false, .login_flow = .certificate_chain });
+    const Profile = comptime support.custom(818, .{ .supports_snappy = false, .login_flow = .certificate_chain });
 
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
-    var session = try bedwire.SessionWithProfile(Profile).init(.server, .{ .pool = &pool, .limits = support.limits });
+    var session = try bedwire.Session.init(.server, Profile.options(.{ .pool = &pool, .limits = support.limits }));
     defer session.deinit();
 
     try testing.expectError(error.UnsupportedCompression, session.compression.negotiate(.snappy, 0));
@@ -145,7 +145,7 @@ test "a DEFLATE bomb is bounded by the batch limit, not by memory" {
 
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
-    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = tight });
+    var session = try support.open(.server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
     try session.compression.negotiate(.deflate, 0);
@@ -164,7 +164,7 @@ test "a Snappy bomb is refused on its advertised length alone" {
 
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
-    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = tight });
+    var session = try support.open(.server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
     try session.compression.negotiate(.snappy, 0);
@@ -179,7 +179,7 @@ test "compression that cannot beat the frame limit fails cleanly" {
     for ([_]Algorithm{ .deflate, .snappy }) |algorithm| {
         var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
         defer pool.deinit();
-        var session = try support.Session.init(.server, .{ .pool = &pool, .limits = tight });
+        var session = try support.open(.server, .{ .pool = &pool, .limits = tight });
         defer session.deinit();
         session.state = .in_game;
         try session.compression.negotiate(algorithm, 0);
@@ -237,7 +237,7 @@ test "implicit compression mode carries no marker byte" {
 }
 
 test "an absent compression mode never compresses" {
-    const Profile = support.Profile(818, .{
+    const Profile = comptime support.custom(818, .{
         .compression_mode = .absent,
         .initial_algorithm = .none,
         .login_flow = .certificate_chain,
@@ -275,9 +275,9 @@ test "every DEFLATE level round-trips and out-of-range levels are refused" {
     for (1..10) |level| {
         var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1, .deflate_level = @intCast(level) });
         defer pool.deinit();
-        var sender = try support.Session.init(.client, .{ .pool = &pool });
+        var sender = try support.open(.client, .{ .pool = &pool });
         defer sender.deinit();
-        var receiver = try support.Session.init(.server, .{ .pool = &pool });
+        var receiver = try support.open(.server, .{ .pool = &pool });
         defer receiver.deinit();
         for ([_]*support.Session{ &sender, &receiver }) |session| {
             try session.compression.negotiate(.deflate, 0);
@@ -302,7 +302,7 @@ test "clients get a smaller frame limit until they are in game" {
 
     var pool = try bedwire.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
-    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = limits });
+    var session = try support.open(.server, .{ .pool = &pool, .limits = limits });
     defer session.deinit();
 
     var frame: [128]u8 = @splat(0);

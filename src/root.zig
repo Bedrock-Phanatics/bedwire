@@ -2,12 +2,13 @@ const std = @import("std");
 
 pub const Limits = @import("limits.zig").Limits;
 
-pub const protocol = @import("bedrock_protocol");
+pub const control = @import("wire/control.zig");
 
 pub const Session = @import("session/session.zig").Session;
-pub const SessionWithProfile = @import("session/session.zig").SessionWithProfile;
+pub const SessionFeatures = @import("session/features.zig").SessionFeatures;
+pub const Directions = @import("session/state.zig").Directions;
 pub const Tap = @import("session/tap.zig").Tap;
-pub const TapWithProfile = @import("session/tap.zig").TapWithProfile;
+pub const TapOptions = @import("session/tap.zig").Options;
 pub const TapDirection = @import("session/tap.zig").Direction;
 pub const TapPhase = @import("session/tap.zig").Phase;
 pub const SessionPolicy = @import("session/session.zig").SessionPolicy;
@@ -22,7 +23,7 @@ pub const PoolConfig = @import("session/session.zig").PoolConfig;
 pub const Role = @import("session/state.zig").Role;
 pub const State = @import("session/state.zig").State;
 pub const Startup = @import("session/state.zig").Startup;
-pub const PacketKind = protocol.PacketKind;
+pub const PacketKind = control.PacketKind;
 
 pub const framing = struct {
     pub const batch = @import("framing/batch.zig");
@@ -89,15 +90,14 @@ pub const resource_packs = struct {
 
 pub const transport = struct {
     pub const RakNet = @import("transport/raknet.zig").RakNet;
-    pub const RakNetWithProfile = @import("transport/raknet.zig").RakNetWithProfile;
     pub const NetherNet = @import("transport/nethernet.zig").NetherNet;
-    pub const NetherNetWithProfile = @import("transport/nethernet.zig").NetherNetWithProfile;
 };
 
 test {
     std.testing.refAllDecls(@This());
 
     _ = @import("limits.zig");
+    _ = @import("wire/control.zig");
     _ = @import("framing/varint.zig");
     _ = @import("framing/batch.zig");
     _ = @import("session/state.zig");

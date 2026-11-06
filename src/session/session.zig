@@ -1,5 +1,6 @@
 const std = @import("std");
-const protocol = @import("bedrock_protocol");
+const control = @import("../wire/control.zig");
+const SessionFeatures = @import("features.zig").SessionFeatures;
 
 const Limits = @import("../limits.zig").Limits;
 const batch = @import("../framing/batch.zig");
@@ -18,10 +19,11 @@ const pool_mod = @import("pool.zig");
 
 const PacketId = u10;
 
-pub const PacketKind = protocol.PacketKind;
+pub const PacketKind = control.PacketKind;
 pub const Role = state_mod.Role;
 pub const State = state_mod.State;
 pub const Startup = state_mod.Startup;
+pub const Directions = state_mod.Directions;
 pub const Algorithm = compression.Algorithm;
 
 pub const BufferPool = pool_mod.BufferPool;
@@ -31,7 +33,7 @@ pub const TxToken = BufferPool.TxToken;
 pub const RxSlot = pool_mod.RxSlot;
 pub const TxSlot = pool_mod.TxSlot;
 
-pub const LoginFlow = @FieldType(protocol.SessionFeatures, "login_flow");
+pub const LoginFlow = @FieldType(SessionFeatures, "login_flow");
 pub const TrustPolicy = union(LoginFlow) {
     certificate_chain: chain.ChainPolicy,
     oidc: oidc.OidcPolicy,
@@ -41,9 +43,11 @@ pub const Options = struct {
     limits: ?Limits = null,
     pool: *BufferPool,
     policy: SessionPolicy = .{},
+    features: SessionFeatures = .{},
+    /// Only compared by `canRelayTo`; the client's version is checked by the embedder or a Tap.
+    protocol_version: u32 = 0,
 };
 
-pub const Session = SessionWithProfile(protocol.Current);
 pub const Frame = Session.Frame;
 pub const Packets = Session.Packets;
 pub const Packet = Session.Packet;
@@ -52,735 +56,738 @@ pub const SessionPolicy = struct {
     encryption: enum { required, optional, disabled } = .required,
     batch_header: bool = true,
     connection_request_format: wire.ConnectionRequestFormat = .envelope,
+    /// Null lets any non-control packet ID travel either way once the stage admits gameplay.
+    directions: ?*const Directions = null,
 };
 
-pub fn SessionWithProfile(comptime Profile: type) type {
-    comptime protocol.validateProfile(Profile);
-    return struct {
-        const Self = @This();
-
-        /// Bytes survive close but expire on release or Session.deinit.
-        /// Copies share a lease, so keep the Session at a stable address.
-        pub const Frame = struct {
-            bytes: []const u8,
-            session: *Self,
-            token: u64,
-
-            pub fn release(self: @This()) void {
-                self.session.releaseTxToken(self.token);
-            }
-        };
-
-        pub const Packet = struct {
-            kind: ?PacketKind,
-            id: PacketId,
-            bytes: []const u8,
-        };
-
-        pub const Packets = struct {
-            reader: batch.Reader,
-            session: *Self,
-            generation: u64,
-            exhausted: bool = false,
-            deinitialized: bool = false,
-
-            pub fn next(self: *@This()) ?Self.Packet {
-                if (self.deinitialized or self.exhausted) return null;
-                if (self.session.state == .disconnected) return null;
-                if (self.session.active_generation != self.generation) return null;
-
-                const bytes = (self.reader.next() catch {
-                    self.exhausted = true;
-                    return null;
-                }) orelse {
-                    self.exhausted = true;
-                    return null;
-                };
-                const header = parseHeader(bytes) catch {
-                    self.exhausted = true;
-                    return null;
-                };
-                return .{ .kind = Profile.packetKind(header.packet_id), .id = header.packet_id, .bytes = bytes };
-            }
-
-            pub fn reset(self: *@This()) void {
-                if (self.deinitialized or self.exhausted) return;
-                if (self.session.state == .disconnected) return;
-                if (self.session.active_generation != self.generation) return;
-
-                self.reader.reset();
-            }
-
-            pub fn deinit(self: *@This()) void {
-                if (self.deinitialized) return;
-                self.deinitialized = true;
-
-                const active = self.session.active_generation orelse return;
-                if (active != self.generation) return;
-
-                const token = self.session.rx_slot orelse return;
-                self.session.active_generation = null;
-                self.session.rx_slot = null;
-
-                self.session.pool.releaseRx(token);
-            }
-        };
-
-        policy: SessionPolicy,
-        limits: Limits,
-        role: Role,
-        state: State,
-        compression: compression.Compression,
-        crypto: ?SessionCrypto = null,
-        peer_key: ?spki.Ecdsa.PublicKey = null,
-        sent: std.EnumSet(PacketKind) = .empty,
-        received: std.EnumSet(PacketKind) = .empty,
-        startup: Startup = .{},
-
-        pool: *BufferPool,
-        rx_slot: ?RxToken = null,
-        tx_slot: ?TxToken = null,
-        tx_token: u64 = 0,
-        generation: u64 = 0,
-        active_generation: ?u64 = null,
-
-        pub fn init(role: Role, options: Options) !Self {
-            const limits = if (options.limits) |l| blk: {
-                try l.validate();
-                if (l.max_frame_bytes > options.pool.limits.max_frame_bytes) return error.IncompatibleLimits;
-                if (l.max_batch_bytes > options.pool.limits.max_batch_bytes) return error.IncompatibleLimits;
-                break :blk l;
-            } else options.pool.limits;
-
-            return .{
-                .policy = options.policy,
-                .limits = limits,
-                .role = role,
-                .state = State.initial(Profile.features),
-                .compression = .init(Profile.features),
-                .pool = options.pool,
-            };
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.close();
-            self.releaseTxToken(self.tx_token);
-            if (self.rx_slot) |st| {
-                self.rx_slot = null;
-                self.active_generation = null;
-                self.pool.releaseRx(st);
-            }
-            self.* = undefined;
-        }
-
-        pub fn close(self: *Self) void {
-            self.state = .disconnected;
-            if (self.crypto) |*crypto| crypto.deinit();
-            self.crypto = null;
-            self.peer_key = null;
-        }
-
-        pub fn beginClose(self: *Self) void {
-            if (self.state.active()) self.state = .closing;
-        }
-
-        pub fn features(_: *const Self) protocol.SessionFeatures {
-            return Profile.features;
-        }
-
-        pub fn version(_: *const Self) u32 {
-            return Profile.protocol_number;
-        }
-
-        pub fn encrypted(self: *const Self) bool {
-            return self.crypto != null;
-        }
-
-        pub fn didSend(self: *const Self, kind: PacketKind) bool {
-            return self.sent.contains(kind);
-        }
-
-        pub fn didReceive(self: *const Self, kind: PacketKind) bool {
-            return self.received.contains(kind);
-        }
-
-        pub fn ingest(self: *Self, payload: []const u8) !Self.Packets {
-            return self.ingestFrame(payload, false);
-        }
-
-        /// Reads uncompressed plaintext packets in place, so keep `payload` alive and unchanged until the iterator is released.
-        pub fn ingestBorrowed(self: *Self, payload: []const u8) !Self.Packets {
-            return self.ingestFrame(payload, true);
-        }
-
-        fn ingestFrame(self: *Self, payload: []const u8, comptime borrowed: bool) !Self.Packets {
-            if (self.state == .disconnected) return error.TransportClosed;
-            if (self.active_generation != null or self.rx_slot != null) return error.InvalidState;
-
-            const body = batch.body(payload, self.policy.batch_header, self.limits) catch |err| {
-                self.close();
-                return err;
-            };
-
-            const rx_token = try self.pool.acquireRx();
-            errdefer self.pool.releaseRx(rx_token);
-
-            errdefer self.close();
-
-            const rx_slot = self.pool.getRx(rx_token) orelse return error.InvalidState;
-            if (body.len > rx_slot.frame.len or body.len > self.limits.max_frame_bytes) return error.LimitExceeded;
-            if (self.role == .server and self.state != .in_game and body.len > self.limits.max_handshake_frame_bytes)
-                return error.LimitExceeded;
-
-            var session_payload: []const u8 = body;
-            if (self.crypto) |*crypto| session_payload = try crypto.openFrom(rx_slot.frame, body);
-
-            var raw = try self.compression.decodeWithContext(
-                session_payload,
-                rx_slot.batch,
-                &rx_slot.history,
-                self.limits,
-                rx_slot.decoder,
-            );
-            if (!borrowed and self.crypto == null and raw.ptr != rx_slot.batch.ptr) {
-                @memcpy(rx_slot.frame[0..raw.len], raw);
-                raw = rx_slot.frame[0..raw.len];
-            }
-            const observed = try self.admit(raw, self.role.peer());
-
-            const reader = try batch.Reader.init(raw, self.limits);
-            self.commit(observed, self.role.peer());
-            self.generation +%= 1;
-            self.active_generation = self.generation;
-            self.rx_slot = rx_token;
-
-            return .{
-                .reader = reader,
-                .session = self,
-                .generation = self.generation,
-            };
-        }
-
-        /// A held Frame returns PoolExhausted. Send frames in order and close the Session if a frame is abandoned or sending fails.
-        pub fn encode(self: *Self, packets: []const []const u8) !Self.Frame {
-            return (try self.encodeFrame(packets, false)).frame;
-        }
-
-        pub fn encodeBatches(self: *Self, packets: []const []const u8) !Self.Batches {
-            if (self.state == .disconnected) return error.TransportClosed;
-            if (packets.len == 0) return error.MalformedBatch;
-            if (self.singlePacketBatch() and packets.len != 1) return error.InvalidState;
-
-            const budget = try self.splitBudget(@min(self.pool.limits.max_frame_bytes, self.limits.max_frame_bytes));
-            const bounds: batch.Bounds = .outgoing(self.limits);
-            const cap = @min(budget, bounds.max_batch_bytes);
-            var total: usize = 0;
-            for (packets) |packet| {
-                if (packet.len == 0) return error.MalformedBatch;
-                const entry = batch.entryLen(packet.len);
-                if (packet.len > bounds.max_packet_bytes or entry > cap) return error.LimitExceeded;
-                total +|= entry;
-            }
-            if (packets.len > bounds.max_packets_per_batch or total > cap) {
-                var observed: Observed = .{ .state = self.state, .startup = self.startup };
-                for (packets) |packet| try self.step(&observed, packet, self.role);
-            }
-
-            return .{ .session = self, .packets = packets };
-        }
-
-        pub const Batches = struct {
-            session: *Self,
-            packets: []const []const u8,
-            index: usize = 0,
-
-            pub fn next(self: *@This()) !?Self.Frame {
-                if (self.index == self.packets.len) return null;
-                const encoded = try self.session.encodeFrame(self.packets[self.index..], true);
-                self.index += encoded.count;
-                return encoded.frame;
-            }
-
-            pub fn remaining(self: *const @This()) usize {
-                return self.packets.len - self.index;
-            }
-        };
-
-        const Encoded = struct { frame: Self.Frame, count: usize };
-
-        fn encodeFrame(self: *Self, packets: []const []const u8, comptime split: bool) !Encoded {
-            if (self.state == .disconnected) return error.TransportClosed;
-            if (self.tx_slot != null) return error.PoolExhausted;
-
-            const slot_token = try self.pool.acquireTx();
-            errdefer self.pool.releaseTx(slot_token);
-
-            const slot = self.pool.getTx(slot_token) orelse return error.InvalidState;
-
-            const max_egress = @min(slot.egress.len, self.limits.max_frame_bytes);
-            const reserve: usize = if (self.compression.marks()) 2 else 1;
-            const trailer: usize = if (self.crypto != null) 8 else 0;
-            if (reserve + trailer >= max_egress) return error.LimitExceeded;
-            const room = max_egress - reserve - trailer;
-
-            var dest = slot.assembly[reserve..];
-            if (split) dest = dest[0..@min(dest.len, try self.splitBudget(max_egress))];
-            var writer = batch.Writer.init(dest, self.limits);
-            var observed: Observed = .{ .state = self.state, .startup = self.startup };
-            const single = self.singlePacketBatch();
-
-            for (packets) |packet| {
-                if (split and writer.count != 0 and (single or !writer.fits(packet.len))) break;
-                try self.step(&observed, packet, self.role);
-                try writer.append(packet);
-            }
-
-            if (writer.count == 0) return error.MalformedBatch;
-            if (single and writer.count != 1) return error.InvalidState;
-
-            const out = try self.pack(slot, writer.written(), reserve, trailer, room);
-
-            self.tx_slot = slot_token;
-            self.tx_token +%= 1;
-            self.commit(observed, self.role);
-
-            return .{ .count = writer.count, .frame = .{
-                .bytes = out[@intFromBool(!self.policy.batch_header)..],
-                .session = self,
-                .token = self.tx_token,
-            } };
-        }
-
-        noinline fn pack(self: *Self, slot: *TxSlot, raw: []const u8, reserve: usize, trailer: usize, room: usize) ![]const u8 {
-            var out = slot.assembly;
-            var algorithm: Algorithm = .none;
-            var len = reserve + raw.len;
-            if (self.compression.selected(raw.len) != .none) compressed: {
-                const limit = if (reserve == 2) @min(room, raw.len - 1) else room;
-                const framed = self.compression.encodeWithContext(raw, slot.egress[reserve..][0..limit], &slot.scratch, slot.encoder) catch |err| {
-                    if (err == error.NoSpaceLeft and reserve == 2) break :compressed;
-                    return err;
-                };
-                out = slot.egress;
-                algorithm = framed.algorithm;
-                len = reserve + framed.bytes.len;
-            }
-            if (algorithm == .none and raw.len > room) return error.NoSpaceLeft;
-
-            out[0] = batch.header;
-            if (reserve == 2) out[1] = @backingInt(algorithm);
-            if (self.crypto) |*crypto| len = 1 + (try crypto.seal(out[1 .. len + trailer], len - 1)).len;
-            return out[0..len];
-        }
-
-        fn splitBudget(self: *const Self, max_egress: usize) !usize {
-            const reserve: usize = if (self.compression.marks()) 2 else 1;
-            const trailer: usize = if (self.crypto != null) 8 else 0;
-            if (reserve + trailer >= max_egress) return error.LimitExceeded;
-            const room = max_egress - reserve - trailer;
-            if (self.compression.selected(room) == .none or self.compression.marks()) return room;
-            return std.math.sub(usize, room, room / 256 + 64) catch error.LimitExceeded;
-        }
-
-        pub fn canRelayTo(self: *const Self, dest: anytype) bool {
-            return @intFromPtr(self) != @intFromPtr(dest) and
-                self.version() == dest.version() and
-                self.state == .in_game and dest.state == .in_game and
-                self.role != dest.role and
-                self.compression.relaysTo(dest.compression);
-        }
-
-        pub fn relayTo(self: *Self, dest: anytype, payload: []const u8) !@TypeOf(dest.*).Frame {
-            if (self.state == .disconnected or dest.state == .disconnected) return error.TransportClosed;
-            if (!self.canRelayTo(dest)) return error.IncompatibleRelay;
-            if (dest.tx_slot != null) return error.PoolExhausted;
-
-            const body = batch.body(payload, self.policy.batch_header, self.limits) catch |err| {
-                self.close();
-                return err;
-            };
-
-            const slot_token = try dest.pool.acquireTx();
-            errdefer dest.pool.releaseTx(slot_token);
-
-            const slot = dest.pool.getTx(slot_token) orelse return error.InvalidState;
-
-            const max_egress = @min(slot.egress.len, dest.limits.max_frame_bytes);
-            const trailer: usize = if (dest.crypto != null) 8 else 0;
-            const payload_len = body.len -| @as(usize, if (self.crypto != null) 8 else 0);
-            if (1 + body.len > slot.egress.len or 1 + payload_len + trailer > max_egress) return error.LimitExceeded;
-
-            errdefer self.close();
-
-            const out = slot.egress;
-            var framed: []u8 = out[1..][0..body.len];
-            if (self.crypto) |*crypto| {
-                framed = try crypto.openFrom(out[1..], body);
-            } else @memcpy(framed, body);
-
-            var len = 1 + try self.compression.relayWithContext(
-                dest.compression,
-                out[1 .. max_egress - trailer],
-                framed.len,
-                slot.assembly,
-                &slot.scratch,
-                @min(self.limits.max_batch_bytes, dest.limits.max_batch_bytes),
-                slot.encoder,
-            );
-
-            out[0] = batch.header;
-            if (dest.crypto) |*crypto| len = 1 + (try crypto.seal(out[1 .. len + trailer], len - 1)).len;
-
-            dest.tx_slot = slot_token;
-            dest.tx_token +%= 1;
-
-            return .{
-                .bytes = out[@intFromBool(!dest.policy.batch_header)..len],
-                .session = dest,
-                .token = dest.tx_token,
-            };
-        }
-
-        pub fn encodeOne(self: *Self, packet: []const u8) !Self.Frame {
-            return self.encode(&.{packet});
-        }
-
-        pub fn decodePacket(self: *const Self, packet: Self.Packet) !protocol.BorrowedEnvelope {
-            if (packet.bytes.len > self.limits.max_packet_bytes) return error.LimitExceeded;
-            if (Profile.packetKind(packet.id) != packet.kind) return error.InvalidProfile;
-            const decoded = try Profile.decodeBorrowed(packet.bytes, protocolLimits(self.limits));
-            if (decoded.header.packet_id != packet.id or decoded.kind != packet.kind) return error.InvalidProfile;
-            return decoded;
-        }
-
-        pub fn negotiateFromSettings(self: *Self, packet: Self.Packet) !void {
-            if (packet.kind != .network_settings) return error.InvalidState;
-            const decoded = try self.decodePacket(packet);
-            if (decoded.value != .typed or decoded.value.typed != .network_settings) return error.InvalidProfile;
-            const settings = decoded.value.typed.network_settings;
-            const algorithm: Algorithm = switch (settings.compression_algorithm) {
-                .zlib => .deflate,
-                .snappy => .snappy,
-                .none => .none,
-                _ => return error.UnsupportedCompression,
-            };
-            try self.negotiateCompression(algorithm, settings.compression_threshold);
-        }
-
-        pub fn authenticateLoginPacket(self: *Self, allocator: std.mem.Allocator, packet: Self.Packet, policy: TrustPolicy) !identity_mod.Identity {
-            if (packet.kind != .login) return error.InvalidState;
-            try self.readyToAuthenticate(@as(LoginFlow, policy));
-            errdefer self.close();
-            const decoded = try self.decodePacket(packet);
-            if (decoded.value != .typed or decoded.value.typed != .login) return error.InvalidProfile;
-            return self.authenticateLogin(allocator, decoded.value.typed.login.connection_request, policy);
-        }
-
-        pub fn acceptServerHandshakePacket(self: *Self, allocator: std.mem.Allocator, packet: Self.Packet, secret: spki.Ecdsa.SecretKey) !void {
-            if (packet.kind != .server_to_client_handshake) return error.InvalidState;
-            if (self.role != .client or self.state != .authenticating or
-                !self.didReceive(.server_to_client_handshake) or self.crypto != null) return error.InvalidState;
-            errdefer self.close();
-            const decoded = try self.decodePacket(packet);
-            if (decoded.value != .typed or decoded.value.typed != .server_to_client_handshake) return error.InvalidProfile;
-            return self.acceptServerHandshake(allocator, decoded.value.typed.server_to_client_handshake.handshake_web_token, secret);
-        }
-
-        pub fn releaseTxToken(self: *Self, token: u64) void {
-            if (self.tx_token != token) return;
-            if (self.tx_slot) |slot_token| {
-                self.tx_slot = null;
-                self.tx_token +%= 1;
-                self.pool.releaseTx(slot_token);
-            }
-        }
-
-        pub fn negotiateCompression(self: *Self, algorithm: Algorithm, threshold: u16) !void {
-            if (self.state != .network_settings) return error.InvalidState;
-            if (!self.exchanged(.network_settings, .server)) return error.InvalidState;
-
-            try self.compression.negotiate(algorithm, threshold);
-            self.state = .authenticating;
-        }
-
-        pub fn authenticateChain(
-            self: *Self,
-            allocator: std.mem.Allocator,
-            chain_json: []const u8,
-            client_data: []const u8,
-            policy: chain.ChainPolicy,
-        ) !chain.Identity {
-            try self.readyToAuthenticate(.certificate_chain);
-            errdefer self.close();
-
-            const identity = try chain.verifyChain(allocator, chain_json, client_data, policy, self.limits);
-            self.peer_key = identity.public_key;
-
-            return identity;
-        }
-
-        pub fn authenticateOidc(
-            self: *Self,
-            allocator: std.mem.Allocator,
-            token: []const u8,
-            client_data: []const u8,
-            policy: oidc.OidcPolicy,
-        ) !oidc.Identity {
-            try self.readyToAuthenticate(.oidc);
-            errdefer self.close();
-
-            const identity = try oidc.verifyOidc(allocator, token, client_data, policy, self.limits);
-            self.peer_key = identity.public_key;
-
-            return identity;
-        }
-
-        pub fn authenticateLogin(
-            self: *Self,
-            allocator: std.mem.Allocator,
-            connection_request_bytes: []const u8,
-            policy: TrustPolicy,
-        ) !identity_mod.Identity {
-            try self.readyToAuthenticate(@as(LoginFlow, policy));
-            errdefer self.close();
-
-            const identity = try verifyLoginRequest(allocator, connection_request_bytes, policy, self.policy, self.limits);
-
-            self.peer_key = identity.public_key;
-
-            return identity;
-        }
-
-        pub fn installVerifiedClientKey(self: *Self, key: spki.Ecdsa.PublicKey) !void {
-            if (self.role != .server or self.state != .authenticating) return error.InvalidState;
-            if (!self.didReceive(.login)) return error.InvalidState;
-            if (self.peer_key) |installed| {
-                if (!std.crypto.timing_safe.eql([97]u8, installed.toUncompressedSec1(), key.toUncompressedSec1())) return error.InvalidState;
-                return;
-            }
-
-            self.peer_key = key;
-        }
-
-        pub fn installServerCrypto(self: *Self, secret: spki.Ecdsa.SecretKey, salt: [16]u8) !void {
-            const ordered =
-                self.role == .server and
-                self.state == .authenticating and
-                self.didSend(.server_to_client_handshake) and
-                self.tx_slot == null;
-            if (!ordered) return error.InvalidState;
-            if (self.crypto != null) return error.InvalidState;
-
-            const peer = self.peer_key orelse return error.Unauthenticated;
-            try self.enableCrypto(secret, peer, salt);
-        }
-
-        pub fn installServerKey(self: *Self, key: [32]u8) !void {
-            const ordered =
-                self.role == .server and
-                self.state == .authenticating and
-                self.didSend(.server_to_client_handshake) and
-                self.tx_slot == null;
-            if (!ordered) return error.InvalidState;
-            if (self.crypto != null) return error.InvalidState;
-
-            self.crypto = SessionCrypto.init(key);
-            self.state = .encrypted_handshake;
-        }
-
-        pub fn acceptServerHandshake(
-            self: *Self,
-            allocator: std.mem.Allocator,
-            token: []const u8,
-            secret: spki.Ecdsa.SecretKey,
-        ) !void {
-            const ordered =
-                self.role == .client and
-                self.state == .authenticating and
-                self.didReceive(.server_to_client_handshake);
-            if (!ordered) return error.InvalidState;
-            if (self.crypto != null) return error.InvalidState;
-            errdefer self.close();
-
-            const handshake = try login.Handshake.verify(allocator, token, self.limits);
-            try self.enableCrypto(secret, handshake.peer_key, handshake.salt);
-            self.peer_key = handshake.peer_key;
-        }
-
-        pub fn advance(self: *Self, next: State) !void {
-            const allowed = switch (next) {
-                .resource_packs => switch (self.state) {
-                    .encrypted_handshake => self.crypto != null and self.exchanged(.client_to_server_handshake, .client),
-                    // The client key must be authenticated even without encryption.
-                    .authenticating => self.policy.encryption != .required and self.exchanged(.login, .client) and
-                        (self.role == .client or self.peer_key != null),
-                    else => false,
-                },
-                .waiting_for_start_game => self.state == .resource_packs and
-                    (self.startup.packs_completed or !self.exchanged(.resource_packs_info, .server)),
-                .spawn_ready => self.state == .waiting_for_start_game and self.startup.runtime_id != null,
-                .in_game => self.state == .spawn_ready and self.startup.initialized,
-                .closing => self.state.active(),
-                else => false,
-            };
-            if (!allowed) return error.InvalidState;
-
-            self.state = next;
-        }
-
-        pub fn settle(self: *Self) State {
-            while (true) {
-                const next: State = switch (self.state) {
-                    .resource_packs => if (self.startup.packs_completed) .waiting_for_start_game else break,
-                    .waiting_for_start_game => if (self.startup.runtime_id != null) .spawn_ready else break,
-                    .spawn_ready => if (self.startup.initialized) .in_game else break,
-                    else => break,
-                };
-                self.state = next;
-            }
-            return self.state;
-        }
-
-        fn commit(self: *Self, observed: Observed, sender: Role) void {
-            self.startup = observed.startup;
-            if (sender == self.role) {
-                self.sent = self.sent.unionWith(observed.kinds);
-            } else {
-                self.received = self.received.unionWith(observed.kinds);
-            }
-
-            if (observed.state == .resource_packs and self.state == .authenticating) self.state = observed.state;
-            if (self.state == .transport_ready and observed.kinds.contains(.request_network_settings)) {
-                self.state = .network_settings;
-            }
-            if (observed.kinds.contains(.disconnect)) self.beginClose();
-        }
-
-        fn exchanged(self: *const Self, kind: PacketKind, sender: Role) bool {
-            return if (self.role == sender) self.didSend(kind) else self.didReceive(kind);
-        }
-
-        fn readyToAuthenticate(self: *const Self, flow: LoginFlow) !void {
-            if (self.role != .server or self.state != .authenticating) return error.InvalidState;
-            if (!self.didReceive(.login) or self.peer_key != null) return error.InvalidState;
-            if (Profile.features.login_flow != flow) return error.UnsupportedProtocol;
-        }
-
-        fn enableCrypto(
-            self: *Self,
-            secret: spki.Ecdsa.SecretKey,
-            peer: spki.Ecdsa.PublicKey,
-            salt: [16]u8,
-        ) !void {
-            var key = try ecdh.derive(secret, peer, salt);
-            defer std.crypto.secureZero(u8, &key);
-
-            self.crypto = SessionCrypto.init(key);
-            self.state = .encrypted_handshake;
-        }
-
-        const Observed = struct {
-            kinds: std.EnumSet(PacketKind) = .empty,
-            count: usize = 0,
-            state: State,
-            startup: Startup,
-        };
-
-        fn admit(self: *const Self, raw: []const u8, sender: Role) !Observed {
-            var reader = try batch.Reader.init(raw, self.limits);
-            var observed: Observed = .{ .state = self.state, .startup = self.startup };
-            while (try reader.next()) |packet| try self.step(&observed, packet, sender);
-
-            if (observed.count == 0) return error.MalformedBatch;
-            if (self.singlePacketBatch() and observed.count != 1) return error.InvalidState;
-
-            return observed;
-        }
-
-        inline fn step(self: *const Self, observed: *Observed, packet: []const u8, sender: Role) !void {
-            const header = try parseHeader(packet);
-            const kind = Profile.packetKind(header.packet_id);
-            try self.check(observed, kind, header, sender);
-
-            if (kind) |known| {
-                if (special_kinds.contains(known)) {
-                    @branchHint(.unlikely);
-                    try self.special(observed, packet, header, known, sender);
-                }
-                observed.kinds.insert(known);
-            }
-            observed.count += 1;
-            observed.state = try self.after(observed.state, kind, sender);
-        }
-
-        // Without encryption the server's PlayStatus ends the login, so packs can follow in the same batch
-        fn after(self: *const Self, state: State, kind: ?PacketKind, sender: Role) !State {
-            if (self.policy.encryption != .disabled or state != .authenticating or kind != .play_status or sender != .server) return state;
-            if (self.role == .server and self.peer_key == null) return error.Unauthenticated;
-            return .resource_packs;
-        }
-
-        fn singlePacketBatch(self: *const Self) bool {
-            if (self.policy.encryption == .disabled and self.state == .authenticating) return false;
-            return self.state.singlePacketBatch();
-        }
-
-        fn check(self: *const Self, observed: *const Observed, kind: ?PacketKind, header: protocol.packet.Header, sender: Role) !void {
-            if (self.policy.encryption == .disabled and (kind == .server_to_client_handshake or kind == .client_to_server_handshake)) return error.InvalidState;
-            const direction = if (kind) |known| Profile.packetDirection(known) else .bidirectional;
-            if (!observed.state.permitsWithDirection(Profile.features, sender, kind, direction)) return error.InvalidState;
-
-            if (header.sender_subclient != 0 or header.target_subclient != 0) return error.InvalidState;
-        }
-
-        fn special(self: *const Self, observed: *Observed, packet: []const u8, header: protocol.packet.Header, kind: PacketKind, sender: Role) !void {
-            if (state_mod.oncePerSession(kind) and self.seen(observed, kind, sender, sender)) return error.InvalidState;
-            const ordered = switch (kind) {
-                .resource_pack_data_info, .resource_pack_chunk_data => self.seen(observed, .resource_packs_info, .server, sender),
-                .resource_pack_chunk_request => self.seen(observed, .resource_pack_data_info, .server, sender),
-                // Some servers skip the offer and go straight to the stack
-                .resource_pack_client_response => self.seen(observed, .resource_packs_info, .server, sender) or
-                    self.seen(observed, .resource_pack_stack, .server, sender),
-                else => true,
-            };
-            if (!ordered) return error.InvalidState;
-
-            if (controls(kind)) {
-                try self.control(&observed.startup, packet, header, kind);
-            } else if (kind == .start_game) {
-                observed.startup.runtime_id = try runtimeId(packet, self.limits);
-            }
-        }
-
-        fn seen(self: *const Self, observed: *const Observed, kind: PacketKind, from: Role, sender: Role) bool {
-            return self.exchanged(kind, from) or (from == sender and observed.kinds.contains(kind));
-        }
-
-        // Kept out of line so the large decoded envelope stays off the hot path's stack.
-        noinline fn control(self: *const Self, startup: *Startup, bytes: []const u8, header: protocol.packet.Header, kind: PacketKind) !void {
-            if (bytes.len > self.limits.max_packet_bytes) return error.LimitExceeded;
-            const decoded = try Profile.decodeBorrowed(bytes, protocolLimits(self.limits));
-            if (decoded.header.toWire() != header.toWire() or decoded.kind != kind) return error.InvalidProfile;
-            if (decoded.value != .typed) return error.InvalidProfile;
-            if (protocol.typed.packetKind(decoded.value.typed) != kind) return error.InvalidProfile;
-
-            switch (decoded.value.typed) {
-                .resource_pack_client_response => |packet| if (packet.response == .resource_pack_stack_finished) {
-                    if (!self.exchanged(.resource_pack_stack, .server)) return error.InvalidState;
-                    startup.packs_completed = true;
-                },
-                .play_status => |packet| if (packet.status == .playerspawn) {
-                    startup.spawned = true;
-                },
-                .set_local_player_as_initialised => |packet| if (!startup.initialized) {
-                    if (!startup.spawned or startup.runtime_id != packet.player_id) return error.InvalidState;
-                    startup.initialized = true;
-                },
-                else => {},
-            }
+pub const Session = struct {
+    const Self = @This();
+
+    /// Bytes survive close but expire on release or Session.deinit.
+    /// Copies share a lease, so keep the Session at a stable address.
+    pub const Frame = struct {
+        bytes: []const u8,
+        session: *Self,
+        token: u64,
+
+        pub fn release(self: @This()) void {
+            self.session.releaseTxToken(self.token);
         }
     };
-}
+
+    pub const Packet = struct {
+        kind: ?PacketKind,
+        id: PacketId,
+        bytes: []const u8,
+    };
+
+    pub const Packets = struct {
+        reader: batch.Reader,
+        session: *Self,
+        generation: u64,
+        exhausted: bool = false,
+        deinitialized: bool = false,
+
+        pub fn next(self: *@This()) ?Self.Packet {
+            if (self.deinitialized or self.exhausted) return null;
+            if (self.session.state == .disconnected) return null;
+            if (self.session.active_generation != self.generation) return null;
+
+            const bytes = (self.reader.next() catch {
+                self.exhausted = true;
+                return null;
+            }) orelse {
+                self.exhausted = true;
+                return null;
+            };
+            const header = parseHeader(bytes) catch {
+                self.exhausted = true;
+                return null;
+            };
+            return .{ .kind = PacketKind.fromId(header.packet_id), .id = header.packet_id, .bytes = bytes };
+        }
+
+        pub fn reset(self: *@This()) void {
+            if (self.deinitialized or self.exhausted) return;
+            if (self.session.state == .disconnected) return;
+            if (self.session.active_generation != self.generation) return;
+
+            self.reader.reset();
+        }
+
+        pub fn deinit(self: *@This()) void {
+            if (self.deinitialized) return;
+            self.deinitialized = true;
+
+            const active = self.session.active_generation orelse return;
+            if (active != self.generation) return;
+
+            const token = self.session.rx_slot orelse return;
+            self.session.active_generation = null;
+            self.session.rx_slot = null;
+
+            self.session.pool.releaseRx(token);
+        }
+    };
+
+    policy: SessionPolicy,
+    limits: Limits,
+    session_features: SessionFeatures,
+    protocol_version: u32,
+    role: Role,
+    state: State,
+    compression: compression.Compression,
+    crypto: ?SessionCrypto = null,
+    peer_key: ?spki.Ecdsa.PublicKey = null,
+    sent: std.EnumSet(PacketKind) = .empty,
+    received: std.EnumSet(PacketKind) = .empty,
+    startup: Startup = .{},
+
+    pool: *BufferPool,
+    rx_slot: ?RxToken = null,
+    tx_slot: ?TxToken = null,
+    tx_token: u64 = 0,
+    generation: u64 = 0,
+    active_generation: ?u64 = null,
+
+    pub fn init(role: Role, options: Options) !Self {
+        const limits = if (options.limits) |l| blk: {
+            try l.validate();
+            if (l.max_frame_bytes > options.pool.limits.max_frame_bytes) return error.IncompatibleLimits;
+            if (l.max_batch_bytes > options.pool.limits.max_batch_bytes) return error.IncompatibleLimits;
+            break :blk l;
+        } else options.pool.limits;
+        try options.features.validate();
+
+        return .{
+            .policy = options.policy,
+            .limits = limits,
+            .session_features = options.features,
+            .protocol_version = options.protocol_version,
+            .role = role,
+            .state = State.initial(options.features),
+            .compression = .init(options.features),
+            .pool = options.pool,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.close();
+        self.releaseTxToken(self.tx_token);
+        if (self.rx_slot) |st| {
+            self.rx_slot = null;
+            self.active_generation = null;
+            self.pool.releaseRx(st);
+        }
+        self.* = undefined;
+    }
+
+    pub fn close(self: *Self) void {
+        self.state = .disconnected;
+        if (self.crypto) |*crypto| crypto.deinit();
+        self.crypto = null;
+        self.peer_key = null;
+    }
+
+    pub fn beginClose(self: *Self) void {
+        if (self.state.active()) self.state = .closing;
+    }
+
+    pub fn features(self: *const Self) SessionFeatures {
+        return self.session_features;
+    }
+
+    pub fn version(self: *const Self) u32 {
+        return self.protocol_version;
+    }
+
+    pub fn encrypted(self: *const Self) bool {
+        return self.crypto != null;
+    }
+
+    pub fn didSend(self: *const Self, kind: PacketKind) bool {
+        return self.sent.contains(kind);
+    }
+
+    pub fn didReceive(self: *const Self, kind: PacketKind) bool {
+        return self.received.contains(kind);
+    }
+
+    pub fn ingest(self: *Self, payload: []const u8) !Self.Packets {
+        return self.ingestFrame(payload, false);
+    }
+
+    /// Reads uncompressed plaintext packets in place, so keep `payload` alive and unchanged until the iterator is released.
+    pub fn ingestBorrowed(self: *Self, payload: []const u8) !Self.Packets {
+        return self.ingestFrame(payload, true);
+    }
+
+    fn ingestFrame(self: *Self, payload: []const u8, comptime borrowed: bool) !Self.Packets {
+        if (self.state == .disconnected) return error.TransportClosed;
+        if (self.active_generation != null or self.rx_slot != null) return error.InvalidState;
+
+        const body = batch.body(payload, self.policy.batch_header, self.limits) catch |err| {
+            self.close();
+            return err;
+        };
+
+        const rx_token = try self.pool.acquireRx();
+        errdefer self.pool.releaseRx(rx_token);
+
+        errdefer self.close();
+
+        const rx_slot = self.pool.getRx(rx_token) orelse return error.InvalidState;
+        if (body.len > rx_slot.frame.len or body.len > self.limits.max_frame_bytes) return error.LimitExceeded;
+        if (self.role == .server and self.state != .in_game and body.len > self.limits.max_handshake_frame_bytes)
+            return error.LimitExceeded;
+
+        var session_payload: []const u8 = body;
+        if (self.crypto) |*crypto| session_payload = try crypto.openFrom(rx_slot.frame, body);
+
+        var raw = try self.compression.decodeWithContext(
+            session_payload,
+            rx_slot.batch,
+            &rx_slot.history,
+            self.limits,
+            rx_slot.decoder,
+        );
+        if (!borrowed and self.crypto == null and raw.ptr != rx_slot.batch.ptr) {
+            @memcpy(rx_slot.frame[0..raw.len], raw);
+            raw = rx_slot.frame[0..raw.len];
+        }
+        const observed = try self.admit(raw, self.role.peer());
+
+        const reader = try batch.Reader.init(raw, self.limits);
+        self.commit(observed, self.role.peer());
+        self.generation +%= 1;
+        self.active_generation = self.generation;
+        self.rx_slot = rx_token;
+
+        return .{
+            .reader = reader,
+            .session = self,
+            .generation = self.generation,
+        };
+    }
+
+    /// A held Frame returns PoolExhausted. Send frames in order and close the Session if a frame is abandoned or sending fails.
+    pub fn encode(self: *Self, packets: []const []const u8) !Self.Frame {
+        return (try self.encodeFrame(packets, false)).frame;
+    }
+
+    pub fn encodeBatches(self: *Self, packets: []const []const u8) !Self.Batches {
+        if (self.state == .disconnected) return error.TransportClosed;
+        if (packets.len == 0) return error.MalformedBatch;
+        if (self.singlePacketBatch() and packets.len != 1) return error.InvalidState;
+
+        const budget = try self.splitBudget(@min(self.pool.limits.max_frame_bytes, self.limits.max_frame_bytes));
+        const bounds: batch.Bounds = .outgoing(self.limits);
+        const cap = @min(budget, bounds.max_batch_bytes);
+        var total: usize = 0;
+        for (packets) |packet| {
+            if (packet.len == 0) return error.MalformedBatch;
+            const entry = batch.entryLen(packet.len);
+            if (packet.len > bounds.max_packet_bytes or entry > cap) return error.LimitExceeded;
+            total +|= entry;
+        }
+        if (packets.len > bounds.max_packets_per_batch or total > cap) {
+            var observed: Observed = .{ .state = self.state, .startup = self.startup };
+            for (packets) |packet| try self.step(&observed, packet, self.role);
+        }
+
+        return .{ .session = self, .packets = packets };
+    }
+
+    pub const Batches = struct {
+        session: *Self,
+        packets: []const []const u8,
+        index: usize = 0,
+
+        pub fn next(self: *@This()) !?Self.Frame {
+            if (self.index == self.packets.len) return null;
+            const encoded = try self.session.encodeFrame(self.packets[self.index..], true);
+            self.index += encoded.count;
+            return encoded.frame;
+        }
+
+        pub fn remaining(self: *const @This()) usize {
+            return self.packets.len - self.index;
+        }
+    };
+
+    const Encoded = struct { frame: Self.Frame, count: usize };
+
+    fn encodeFrame(self: *Self, packets: []const []const u8, comptime split: bool) !Encoded {
+        if (self.state == .disconnected) return error.TransportClosed;
+        if (self.tx_slot != null) return error.PoolExhausted;
+
+        const slot_token = try self.pool.acquireTx();
+        errdefer self.pool.releaseTx(slot_token);
+
+        const slot = self.pool.getTx(slot_token) orelse return error.InvalidState;
+
+        const max_egress = @min(slot.egress.len, self.limits.max_frame_bytes);
+        const reserve: usize = if (self.compression.marks()) 2 else 1;
+        const trailer: usize = if (self.crypto != null) 8 else 0;
+        if (reserve + trailer >= max_egress) return error.LimitExceeded;
+        const room = max_egress - reserve - trailer;
+
+        var dest = slot.assembly[reserve..];
+        if (split) dest = dest[0..@min(dest.len, try self.splitBudget(max_egress))];
+        var writer = batch.Writer.init(dest, self.limits);
+        var observed: Observed = .{ .state = self.state, .startup = self.startup };
+        const single = self.singlePacketBatch();
+
+        for (packets) |packet| {
+            if (split and writer.count != 0 and (single or !writer.fits(packet.len))) break;
+            try self.step(&observed, packet, self.role);
+            try writer.append(packet);
+        }
+
+        if (writer.count == 0) return error.MalformedBatch;
+        if (single and writer.count != 1) return error.InvalidState;
+
+        const out = try self.pack(slot, writer.written(), reserve, trailer, room);
+
+        self.tx_slot = slot_token;
+        self.tx_token +%= 1;
+        self.commit(observed, self.role);
+
+        return .{ .count = writer.count, .frame = .{
+            .bytes = out[@intFromBool(!self.policy.batch_header)..],
+            .session = self,
+            .token = self.tx_token,
+        } };
+    }
+
+    noinline fn pack(self: *Self, slot: *TxSlot, raw: []const u8, reserve: usize, trailer: usize, room: usize) ![]const u8 {
+        var out = slot.assembly;
+        var algorithm: Algorithm = .none;
+        var len = reserve + raw.len;
+        if (self.compression.selected(raw.len) != .none) compressed: {
+            const limit = if (reserve == 2) @min(room, raw.len - 1) else room;
+            const framed = self.compression.encodeWithContext(raw, slot.egress[reserve..][0..limit], &slot.scratch, slot.encoder) catch |err| {
+                if (err == error.NoSpaceLeft and reserve == 2) break :compressed;
+                return err;
+            };
+            out = slot.egress;
+            algorithm = framed.algorithm;
+            len = reserve + framed.bytes.len;
+        }
+        if (algorithm == .none and raw.len > room) return error.NoSpaceLeft;
+
+        out[0] = batch.header;
+        if (reserve == 2) out[1] = @backingInt(algorithm);
+        if (self.crypto) |*crypto| len = 1 + (try crypto.seal(out[1 .. len + trailer], len - 1)).len;
+        return out[0..len];
+    }
+
+    fn splitBudget(self: *const Self, max_egress: usize) !usize {
+        const reserve: usize = if (self.compression.marks()) 2 else 1;
+        const trailer: usize = if (self.crypto != null) 8 else 0;
+        if (reserve + trailer >= max_egress) return error.LimitExceeded;
+        const room = max_egress - reserve - trailer;
+        if (self.compression.selected(room) == .none or self.compression.marks()) return room;
+        return std.math.sub(usize, room, room / 256 + 64) catch error.LimitExceeded;
+    }
+
+    pub fn canRelayTo(self: *const Self, dest: *const Self) bool {
+        return @intFromPtr(self) != @intFromPtr(dest) and
+            self.version() == dest.version() and
+            self.state == .in_game and dest.state == .in_game and
+            self.role != dest.role and
+            self.compression.relaysTo(dest.compression);
+    }
+
+    pub fn relayTo(self: *Self, dest: *Self, payload: []const u8) !Self.Frame {
+        if (self.state == .disconnected or dest.state == .disconnected) return error.TransportClosed;
+        if (!self.canRelayTo(dest)) return error.IncompatibleRelay;
+        if (dest.tx_slot != null) return error.PoolExhausted;
+
+        const body = batch.body(payload, self.policy.batch_header, self.limits) catch |err| {
+            self.close();
+            return err;
+        };
+
+        const slot_token = try dest.pool.acquireTx();
+        errdefer dest.pool.releaseTx(slot_token);
+
+        const slot = dest.pool.getTx(slot_token) orelse return error.InvalidState;
+
+        const max_egress = @min(slot.egress.len, dest.limits.max_frame_bytes);
+        const trailer: usize = if (dest.crypto != null) 8 else 0;
+        const payload_len = body.len -| @as(usize, if (self.crypto != null) 8 else 0);
+        if (1 + body.len > slot.egress.len or 1 + payload_len + trailer > max_egress) return error.LimitExceeded;
+
+        errdefer self.close();
+
+        const out = slot.egress;
+        var framed: []u8 = out[1..][0..body.len];
+        if (self.crypto) |*crypto| {
+            framed = try crypto.openFrom(out[1..], body);
+        } else @memcpy(framed, body);
+
+        var len = 1 + try self.compression.relayWithContext(
+            dest.compression,
+            out[1 .. max_egress - trailer],
+            framed.len,
+            slot.assembly,
+            &slot.scratch,
+            @min(self.limits.max_batch_bytes, dest.limits.max_batch_bytes),
+            slot.encoder,
+        );
+
+        out[0] = batch.header;
+        if (dest.crypto) |*crypto| len = 1 + (try crypto.seal(out[1 .. len + trailer], len - 1)).len;
+
+        dest.tx_slot = slot_token;
+        dest.tx_token +%= 1;
+
+        return .{
+            .bytes = out[@intFromBool(!dest.policy.batch_header)..len],
+            .session = dest,
+            .token = dest.tx_token,
+        };
+    }
+
+    pub fn encodeOne(self: *Self, packet: []const u8) !Self.Frame {
+        return self.encode(&.{packet});
+    }
+
+    /// Decodes one of the control packets in `bedwire.control`, such as `control.NetworkSettings`.
+    pub fn decodeControl(self: *const Self, comptime T: type, packet: Self.Packet) !T {
+        if (packet.kind != T.kind) return error.InvalidState;
+        return control.decode(T, packet.bytes, self.limits);
+    }
+
+    pub fn negotiateFromSettings(self: *Self, packet: Self.Packet) !void {
+        const settings = try self.decodeControl(control.NetworkSettings, packet);
+        const algorithm: Algorithm = switch (settings.compression_algorithm) {
+            .zlib => .deflate,
+            .snappy => .snappy,
+            .none => .none,
+            _ => return error.UnsupportedCompression,
+        };
+        try self.negotiateCompression(algorithm, settings.compression_threshold);
+    }
+
+    pub fn authenticateLoginPacket(self: *Self, allocator: std.mem.Allocator, packet: Self.Packet, policy: TrustPolicy) !identity_mod.Identity {
+        if (packet.kind != .login) return error.InvalidState;
+        try self.readyToAuthenticate(@as(LoginFlow, policy));
+        errdefer self.close();
+        const login_packet = try self.decodeControl(control.Login, packet);
+        return self.authenticateLogin(allocator, login_packet.connection_request, policy);
+    }
+
+    pub fn acceptServerHandshakePacket(self: *Self, allocator: std.mem.Allocator, packet: Self.Packet, secret: spki.Ecdsa.SecretKey) !void {
+        if (packet.kind != .server_to_client_handshake) return error.InvalidState;
+        if (self.role != .client or self.state != .authenticating or
+            !self.didReceive(.server_to_client_handshake) or self.crypto != null) return error.InvalidState;
+        errdefer self.close();
+        const handshake = try self.decodeControl(control.ServerToClientHandshake, packet);
+        return self.acceptServerHandshake(allocator, handshake.token, secret);
+    }
+
+    pub fn releaseTxToken(self: *Self, token: u64) void {
+        if (self.tx_token != token) return;
+        if (self.tx_slot) |slot_token| {
+            self.tx_slot = null;
+            self.tx_token +%= 1;
+            self.pool.releaseTx(slot_token);
+        }
+    }
+
+    pub fn negotiateCompression(self: *Self, algorithm: Algorithm, threshold: u16) !void {
+        if (self.state != .network_settings) return error.InvalidState;
+        if (!self.exchanged(.network_settings, .server)) return error.InvalidState;
+
+        try self.compression.negotiate(algorithm, threshold);
+        self.state = .authenticating;
+    }
+
+    pub fn authenticateChain(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        chain_json: []const u8,
+        client_data: []const u8,
+        policy: chain.ChainPolicy,
+    ) !chain.Identity {
+        try self.readyToAuthenticate(.certificate_chain);
+        errdefer self.close();
+
+        const identity = try chain.verifyChain(allocator, chain_json, client_data, policy, self.limits);
+        self.peer_key = identity.public_key;
+
+        return identity;
+    }
+
+    pub fn authenticateOidc(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        token: []const u8,
+        client_data: []const u8,
+        policy: oidc.OidcPolicy,
+    ) !oidc.Identity {
+        try self.readyToAuthenticate(.oidc);
+        errdefer self.close();
+
+        const identity = try oidc.verifyOidc(allocator, token, client_data, policy, self.limits);
+        self.peer_key = identity.public_key;
+
+        return identity;
+    }
+
+    pub fn authenticateLogin(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        connection_request_bytes: []const u8,
+        policy: TrustPolicy,
+    ) !identity_mod.Identity {
+        try self.readyToAuthenticate(@as(LoginFlow, policy));
+        errdefer self.close();
+
+        const identity = try verifyLoginRequest(allocator, connection_request_bytes, policy, self.policy, self.limits);
+
+        self.peer_key = identity.public_key;
+
+        return identity;
+    }
+
+    pub fn installVerifiedClientKey(self: *Self, key: spki.Ecdsa.PublicKey) !void {
+        if (self.role != .server or self.state != .authenticating) return error.InvalidState;
+        if (!self.didReceive(.login)) return error.InvalidState;
+        if (self.peer_key) |installed| {
+            if (!std.crypto.timing_safe.eql([97]u8, installed.toUncompressedSec1(), key.toUncompressedSec1())) return error.InvalidState;
+            return;
+        }
+
+        self.peer_key = key;
+    }
+
+    pub fn installServerCrypto(self: *Self, secret: spki.Ecdsa.SecretKey, salt: [16]u8) !void {
+        const ordered =
+            self.role == .server and
+            self.state == .authenticating and
+            self.didSend(.server_to_client_handshake) and
+            self.tx_slot == null;
+        if (!ordered) return error.InvalidState;
+        if (self.crypto != null) return error.InvalidState;
+
+        const peer = self.peer_key orelse return error.Unauthenticated;
+        try self.enableCrypto(secret, peer, salt);
+    }
+
+    pub fn installServerKey(self: *Self, key: [32]u8) !void {
+        const ordered =
+            self.role == .server and
+            self.state == .authenticating and
+            self.didSend(.server_to_client_handshake) and
+            self.tx_slot == null;
+        if (!ordered) return error.InvalidState;
+        if (self.crypto != null) return error.InvalidState;
+
+        self.crypto = SessionCrypto.init(key);
+        self.state = .encrypted_handshake;
+    }
+
+    pub fn acceptServerHandshake(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        token: []const u8,
+        secret: spki.Ecdsa.SecretKey,
+    ) !void {
+        const ordered =
+            self.role == .client and
+            self.state == .authenticating and
+            self.didReceive(.server_to_client_handshake);
+        if (!ordered) return error.InvalidState;
+        if (self.crypto != null) return error.InvalidState;
+        errdefer self.close();
+
+        const handshake = try login.Handshake.verify(allocator, token, self.limits);
+        try self.enableCrypto(secret, handshake.peer_key, handshake.salt);
+        self.peer_key = handshake.peer_key;
+    }
+
+    pub fn advance(self: *Self, next: State) !void {
+        const allowed = switch (next) {
+            .resource_packs => switch (self.state) {
+                .encrypted_handshake => self.crypto != null and self.exchanged(.client_to_server_handshake, .client),
+                // The client key must be authenticated even without encryption.
+                .authenticating => self.policy.encryption != .required and self.exchanged(.login, .client) and
+                    (self.role == .client or self.peer_key != null),
+                else => false,
+            },
+            .waiting_for_start_game => self.state == .resource_packs and
+                (self.startup.packs_completed or !self.exchanged(.resource_packs_info, .server)),
+            .spawn_ready => self.state == .waiting_for_start_game and self.startup.runtime_id != null,
+            .in_game => self.state == .spawn_ready and self.startup.initialized,
+            .closing => self.state.active(),
+            else => false,
+        };
+        if (!allowed) return error.InvalidState;
+
+        self.state = next;
+    }
+
+    pub fn settle(self: *Self) State {
+        while (true) {
+            const next: State = switch (self.state) {
+                .resource_packs => if (self.startup.packs_completed) .waiting_for_start_game else break,
+                .waiting_for_start_game => if (self.startup.runtime_id != null) .spawn_ready else break,
+                .spawn_ready => if (self.startup.initialized) .in_game else break,
+                else => break,
+            };
+            self.state = next;
+        }
+        return self.state;
+    }
+
+    fn commit(self: *Self, observed: Observed, sender: Role) void {
+        self.startup = observed.startup;
+        if (sender == self.role) {
+            self.sent = self.sent.unionWith(observed.kinds);
+        } else {
+            self.received = self.received.unionWith(observed.kinds);
+        }
+
+        if (observed.state == .resource_packs and self.state == .authenticating) self.state = observed.state;
+        if (self.state == .transport_ready and observed.kinds.contains(.request_network_settings)) {
+            self.state = .network_settings;
+        }
+        if (observed.kinds.contains(.disconnect)) self.beginClose();
+    }
+
+    fn exchanged(self: *const Self, kind: PacketKind, sender: Role) bool {
+        return if (self.role == sender) self.didSend(kind) else self.didReceive(kind);
+    }
+
+    fn readyToAuthenticate(self: *const Self, flow: LoginFlow) !void {
+        if (self.role != .server or self.state != .authenticating) return error.InvalidState;
+        if (!self.didReceive(.login) or self.peer_key != null) return error.InvalidState;
+        if (self.session_features.login_flow != flow) return error.UnsupportedProtocol;
+    }
+
+    fn enableCrypto(
+        self: *Self,
+        secret: spki.Ecdsa.SecretKey,
+        peer: spki.Ecdsa.PublicKey,
+        salt: [16]u8,
+    ) !void {
+        var key = try ecdh.derive(secret, peer, salt);
+        defer std.crypto.secureZero(u8, &key);
+
+        self.crypto = SessionCrypto.init(key);
+        self.state = .encrypted_handshake;
+    }
+
+    const Observed = struct {
+        kinds: std.EnumSet(PacketKind) = .empty,
+        count: usize = 0,
+        state: State,
+        startup: Startup,
+    };
+
+    fn admit(self: *const Self, raw: []const u8, sender: Role) !Observed {
+        var reader = try batch.Reader.init(raw, self.limits);
+        var observed: Observed = .{ .state = self.state, .startup = self.startup };
+        while (try reader.next()) |packet| try self.step(&observed, packet, sender);
+
+        if (observed.count == 0) return error.MalformedBatch;
+        if (self.singlePacketBatch() and observed.count != 1) return error.InvalidState;
+
+        return observed;
+    }
+
+    inline fn step(self: *const Self, observed: *Observed, packet: []const u8, sender: Role) !void {
+        const header = try parseHeader(packet);
+        const kind = PacketKind.fromId(header.packet_id);
+        try self.check(observed, kind, header, sender);
+
+        if (kind) |known| {
+            if (special_kinds.contains(known)) {
+                @branchHint(.unlikely);
+                try self.special(observed, packet, known, sender);
+            }
+            observed.kinds.insert(known);
+        }
+        observed.count += 1;
+        observed.state = try self.after(observed.state, kind, sender);
+    }
+
+    // Without encryption the server's PlayStatus ends the login, so packs can follow in the same batch
+    fn after(self: *const Self, state: State, kind: ?PacketKind, sender: Role) !State {
+        if (self.policy.encryption != .disabled or state != .authenticating or kind != .play_status or sender != .server) return state;
+        if (self.role == .server and self.peer_key == null) return error.Unauthenticated;
+        return .resource_packs;
+    }
+
+    fn singlePacketBatch(self: *const Self) bool {
+        if (self.policy.encryption == .disabled and self.state == .authenticating) return false;
+        return self.state.singlePacketBatch();
+    }
+
+    fn check(self: *const Self, observed: *const Observed, kind: ?PacketKind, header: control.Header, sender: Role) !void {
+        if (self.policy.encryption == .disabled and (kind == .server_to_client_handshake or kind == .client_to_server_handshake)) return error.InvalidState;
+        if (kind == null) if (self.policy.directions) |directions| {
+            if (!directions.permits(sender, header.packet_id)) return error.InvalidState;
+        };
+        if (!observed.state.permits(self.session_features, sender, kind)) return error.InvalidState;
+
+        if (header.sender_subclient != 0 or header.target_subclient != 0) return error.InvalidState;
+    }
+
+    fn special(self: *const Self, observed: *Observed, packet: []const u8, kind: PacketKind, sender: Role) !void {
+        if (state_mod.oncePerSession(kind) and self.seen(observed, kind, sender, sender)) return error.InvalidState;
+        const ordered = switch (kind) {
+            .resource_pack_data_info, .resource_pack_chunk_data => self.seen(observed, .resource_packs_info, .server, sender),
+            .resource_pack_chunk_request => self.seen(observed, .resource_pack_data_info, .server, sender),
+            // Some servers skip the offer and go straight to the stack
+            .resource_pack_client_response => self.seen(observed, .resource_packs_info, .server, sender) or
+                self.seen(observed, .resource_pack_stack, .server, sender),
+            else => true,
+        };
+        if (!ordered) return error.InvalidState;
+
+        if (controls(kind)) {
+            try self.decodeStep(&observed.startup, packet, kind);
+        } else if (kind == .start_game) {
+            observed.startup.runtime_id = (try control.decode(control.StartGame, packet, self.limits)).runtime_id;
+        }
+    }
+
+    fn seen(self: *const Self, observed: *const Observed, kind: PacketKind, from: Role, sender: Role) bool {
+        return self.exchanged(kind, from) or (from == sender and observed.kinds.contains(kind));
+    }
+
+    noinline fn decodeStep(self: *const Self, startup: *Startup, bytes: []const u8, kind: PacketKind) !void {
+        switch (kind) {
+            .request_network_settings => _ = try control.decode(control.RequestNetworkSettings, bytes, self.limits),
+            .network_settings => _ = try control.decode(control.NetworkSettings, bytes, self.limits),
+            .login => _ = try control.decode(control.Login, bytes, self.limits),
+            .server_to_client_handshake => _ = try control.decode(control.ServerToClientHandshake, bytes, self.limits),
+            .client_to_server_handshake => _ = try control.decode(control.ClientToServerHandshake, bytes, self.limits),
+            .resource_pack_client_response => {
+                const response = try control.decode(control.ResourcePackClientResponse, bytes, self.limits);
+                if (response.status == .resource_pack_stack_finished) {
+                    if (!self.exchanged(.resource_pack_stack, .server)) return error.InvalidState;
+                    startup.packs_completed = true;
+                }
+            },
+            .play_status => if ((try control.decode(control.PlayStatus, bytes, self.limits)).status == control.PlayStatus.player_spawn) {
+                startup.spawned = true;
+            },
+            .set_local_player_as_initialised => {
+                const initialised = try control.decode(control.SetLocalPlayerAsInitialised, bytes, self.limits);
+                if (!startup.initialized) {
+                    if (!startup.spawned or startup.runtime_id != initialised.runtime_id) return error.InvalidState;
+                    startup.initialized = true;
+                }
+            },
+            else => {},
+        }
+    }
+};
 
 const special_kinds = blk: {
     @setEvalBranchQuota(std.enums.values(PacketKind).len * 64);
@@ -802,9 +809,6 @@ fn controls(kind: PacketKind) bool {
         .login,
         .server_to_client_handshake,
         .client_to_server_handshake,
-        .disconnect,
-        .resource_packs_info,
-        .resource_pack_stack,
         .resource_pack_client_response,
         .play_status,
         .set_local_player_as_initialised,
@@ -813,16 +817,9 @@ fn controls(kind: PacketKind) bool {
     };
 }
 
-fn runtimeId(packet: []const u8, limits: Limits) !u64 {
-    const envelope = protocol.packet.decode(packet, .{ .max_packet_bytes = @max(packet.len, 1) }) catch return error.MalformedBatch;
-    var reader = try protocol.Reader.init(envelope.payload, protocolLimits(limits));
-    _ = try reader.readVarI64();
-    return reader.readVarU64();
-}
-
-fn parseHeader(packet: []const u8) !protocol.packet.Header {
-    const decoded = protocol.packet.decode(packet, .{ .max_packet_bytes = @max(packet.len, 1) }) catch return error.MalformedBatch;
-    return decoded.header;
+fn parseHeader(packet: []const u8) !control.Header {
+    const envelope = control.parse(packet) catch return error.MalformedBatch;
+    return envelope.header;
 }
 
 pub fn verifyLoginRequest(allocator: std.mem.Allocator, bytes: []const u8, policy: TrustPolicy, session_policy: SessionPolicy, limits: Limits) !identity_mod.Identity {
@@ -854,16 +851,5 @@ pub fn verifyLoginRequest(allocator: std.mem.Allocator, bytes: []const u8, polic
             }
             break :blk identity;
         },
-    };
-}
-
-fn protocolLimits(limits: Limits) protocol.DecodeLimits {
-    return .{
-        .max_packet_bytes = limits.max_packet_bytes,
-        .max_string_bytes = limits.max_packet_bytes,
-        .max_byte_array_bytes = limits.max_packet_bytes,
-        .max_array_elements = @min(limits.max_packet_bytes, protocol.DecodeLimits.defaults.max_array_elements),
-        .max_nbt_bytes = limits.max_packet_bytes,
-        .max_nesting_depth = limits.max_json_nesting,
     };
 }

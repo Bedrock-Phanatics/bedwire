@@ -2,10 +2,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 const bedwire = @import("bedwire");
 const legacy = @import("main.zig");
-const protocol = bedwire.protocol;
+const control = bedwire.control;
 const Timer = legacy.Timer;
 const limits = legacy.limits;
 const Phase = enum { encode, decode, roundtrip };
+// Gameplay layouts of 1.26.60, only to give the workload realistic shapes.
+const move_player_id = 19;
+const level_chunk_id = 58;
 pub const Content = enum { compressible, realistic, noise };
 const latency_samples = 1024;
 const throughput_samples = 7;
@@ -26,25 +29,16 @@ pub const Workload = struct {
         var prng = std.Random.DefaultPrng.init(0xbed);
         var offset: usize = 0;
         while (offset < size) {
-            var writer = protocol.Writer.init(self.storage[offset..]);
+            var writer: control.Writer = .init(self.storage[offset..]);
             if (content == .realistic and size < 256 * 1024) {
                 const i: f32 = @floatFromInt(self.count);
-                try protocol.Current.encode(&writer, .{
-                    .header = .{ .packet_id = protocol.Current.packetId(.move_player).? },
-                    .kind = .move_player,
-                    .payload = &.{},
-                    .value = .{ .typed = .{ .move_player = .{
-                        .player_runtime_id = 4000 + self.count % 64,
-                        .position = .{ .x = 128 + i * 0.125, .y = 64, .z = -32 + i * 0.25 },
-                        .rotation = .{ .x = i * 0.5, .y = 0 },
-                        .y_head_rotation = i * 0.5,
-                        .position_mode = .normal,
-                        .on_ground = true,
-                        .riding_runtime_id = 0,
-                        .teleport_data = null,
-                        .tick = 123456 + self.count,
-                    } } },
-                });
+                try writer.varU32(move_player_id);
+                try writer.varU64(4000 + self.count % 64);
+                for ([_]f32{ 128 + i * 0.125, 64, -32 + i * 0.25, i * 0.5, 0, i * 0.5 }) |value| try writer.int(u32, @bitCast(value), .little);
+                try writer.byte(0);
+                try writer.boolean(true);
+                try writer.varU64(0);
+                try writer.varU64(123456 + self.count);
             } else {
                 const len = @min(size - offset, if (size == 16 * 1024) @as(usize, 1024) else size);
                 const body = payload[0 .. len - 2];
@@ -58,24 +52,16 @@ pub const Workload = struct {
                     },
                 }
                 if (content == .realistic) {
-                    try protocol.Current.encode(&writer, .{
-                        .header = .{ .packet_id = protocol.Current.packetId(.level_chunk).? },
-                        .kind = .level_chunk,
-                        .payload = &.{},
-                        .value = .{ .typed = .{ .level_chunk = .{
-                            .chunk_position = .{ .x = 8, .z = -2 },
-                            .dimension_id = 0,
-                            .sub_chunks_count = 16,
-                            .client_request_sub_chunk_limit = null,
-                            .cache_enabled = false,
-                            .cache_metadata = .empty,
-                            .is_client_biome_update = false,
-                            .serialized_chunk_data = body,
-                        } } },
-                    });
+                    try writer.varU32(level_chunk_id);
+                    try writer.varI64(8);
+                    try writer.varI64(-2);
+                    try writer.varI64(0);
+                    try writer.varU32(16);
+                    try writer.boolean(false);
+                    try writer.bytes(body);
                 } else {
-                    try writer.writeVarU32(1020);
-                    try writer.writeRaw(body);
+                    try writer.varU32(1020);
+                    try writer.raw(body);
                 }
             }
             const packet = writer.written();
@@ -128,9 +114,9 @@ fn cpuNow(io: std.Io) u64 {
 
 fn measure(comptime phase: Phase, io: std.Io, allocator: std.mem.Allocator, pool: *bedwire.BufferPool, counting: *legacy.Counting, workload: *const Workload, size_name: []const u8, content: Content, mode: []const u8, setup: legacy.Setup, out: *std.Io.Writer) !void {
     const allocations = counting.allocations;
-    var sender = try legacy.open(protocol.Current, pool, .server, setup);
+    var sender = try legacy.open(pool, .server, setup);
     defer sender.deinit();
-    var receiver = try legacy.open(protocol.Current, pool, .client, setup);
+    var receiver = try legacy.open(pool, .client, setup);
     defer receiver.deinit();
     const frame_bytes = try verify(&sender, &receiver, workload);
     const sender_crypto = sender.crypto;

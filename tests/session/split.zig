@@ -276,14 +276,13 @@ test "batches that would grow go out uncompressed" {
 }
 
 test "implicit DEFLATE splits leave room for incompressible data" {
-    const Legacy = bedwire.SessionWithProfile(support.legacy);
     var limits = support.limits;
     limits.max_frame_bytes = 2048;
     var pool = try bedwire.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
-    var sender = try Legacy.init(.server, .{ .pool = &pool });
+    var sender = try bedwire.Session.init(.server, support.legacy.options(.{ .pool = &pool }));
     defer sender.deinit();
-    var receiver = try Legacy.init(.client, .{ .pool = &pool });
+    var receiver = try bedwire.Session.init(.client, support.legacy.options(.{ .pool = &pool }));
     defer receiver.deinit();
     sender.state = .in_game;
     receiver.state = .in_game;

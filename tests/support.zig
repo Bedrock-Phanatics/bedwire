@@ -1,9 +1,9 @@
 const std = @import("std");
 const bedwire = @import("bedwire");
-const protocol = @import("bedrock_protocol");
+const control = bedwire.control;
 
 pub const Ecdsa = bedwire.crypto.spki.Ecdsa;
-pub const Session = bedwire.SessionWithProfile(modern);
+pub const Session = bedwire.Session;
 pub const PacketKind = bedwire.PacketKind;
 pub const opaque_packet_id: u16 = 1020;
 pub const opaque_packet_id_2: u16 = 1021;
@@ -19,27 +19,39 @@ pub const limits: bedwire.Limits = .{
     .max_resource_pack_chunk_bytes = 4096,
 };
 
-pub const modern_oidc = Profile(944, .{ .login_flow = .oidc });
-pub const modern = Profile(818, .{ .login_flow = .certificate_chain });
-pub const legacy = Profile(440, .{
+pub const Profile = struct {
+    protocol_version: u32,
+    features: bedwire.SessionFeatures,
+
+    pub fn packetId(_: Profile, kind: PacketKind) ?u10 {
+        return kind.id();
+    }
+
+    pub fn options(self: Profile, base: bedwire.SessionOptions) bedwire.SessionOptions {
+        var merged = base;
+        merged.features = self.features;
+        merged.protocol_version = self.protocol_version;
+        return merged;
+    }
+};
+
+pub const modern_oidc: Profile = .{ .protocol_version = 944, .features = .{ .login_flow = .oidc } };
+pub const modern: Profile = .{ .protocol_version = 818, .features = .{ .login_flow = .certificate_chain } };
+pub const legacy: Profile = .{ .protocol_version = 440, .features = .{
     .uses_request_network_settings = false,
     .compression_mode = .implicit,
     .supports_snappy = false,
     .initial_algorithm = .deflate,
     .login_flow = .certificate_chain,
     .resource_pack_flow = .classic,
-});
+} };
 
-pub fn Profile(comptime number: u32, comptime capabilities: protocol.SessionFeatures) type {
-    return struct {
-        pub const protocol_number = number;
-        pub const features = capabilities;
-        pub const packetKind = protocol.Current.packetKind;
-        pub const packetId = protocol.Current.packetId;
-        pub const packetDirection = protocol.Current.packetDirection;
-        pub const decodeBorrowed = protocol.Current.decodeBorrowed;
-        pub const encode = protocol.Current.encode;
-    };
+pub fn custom(version: u32, features: bedwire.SessionFeatures) Profile {
+    return .{ .protocol_version = version, .features = features };
+}
+
+pub fn open(role: bedwire.Role, options: bedwire.SessionOptions) !Session {
+    return Session.init(role, modern.options(options));
 }
 
 pub fn buildConnectionRequest(allocator: std.mem.Allocator, chain_data: []const u8, client_data: []const u8) ![]u8 {
@@ -68,7 +80,7 @@ pub fn buildEnvelope(allocator: std.mem.Allocator, auth_type: u8, cert: ?[]const
     );
 }
 
-pub fn packetId(comptime profile: type, kind: PacketKind) u16 {
+pub fn packetId(profile: Profile, kind: PacketKind) u16 {
     return profile.packetId(kind).?;
 }
 
@@ -84,97 +96,35 @@ pub fn subclientPacket(dest: []u8, id: u16, sender: u2, target: u2) []u8 {
     return dest[0..len];
 }
 
+pub fn encode(dest: []u8, value: anytype) []const u8 {
+    return control.encode(dest, value) catch unreachable;
+}
+
 pub const Builder = struct {
     storage: [4096]u8 = undefined,
 
-    pub fn make(self: *Builder, comptime profile: type, kind: PacketKind) []const u8 {
-        if (kind == .network_settings) {
-            var writer = protocol.Writer.init(&self.storage);
-            profile.encode(&writer, .{
-                .header = .{ .packet_id = profile.packetId(kind).? },
-                .kind = kind,
-                .payload = &.{},
-                .value = .{ .typed = .{ .network_settings = .{
-                    .compression_threshold = 0,
-                    .compression_algorithm = .snappy,
-                    .client_throttle_enabled = false,
-                    .client_throttle_threshold = 0,
-                    .client_throttle_scalar = 0,
-                } } },
-            }) catch unreachable;
-            return writer.written();
-        }
-        const borrowed: ?protocol.BorrowedEnvelope = switch (kind) {
-            .resource_packs_info => .{
-                .header = .{ .packet_id = profile.packetId(kind).? },
-                .kind = kind,
-                .payload = &.{},
-                .value = .{ .typed = .{ .resource_packs_info = .{
-                    .resource_pack_required = false,
-                    .has_addon_packs = false,
-                    .has_scripts = false,
-                    .force_disable_vibrant_visuals = false,
-                    .world_template_id_and_version = .{ .pack_uuid = @splat(0), .pack_version = "" },
-                    .resource_packs = .empty,
-                } } },
-            },
-            .resource_pack_stack => .{
-                .header = .{ .packet_id = profile.packetId(kind).? },
-                .kind = kind,
-                .payload = &.{},
-                .value = .{ .typed = .{ .resource_pack_stack = .{
-                    .texture_pack_required = false,
-                    .texture_pack_list = .empty,
-                    .base_game_version = "",
-                    .experiments = .{ .toggles = .empty, .experiments_ever_toggled = false },
-                    .include_editor_packs = false,
-                } } },
-            },
-            .resource_pack_client_response => .{
-                .header = .{ .packet_id = profile.packetId(kind).? },
-                .kind = kind,
-                .payload = &.{},
-                .value = .{ .typed = .{ .resource_pack_client_response = .{
-                    .response = .{ .resource_pack_stack_finished = "resourcepackstackfinished" },
-                } } },
-            },
-            else => null,
+    pub fn make(self: *Builder, profile: Profile, kind: PacketKind) []const u8 {
+        const version: i32 = @intCast(profile.protocol_version);
+        return switch (kind) {
+            .request_network_settings => encode(&self.storage, control.RequestNetworkSettings{ .protocol_version = version }),
+            .network_settings => encode(&self.storage, control.NetworkSettings{ .compression_threshold = 0, .compression_algorithm = .snappy }),
+            .login => encode(&self.storage, control.Login{ .protocol_version = version, .connection_request = "fixture" }),
+            .server_to_client_handshake => encode(&self.storage, control.ServerToClientHandshake{ .token = "fixture" }),
+            .client_to_server_handshake => encode(&self.storage, control.ClientToServerHandshake{}),
+            .play_status => encode(&self.storage, control.PlayStatus{ .status = control.PlayStatus.login_success }),
+            .set_local_player_as_initialised => encode(&self.storage, control.SetLocalPlayerAsInitialised{ .runtime_id = runtime_id }),
+            .resource_pack_client_response => encode(&self.storage, control.ResourcePackClientResponse{ .status = .resource_pack_stack_finished, .text = "resourcepackstackfinished" }),
+            // Layouts of 1.26.60, which bedwire passes through without decoding.
+            .disconnect => packet(&self.storage, kind.id(), "\x00\x01"),
+            .resource_packs_info => packet(&self.storage, kind.id(), &@as([22]u8, @splat(0))),
+            .resource_pack_stack => packet(&self.storage, kind.id(), &@as([9]u8, @splat(0))),
+            .start_game => packet(&self.storage, kind.id(), "\x02\x01"),
+            else => packet(&self.storage, kind.id(), "\x00"),
         };
-        if (borrowed) |envelope| {
-            var writer = protocol.Writer.init(&self.storage);
-            profile.encode(&writer, envelope) catch unreachable;
-            return writer.written();
-        }
-        const typed: ?protocol.typed.Packet = switch (kind) {
-            .request_network_settings => .{ .request_network_settings = .{ .client_network_version = profile.protocol_number } },
-            .network_settings => .{ .network_settings = .{
-                .compression_threshold = 0,
-                .compression_algorithm = .snappy,
-                .client_throttle_enabled = false,
-                .client_throttle_threshold = 0,
-                .client_throttle_scalar = 0,
-            } },
-            .login => .{ .login = .{ .client_network_version = profile.protocol_number, .connection_request = "fixture" } },
-            .server_to_client_handshake => .{ .server_to_client_handshake = .{ .handshake_web_token = "fixture" } },
-            .client_to_server_handshake => .{ .client_to_server_handshake = .{} },
-            .disconnect => .{ .disconnect = .{ .reason = .unknown, .messages = .empty } },
-            .play_status => .{ .play_status = .{ .status = .loginsuccess } },
-            .set_local_player_as_initialised => .{ .set_local_player_as_initialised = .{ .player_id = runtime_id } },
-            else => null,
-        };
-        if (typed) |value| {
-            var writer = protocol.Writer.init(&self.storage);
-            protocol.typed.encode(&writer, .{ .header = .{ .packet_id = profile.packetId(kind).? }, .packet = value }) catch unreachable;
-            return writer.written();
-        }
-        if (kind == .start_game) return packet(&self.storage, packetId(profile, kind), "\x02\x01");
-        return packet(&self.storage, packetId(profile, kind), "\x00");
     }
 
-    pub fn spawn(self: *Builder, comptime profile: type) []const u8 {
-        var writer = protocol.Writer.init(&self.storage);
-        protocol.typed.encode(&writer, .{ .header = .{ .packet_id = profile.packetId(.play_status).? }, .packet = .{ .play_status = .{ .status = .playerspawn } } }) catch unreachable;
-        return writer.written();
+    pub fn spawn(self: *Builder, _: Profile) []const u8 {
+        return encode(&self.storage, control.PlayStatus{ .status = control.PlayStatus.player_spawn });
     }
 
     pub fn makeId(self: *Builder, id: u16) []u8 {
@@ -183,19 +133,18 @@ pub const Builder = struct {
 };
 
 pub const Pair = struct {
-    pub fn init(allocator: std.mem.Allocator, comptime profile: type) !PairFor(profile) {
+    pub fn init(allocator: std.mem.Allocator, comptime profile: Profile) !PairFor(profile) {
         return PairFor(profile).init(allocator);
     }
 };
 
-pub fn PairFor(comptime profile: type) type {
+pub fn PairFor(comptime profile: Profile) type {
     return struct {
         const Self = @This();
-        const ProfileSession = bedwire.SessionWithProfile(profile);
         allocator: std.mem.Allocator,
         pool: *bedwire.BufferPool,
-        server: ProfileSession,
-        client: ProfileSession,
+        server: Session,
+        client: Session,
         relay: []u8,
 
         pub fn init(allocator: std.mem.Allocator) !Self {
@@ -204,11 +153,11 @@ pub fn PairFor(comptime profile: type) type {
             pool.* = try bedwire.BufferPool.init(allocator, limits, .{ .rx_slots = 2, .tx_slots = 2 });
             errdefer pool.deinit();
 
-            const policy: bedwire.SessionPolicy = .{ .connection_request_format = if (profile == legacy) .legacy_chain else .envelope };
-            var server = try ProfileSession.init(.server, .{ .limits = limits, .pool = pool, .policy = policy });
+            const policy: bedwire.SessionPolicy = .{ .connection_request_format = if (profile.features.uses_request_network_settings) .envelope else .legacy_chain };
+            var server = try Session.init(.server, profile.options(.{ .limits = limits, .pool = pool, .policy = policy }));
             errdefer server.deinit();
 
-            var client = try ProfileSession.init(.client, .{ .limits = limits, .pool = pool, .policy = policy });
+            var client = try Session.init(.client, profile.options(.{ .limits = limits, .pool = pool, .policy = policy }));
             errdefer client.deinit();
 
             return .{
@@ -229,7 +178,7 @@ pub fn PairFor(comptime profile: type) type {
             self.* = undefined;
         }
 
-        pub fn relayFrom(self: *Self, from: *ProfileSession, to: *ProfileSession, packets: []const []const u8) !ProfileSession.Packets {
+        pub fn relayFrom(self: *Self, from: *Session, to: *Session, packets: []const []const u8) !Session.Packets {
             const frame = try from.encode(packets);
             defer frame.release();
             @memcpy(self.relay[0..frame.bytes.len], frame.bytes);
@@ -237,11 +186,11 @@ pub fn PairFor(comptime profile: type) type {
             return to.ingest(self.relay[0..frame.bytes.len]);
         }
 
-        pub fn clientToServer(self: *Self, packets: []const []const u8) !ProfileSession.Packets {
+        pub fn clientToServer(self: *Self, packets: []const []const u8) !Session.Packets {
             return self.relayFrom(&self.client, &self.server, packets);
         }
 
-        pub fn serverToClient(self: *Self, packets: []const []const u8) !ProfileSession.Packets {
+        pub fn serverToClient(self: *Self, packets: []const []const u8) !Session.Packets {
             return self.relayFrom(&self.server, &self.client, packets);
         }
 

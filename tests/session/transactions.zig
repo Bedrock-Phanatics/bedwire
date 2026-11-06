@@ -10,7 +10,7 @@ test "deterministic malformed IO keeps commits and pool leases consistent" {
     var prng = std.Random.DefaultPrng.init(0xbed004);
     const random = prng.random();
     for (0..@import("build_options").fuzz_iterations) |_| {
-        var session = try support.Session.init(.client, .{ .pool = &pool });
+        var session = try support.open(.client, .{ .pool = &pool });
         defer session.deinit();
         session.state = .in_game;
         session.peer_key = bedwire.auth.moj_root.key();
@@ -76,7 +76,7 @@ test "held frame applies backpressure without changing bytes or crypto" {
 test "close retains held frame until release and clears peer identity" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
-    var session = try support.Session.init(.client, .{ .pool = &pool });
+    var session = try support.open(.client, .{ .pool = &pool });
     defer session.deinit();
     session.state = .in_game;
     session.peer_key = bedwire.auth.moj_root.key();
@@ -166,10 +166,10 @@ fn Carrier(comptime nether: bool) type {
 test "both adapters close on handler failure and preserve send borrows during reentry" {
     inline for (.{ false, true }) |nether| {
         const Connection = Carrier(nether);
-        const Adapter = if (nether) bedwire.transport.NetherNetWithProfile(support.modern, Connection, Handler) else bedwire.transport.RakNetWithProfile(support.modern, Connection, Handler);
+        const Adapter = if (nether) bedwire.transport.NetherNet(Connection, Handler) else bedwire.transport.RakNet(Connection, Handler);
         var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
         defer pool.deinit();
-        var session = try support.Session.init(.client, .{ .pool = &pool });
+        var session = try support.open(.client, .{ .pool = &pool });
         defer session.deinit();
         session.state = .in_game;
         var connection: Connection = .{ .session = &session };
@@ -207,7 +207,7 @@ test "both adapters close on handler failure and preserve send borrows during re
 }
 
 const PumpChannel = struct {
-    const Adapter = bedwire.transport.NetherNetWithProfile(support.modern, @This(), Handler);
+    const Adapter = bedwire.transport.NetherNet(@This(), Handler);
     adapter: ?*Adapter = null,
     receives: usize = 0,
     payload: []const u8,
@@ -224,7 +224,7 @@ const PumpChannel = struct {
 test "pump rejects reentry before receive and closes if consumed data cannot be admitted" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
-    var session = try support.Session.init(.client, .{ .pool = &pool });
+    var session = try support.open(.client, .{ .pool = &pool });
     defer session.deinit();
     session.state = .in_game;
     var builder: support.Builder = .{};
@@ -295,7 +295,7 @@ test "shared RX backpressure preserves ciphertext for retry and held packets sur
     defer pool.deinit();
     var sessions: [3]support.Session = undefined;
     for (&sessions) |*session| {
-        session.* = try support.Session.init(.client, .{ .pool = &pool });
+        session.* = try support.open(.client, .{ .pool = &pool });
         session.state = .in_game;
         session.crypto = bedwire.crypto.SessionCrypto.init(@splat(0x42));
     }
@@ -327,7 +327,7 @@ test "shared RX backpressure preserves ciphertext for retry and held packets sur
 }
 
 test "compression negotiation failure leaves the old state intact" {
-    const descriptor = support.Profile(818, .{ .supports_snappy = false, .login_flow = .certificate_chain });
+    const descriptor = comptime support.custom(818, .{ .supports_snappy = false, .login_flow = .certificate_chain });
     var pair = try support.Pair.init(testing.allocator, descriptor);
     defer pair.deinit();
     pair.client.state = .network_settings;

@@ -69,57 +69,15 @@ fn makePacket(storage: []u8, id: u16, len: usize) []const u8 {
 }
 
 const Session = bedwire.Session;
-const protocol = bedwire.protocol;
-const MockProfile = struct {
-    pub const protocol_number: u32 = 7;
-    pub const features: protocol.SessionFeatures = .{};
-    pub fn packetKind(id: u10) ?protocol.PacketKind {
-        if (id == 1000) return .network_settings;
-        if (id == protocol.Current.packetId(.network_settings).?) return null;
-        return protocol.Current.packetKind(id);
-    }
-    pub fn packetId(kind: protocol.PacketKind) ?u10 {
-        if (kind == .network_settings) return 1000;
-        return protocol.Current.packetId(kind);
-    }
-    pub const packetDirection = protocol.Current.packetDirection;
-    pub fn decodeBorrowed(input: []const u8, decode_limits: protocol.DecodeLimits) protocol.DecodeError!protocol.BorrowedEnvelope {
-        const raw = try protocol.packet.decode(input, decode_limits);
-        if (raw.header.packet_id == protocol.Current.packetId(.network_settings).?) {
-            return .{ .header = raw.header, .kind = null, .payload = raw.payload, .value = .unknown };
-        }
-        if (raw.header.packet_id != 1000) return protocol.Current.decodeBorrowed(input, decode_limits);
-        var reader = try protocol.Reader.init(raw.payload, decode_limits);
-        const algorithm = try reader.readU8();
-        const threshold = try reader.readU16();
-        try reader.finish();
-        return .{ .header = raw.header, .kind = .network_settings, .payload = raw.payload, .value = .{ .typed = .{ .network_settings = .{
-            .compression_algorithm = @fromBackingInt(@intCast(algorithm)),
-            .compression_threshold = threshold,
-            .client_throttle_enabled = false,
-            .client_throttle_threshold = 0,
-            .client_throttle_scalar = 0,
-        } } } };
-    }
-    pub fn encode(writer: *protocol.Writer, envelope: protocol.BorrowedEnvelope) protocol.EncodeError!void {
-        if (envelope.kind != .network_settings) return protocol.Current.encode(writer, envelope);
-        if (envelope.header.packet_id != 1000 or envelope.value != .typed or envelope.value.typed != .network_settings) return error.InvalidValue;
-        const settings = envelope.value.typed.network_settings;
-        if (@backingInt(settings.compression_algorithm) > 255) return error.InvalidValue;
-        if (writer.remainingCapacity() < 5) return error.NoSpaceLeft;
-        try writer.writeVarU32(envelope.header.toWire());
-        try writer.writeU8(@intCast(@backingInt(settings.compression_algorithm)));
-        try writer.writeU16(settings.compression_threshold);
-    }
-};
+const control = bedwire.control;
 
 pub const Setup = struct {
     algorithm: ?bedwire.compression.Algorithm,
     encrypt: bool,
 };
 
-pub fn open(comptime Profile: type, pool: *bedwire.BufferPool, role: bedwire.Role, setup: Setup) !bedwire.SessionWithProfile(Profile) {
-    var session = try bedwire.SessionWithProfile(Profile).init(role, .{ .pool = pool, .limits = limits });
+pub fn open(pool: *bedwire.BufferPool, role: bedwire.Role, setup: Setup) !Session {
+    var session = try Session.init(role, .{ .pool = pool, .limits = limits });
     errdefer session.deinit();
 
     try session.compression.negotiate(setup.algorithm orelse .none, 0);
@@ -147,30 +105,16 @@ pub const Timer = struct {
     }
 };
 
-fn makeNetworkSettings(comptime Profile: type, storage: []u8) ![]const u8 {
-    var writer = protocol.Writer.init(storage);
-    try Profile.encode(&writer, .{
-        .header = .{ .packet_id = Profile.packetId(.network_settings).? },
-        .kind = .network_settings,
-        .payload = &.{},
-        .value = .{ .typed = .{ .network_settings = .{
-            .compression_algorithm = .snappy,
-            .compression_threshold = 128,
-            .client_throttle_enabled = false,
-            .client_throttle_threshold = 0,
-            .client_throttle_scalar = 0,
-        } } },
-    });
-    return writer.written();
+fn makeNetworkSettings(storage: []u8) ![]const u8 {
+    return control.encode(storage, control.NetworkSettings{ .compression_algorithm = .snappy, .compression_threshold = 128 });
 }
 
 const ControlResults = struct { send: Result, ingest: Result };
 
-fn benchNetworkSettings(comptime Profile: type, io: std.Io, allocator: std.mem.Allocator, pool: *bedwire.BufferPool, label: []const u8, packet: []const u8, iterations: usize) !ControlResults {
-    const ProfileSession = bedwire.SessionWithProfile(Profile);
-    var sender = try ProfileSession.init(.server, .{ .pool = pool, .limits = limits });
+fn benchNetworkSettings(io: std.Io, allocator: std.mem.Allocator, pool: *bedwire.BufferPool, label: []const u8, packet: []const u8, iterations: usize) !ControlResults {
+    var sender = try Session.init(.server, .{ .pool = pool, .limits = limits });
     defer sender.deinit();
-    var receiver = try ProfileSession.init(.client, .{ .pool = pool, .limits = limits });
+    var receiver = try Session.init(.client, .{ .pool = pool, .limits = limits });
     defer receiver.deinit();
     sender.state = .network_settings;
     receiver.state = .network_settings;
@@ -218,8 +162,8 @@ fn benchNetworkSettings(comptime Profile: type, io: std.Io, allocator: std.mem.A
     };
 }
 
-fn benchSend(comptime Profile: type, io: std.Io, pool: *bedwire.BufferPool, name: []const u8, setup: Setup, packets: []const []const u8, iterations: usize) !Result {
-    var session = try open(Profile, pool, .server, setup);
+fn benchSend(io: std.Io, pool: *bedwire.BufferPool, name: []const u8, setup: Setup, packets: []const []const u8, iterations: usize) !Result {
+    var session = try open(pool, .server, setup);
     defer session.deinit();
 
     var payload: usize = 0;
@@ -241,10 +185,10 @@ fn benchSend(comptime Profile: type, io: std.Io, pool: *bedwire.BufferPool, name
     };
 }
 
-fn benchIngest(comptime Profile: type, io: std.Io, allocator: std.mem.Allocator, pool: *bedwire.BufferPool, name: []const u8, setup: Setup, packets: []const []const u8, iterations: usize) !Result {
-    var sender = try open(Profile, pool, .client, setup);
+fn benchIngest(io: std.Io, allocator: std.mem.Allocator, pool: *bedwire.BufferPool, name: []const u8, setup: Setup, packets: []const []const u8, iterations: usize) !Result {
+    var sender = try open(pool, .client, setup);
     defer sender.deinit();
-    var receiver = try open(Profile, pool, .server, setup);
+    var receiver = try open(pool, .server, setup);
     defer receiver.deinit();
 
     const frames = try allocator.alloc([]u8, iterations);
@@ -280,11 +224,11 @@ fn benchIngest(comptime Profile: type, io: std.Io, allocator: std.mem.Allocator,
 
 fn benchRelay(io: std.Io, allocator: std.mem.Allocator, pool: *bedwire.BufferPool, name: []const u8, algorithm: bedwire.compression.Algorithm, packet: []const u8, iterations: usize, fast: bool) !Result {
     const setup: Setup = .{ .algorithm = algorithm, .encrypt = true };
-    var peer = try open(protocol.Current, pool, .client, setup);
+    var peer = try open(pool, .client, setup);
     defer peer.deinit();
-    var inbound = try open(protocol.Current, pool, .server, setup);
+    var inbound = try open(pool, .server, setup);
     defer inbound.deinit();
-    var outbound = try open(protocol.Current, pool, .client, setup);
+    var outbound = try open(pool, .client, setup);
     defer outbound.deinit();
     outbound.crypto = bedwire.crypto.SessionCrypto.init(@splat(0x24));
 
@@ -319,9 +263,9 @@ fn benchSessionLifecycle(io: std.Io, pool: *bedwire.BufferPool, iterations: usiz
     const packet = makePacket(&storage, 1020, 32);
     var timer = Timer.start(io);
     for (0..iterations) |_| {
-        var sender = try open(protocol.Current, pool, .client, .{ .algorithm = .snappy, .encrypt = true });
+        var sender = try open(pool, .client, .{ .algorithm = .snappy, .encrypt = true });
         defer sender.deinit();
-        var receiver = try open(protocol.Current, pool, .server, .{ .algorithm = .snappy, .encrypt = true });
+        var receiver = try open(pool, .server, .{ .algorithm = .snappy, .encrypt = true });
         defer receiver.deinit();
         const frame = try sender.encodeOne(packet);
         defer frame.release();
@@ -335,21 +279,20 @@ fn benchSessionLifecycle(io: std.Io, pool: *bedwire.BufferPool, iterations: usiz
     return .{ .name = "Session pair / shared pool", .operations = iterations, .nanoseconds = timer.read(), .payload_bytes = packet.len * iterations };
 }
 
-fn benchClassification(comptime Profile: type, io: std.Io, name: []const u8, iterations: usize) Result {
+fn benchClassification(io: std.Io, name: []const u8, iterations: usize) Result {
     var timer = Timer.start(io);
     for (0..iterations) |i| {
         const id: u10 = @truncate(i);
-        std.mem.doNotOptimizeAway(Profile.packetKind(id));
+        std.mem.doNotOptimizeAway(bedwire.PacketKind.fromId(id));
     }
     return .{ .name = name, .operations = iterations, .nanoseconds = timer.read(), .payload_bytes = 0 };
 }
 
-fn benchState(comptime Profile: type, io: std.Io, name: []const u8, iterations: usize) Result {
+fn benchState(io: std.Io, name: []const u8, iterations: usize) Result {
     var timer = Timer.start(io);
     for (0..iterations) |i| {
-        const kind = Profile.packetKind(@truncate(i));
-        const direction = if (kind) |known| Profile.packetDirection(known) else .bidirectional;
-        std.mem.doNotOptimizeAway(bedwire.State.in_game.permitsWithDirection(Profile.features, .client, kind, direction));
+        const kind = bedwire.PacketKind.fromId(@truncate(i));
+        std.mem.doNotOptimizeAway(bedwire.State.in_game.permits(.{}, .client, kind));
     }
     return .{ .name = name, .operations = iterations, .nanoseconds = timer.read(), .payload_bytes = 0 };
 }
@@ -451,7 +394,7 @@ fn tapFrame(dest: []u8, packet: []const u8, compressed: bool) ![]const u8 {
         @memcpy(dest[1 .. 1 + writer.written().len], writer.written());
         return dest[0 .. 1 + writer.written().len];
     }
-    var codec = bedwire.compression.Compression.init(protocol.Current.features);
+    var codec = bedwire.compression.Compression.init(.{});
     try codec.negotiate(.snappy, 0);
     var scratch: bedwire.compression.Scratch = undefined;
     const framed = try codec.encode(writer.written(), dest[2..], &scratch);
@@ -459,33 +402,27 @@ fn tapFrame(dest: []u8, packet: []const u8, compressed: bool) ![]const u8 {
     return dest[0 .. 2 + framed.bytes.len];
 }
 
+const tap_version = 800;
+
 fn benchTap(io: std.Io, pool: *bedwire.BufferPool, iterations: usize) !Result {
     var packet_storage: [4][4096]u8 = undefined;
     var frame_storage: [4][4096]u8 = undefined;
     var frames: [4][]const u8 = undefined;
 
     for (0..4) |i| {
-        var writer = protocol.Writer.init(&packet_storage[i]);
-        const kind: protocol.PacketKind = switch (i) {
-            0 => .request_network_settings,
-            1 => .network_settings,
-            2 => .login,
-            else => .server_to_client_handshake,
+        const packet = try switch (i) {
+            0 => control.encode(&packet_storage[i], control.RequestNetworkSettings{ .protocol_version = tap_version }),
+            1 => control.encode(&packet_storage[i], control.NetworkSettings{ .compression_threshold = 0, .compression_algorithm = .snappy }),
+            2 => control.encode(&packet_storage[i], control.Login{ .protocol_version = tap_version, .connection_request = "fixture" }),
+            else => control.encode(&packet_storage[i], control.ServerToClientHandshake{ .token = "fixture" }),
         };
-        const packet: protocol.typed.Packet = switch (i) {
-            0 => .{ .request_network_settings = .{ .client_network_version = protocol.Current.protocol_number } },
-            1 => .{ .network_settings = .{ .compression_threshold = 0, .compression_algorithm = .snappy, .client_throttle_enabled = false, .client_throttle_threshold = 0, .client_throttle_scalar = 0 } },
-            2 => .{ .login = .{ .client_network_version = protocol.Current.protocol_number, .connection_request = "fixture" } },
-            else => .{ .server_to_client_handshake = .{ .handshake_web_token = "fixture" } },
-        };
-        try protocol.typed.encode(&writer, .{ .header = .{ .packet_id = protocol.Current.packetId(kind).? }, .packet = packet });
-        frames[i] = try tapFrame(&frame_storage[i], writer.written(), i >= 2);
+        frames[i] = try tapFrame(&frame_storage[i], packet, i >= 2);
     }
 
     const directions: [4]bedwire.TapDirection = .{ .client_to_server, .server_to_client, .client_to_server, .server_to_client };
     var timer = Timer.start(io);
     for (0..iterations) |_| {
-        var tap = try bedwire.Tap.init(.{ .pool = pool, .limits = limits });
+        var tap = try bedwire.Tap.init(.{ .pool = pool, .limits = limits, .protocol_version = tap_version });
         for (frames, directions) |frame, direction| {
             var packets = try tap.observe(direction, frame);
             std.mem.doNotOptimizeAway(packets.next().?.bytes.ptr);
@@ -547,7 +484,7 @@ pub fn main(init: std.process.Init) !void {
         for (workloads) |workload| {
             var name_storage: [64]u8 = undefined;
             const name = try std.fmt.bufPrint(&name_storage, "  encode {s} / {s}", .{ workload.name, case.name });
-            try (try benchSend(protocol.Current, init.io, &pool, name, case.setup, workload.packets, workload.iterations)).report(out);
+            try (try benchSend(init.io, &pool, name, case.setup, workload.packets, workload.iterations)).report(out);
         }
     }
 
@@ -556,7 +493,7 @@ pub fn main(init: std.process.Init) !void {
         for (workloads) |workload| {
             var name_storage: [64]u8 = undefined;
             const name = try std.fmt.bufPrint(&name_storage, "  ingest {s} / {s}", .{ workload.name, case.name });
-            try (try benchIngest(protocol.Current, init.io, allocator, &pool, name, case.setup, workload.packets, workload.iterations)).report(out);
+            try (try benchIngest(init.io, allocator, &pool, name, case.setup, workload.packets, workload.iterations)).report(out);
         }
     }
 
@@ -597,24 +534,14 @@ pub fn main(init: std.process.Init) !void {
     try (try benchSeal(init.io, 200_000)).report(out);
     try (try benchOpen(init.io, allocator, 200_000)).report(out);
 
-    try out.print("\nprofiles\n", .{});
-    try benchClassification(protocol.Current, init.io, "classify / current", 2_000_000).report(out);
-    try benchClassification(MockProfile, init.io, "classify / external", 2_000_000).report(out);
-    try benchState(protocol.Current, init.io, "state validation / current", 2_000_000).report(out);
-    try benchState(MockProfile, init.io, "state validation / external", 2_000_000).report(out);
-    var current_settings_storage: [64]u8 = undefined;
-    const current_settings = try makeNetworkSettings(protocol.Current, &current_settings_storage);
-    const current_control = try benchNetworkSettings(protocol.Current, init.io, allocator, &pool, "current", current_settings, 200_000);
-    try current_control.send.report(out);
-    try current_control.ingest.report(out);
-    var external_settings_storage: [64]u8 = undefined;
-    const external_settings = try makeNetworkSettings(MockProfile, &external_settings_storage);
-    const external_control = try benchNetworkSettings(MockProfile, init.io, allocator, &pool, "external ID+layout", external_settings, 200_000);
-    try external_control.send.report(out);
-    try external_control.ingest.report(out);
-    try (try benchSend(MockProfile, init.io, &pool, "encode 1-packet / external", .{ .algorithm = null, .encrypt = false }, single, 200_000)).report(out);
-    try (try benchIngest(MockProfile, init.io, allocator, &pool, "ingest 1-packet / external", .{ .algorithm = null, .encrypt = false }, single, 200_000)).report(out);
-    try out.print("  external Session struct: {d} B\n", .{@sizeOf(bedwire.SessionWithProfile(MockProfile))});
+    try out.print("\ncontrol\n", .{});
+    try benchClassification(init.io, "classify", 2_000_000).report(out);
+    try benchState(init.io, "state validation", 2_000_000).report(out);
+    var settings_storage: [64]u8 = undefined;
+    const settings = try makeNetworkSettings(&settings_storage);
+    const settings_control = try benchNetworkSettings(init.io, allocator, &pool, "network settings", settings, 200_000);
+    try settings_control.send.report(out);
+    try settings_control.ingest.report(out);
 
     try out.print("\npassive observer (request, settings, compressed Login, clear handshake)\n", .{});
     const before_tap = pool_counting.allocations;

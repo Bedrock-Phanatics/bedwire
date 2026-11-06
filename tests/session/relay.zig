@@ -229,11 +229,11 @@ test "relay crosses profiles only within one protocol version" {
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 2 });
     defer pool.deinit();
 
-    var player = try bedwire.SessionWithProfile(support.Profile(818, .{ .login_flow = .oidc })).init(.server, .{ .pool = &pool });
+    var player = try bedwire.Session.init(.server, support.custom(818, .{ .login_flow = .oidc }).options(.{ .pool = &pool }));
     defer player.deinit();
-    var backend = try Session.init(.client, .{ .pool = &pool });
+    var backend = try Session.init(.client, .{ .pool = &pool, .protocol_version = 818 });
     defer backend.deinit();
-    var newer = try bedwire.SessionWithProfile(support.Profile(819, .{ .login_flow = .certificate_chain })).init(.client, .{ .pool = &pool });
+    var newer = try bedwire.Session.init(.client, support.custom(819, .{ .login_flow = .certificate_chain }).options(.{ .pool = &pool }));
     defer newer.deinit();
     for ([_]*bedwire.compression.Compression{ &player.compression, &backend.compression, &newer.compression }) |c| try c.negotiate(.deflate, 0);
     player.state = .in_game;

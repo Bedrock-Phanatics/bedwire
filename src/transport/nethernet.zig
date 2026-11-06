@@ -6,15 +6,10 @@ const Packet = session_mod.Packet;
 const Session = session_mod.Session;
 
 pub fn NetherNet(comptime Connection: type, comptime Handler: type) type {
-    return NetherNetWithProfile(@import("bedrock_protocol").Current, Connection, Handler);
-}
-
-pub fn NetherNetWithProfile(comptime Profile: type, comptime Connection: type, comptime Handler: type) type {
     comptime validate(Handler);
-    const ProfileSession = session_mod.SessionWithProfile(Profile);
 
     return struct {
-        session: *ProfileSession,
+        session: *Session,
         connection: *Connection,
         handler: *Handler,
         pumping: bool = false,

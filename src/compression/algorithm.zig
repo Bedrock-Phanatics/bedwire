@@ -19,7 +19,7 @@ pub const Algorithm = enum(u8) {
     }
 };
 pub const CompressionMode = @FieldType(SessionFeatures, "compression_mode");
-pub const SessionFeatures = @import("bedrock_protocol").SessionFeatures;
+pub const SessionFeatures = @import("../session/features.zig").SessionFeatures;
 
 pub const Scratch = extern union {
     history: [flate.history_len]u8,

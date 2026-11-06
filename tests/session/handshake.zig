@@ -396,7 +396,7 @@ test "closing still carries a disconnect in both directions" {
     try testing.expectError(error.InvalidState, pair.server.encodeOne(build.makeId(1020)));
 }
 
-test "gameplay enforces known packet directions between client and server" {
+test "gameplay enforces packet directions between client and server" {
     var pair = try support.Pair.init(testing.allocator, support.modern);
     defer pair.deinit();
 
@@ -406,11 +406,21 @@ test "gameplay enforces known packet directions between client and server" {
     pair.client.state = .in_game;
     pair.server.state = .in_game;
 
-    var p1 = try pair.clientToServer(&.{build.make(descriptor, .server_bound_data_store)});
-    try testing.expectEqual(bedwire.PacketKind.server_bound_data_store, p1.next().?.kind);
+    var directions: bedwire.Directions = .{};
+    directions.client = .empty;
+    directions.client.set(support.opaque_packet_id);
+    directions.server.unset(support.opaque_packet_id);
+    pair.client.policy.directions = &directions;
+    pair.server.policy.directions = &directions;
+
+    var p1 = try pair.clientToServer(&.{build.makeId(support.opaque_packet_id)});
+    try testing.expectEqual(null, p1.next().?.kind);
     p1.deinit();
 
-    try testing.expectError(error.InvalidState, pair.server.encodeOne(build.make(descriptor, .server_bound_data_store)));
+    try testing.expectError(error.InvalidState, pair.server.encodeOne(build.makeId(support.opaque_packet_id)));
+    try testing.expectError(error.InvalidState, pair.client.encodeOne(build.makeId(support.opaque_packet_id_2)));
+    pair.client.policy.directions = null;
+    pair.server.policy.directions = null;
 
     var storage1: [16]u8 = undefined;
     var storage2: [16]u8 = undefined;
@@ -467,7 +477,7 @@ fn chainRequest(allocator: std.mem.Allocator, framed: bool) ![]u8 {
     return support.buildConnectionRequest(allocator, envelope, client_data);
 }
 
-fn authenticatingPair(allocator: std.mem.Allocator, comptime profile: type) !support.PairFor(profile) {
+fn authenticatingPair(allocator: std.mem.Allocator, comptime profile: support.Profile) !support.PairFor(profile) {
     var pair = try support.Pair.init(allocator, profile);
     pair.server.state = .authenticating;
     pair.client.state = .authenticating;
@@ -506,7 +516,7 @@ test "authenticateLogin accepts certificate chains in envelope and legacy framin
         var pair = try authenticatingPair(allocator, profile);
         defer pair.deinit();
 
-        const request = try chainRequest(allocator, profile != support.legacy);
+        const request = try chainRequest(allocator, profile.features.uses_request_network_settings);
         defer allocator.free(request);
 
         var id = try pair.server.authenticateLogin(allocator, request, .{ .certificate_chain = .{ .now = 100, .root = root } });

@@ -1,5 +1,6 @@
 const std = @import("std");
-const protocol = @import("bedrock_protocol");
+const control = @import("../wire/control.zig");
+const SessionFeatures = @import("../session/features.zig").SessionFeatures;
 
 const Limits = @import("../limits.zig").Limits;
 const jwt = @import("jwt.zig");
@@ -37,7 +38,7 @@ pub fn encodedPublicKey(key: spki.Ecdsa.PublicKey) [160]u8 {
 }
 
 pub fn buildProxyConnectionRequest(
-    comptime Profile: type,
+    features: SessionFeatures,
     allocator: std.mem.Allocator,
     key: spki.Ecdsa.KeyPair,
     identity: *const identity_mod.Identity,
@@ -47,8 +48,7 @@ pub fn buildProxyConnectionRequest(
     format: wire.ConnectionRequestFormat,
     limits: Limits,
 ) ![]u8 {
-    comptime protocol.validateProfile(Profile);
-    if (Profile.features.login_flow != .certificate_chain) return error.UnsupportedProtocol;
+    if (features.login_flow != .certificate_chain) return error.UnsupportedProtocol;
     try limits.validate();
     if (expires_at <= 0 or identity.display_name.len == 0 or
         identity.display_name.len > limits.max_identity_bytes or
@@ -97,23 +97,14 @@ fn printExact(allocator: std.mem.Allocator, comptime format: []const u8, args: a
     return bytes;
 }
 
-pub fn encodeLoginPacket(comptime Profile: type, dest: []u8, connection_request: []const u8, limits: Limits) ![]const u8 {
-    comptime protocol.validateProfile(Profile);
+pub fn encodeLoginPacket(protocol_version: u32, dest: []u8, connection_request: []const u8, limits: Limits) ![]const u8 {
     try limits.validate();
     if (connection_request.len > limits.max_connection_request_bytes) return error.LimitExceeded;
-    const packet_id = Profile.packetId(.login) orelse return error.UnsupportedProtocol;
-    const version = std.math.cast(i32, Profile.protocol_number) orelse return error.UnsupportedProtocol;
-    var writer = protocol.Writer.init(dest[0..@min(dest.len, limits.max_packet_bytes)]);
-    try Profile.encode(&writer, .{
-        .header = .{ .packet_id = packet_id },
-        .kind = .login,
-        .payload = &.{},
-        .value = .{ .typed = .{ .login = .{
-            .client_network_version = version,
-            .connection_request = connection_request,
-        } } },
+    const version = std.math.cast(i32, protocol_version) orelse return error.UnsupportedProtocol;
+    return control.encode(dest[0..@min(dest.len, limits.max_packet_bytes)], control.Login{
+        .protocol_version = version,
+        .connection_request = connection_request,
     });
-    return writer.written();
 }
 
 pub fn serverHandshake(allocator: std.mem.Allocator, key: spki.Ecdsa.KeyPair, salt: [16]u8, limits: Limits) ![]u8 {

@@ -5,7 +5,7 @@ const support = @import("../support.zig");
 const testing = std.testing;
 
 fn gameSession(pool: *bedwire.BufferPool, role: bedwire.Role) !support.Session {
-    var session = try support.Session.init(role, .{ .pool = pool, .limits = support.limits });
+    var session = try support.open(role, .{ .pool = pool, .limits = support.limits });
     session.state = .in_game;
     return session;
 }
@@ -42,7 +42,7 @@ test "malformed and truncated length prefixes are rejected" {
         &.{ 0xfe, 4, 60, 1 },
         &.{ 0xfe, 0x80 },
         &.{ 0xfe, 0x80, 0x00, 60 },
-        &.{ 0xfe, 2, @as(u8, @intCast(support.packetId(support.modern, .player_action))), 1, 5 },
+        &.{ 0xfe, 2, 36, 1, 5 },
     };
 
     var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 2 });
@@ -93,7 +93,7 @@ test "packet count and packet size limits bound one batch" {
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = tight });
+    var session = try support.open(.server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 
@@ -115,7 +115,7 @@ test "an oversized frame is refused before it is copied" {
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = tight });
+    var session = try support.open(.server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 
@@ -132,7 +132,7 @@ test "output that cannot fit a frame fails instead of truncating" {
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 2, .tx_slots = 2 });
     defer pool.deinit();
 
-    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = tight });
+    var session = try support.open(.server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 
@@ -298,7 +298,7 @@ test "a held frame blocks encoding and a stale release cannot free its successor
     var pool = try bedwire.BufferPool.init(testing.allocator, tight, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
 
-    var session = try support.Session.init(.server, .{ .pool = &pool, .limits = tight });
+    var session = try support.open(.server, .{ .pool = &pool, .limits = tight });
     defer session.deinit();
     session.state = .in_game;
 

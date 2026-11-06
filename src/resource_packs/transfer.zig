@@ -1,12 +1,12 @@
 const std = @import("std");
-const protocol = @import("bedrock_protocol");
+const control = @import("../wire/control.zig");
 
 const Limits = @import("../limits.zig").Limits;
 const negotiation = @import("negotiation.zig");
 
-pub const DataInfo = @FieldType(protocol.typed.Packet, "resource_pack_data_info");
-pub const ChunkData = @FieldType(protocol.typed.Packet, "resource_pack_chunk_data");
-pub const ChunkRequest = @FieldType(protocol.typed.Packet, "resource_pack_chunk_request");
+pub const DataInfo = control.ResourcePackDataInfo;
+pub const ChunkData = control.ResourcePackChunkData;
+pub const ChunkRequest = control.ResourcePackChunkRequest;
 
 pub const Metadata = struct {
     pack_id: []const u8,

@@ -1,6 +1,5 @@
 const std = @import("std");
 const bedwire = @import("bedwire");
-const protocol = @import("bedrock_protocol");
 const support = @import("../support.zig");
 
 const testing = std.testing;
@@ -14,22 +13,16 @@ const Packets = struct {
         return support.packet(&self.storage[0], support.packetId(modern, .start_game), &.{ 2, runtime_id });
     }
 
-    fn status(self: *Packets, value: protocol.packets.play_status.PlayStatusType) []const u8 {
-        return self.typed(1, .{ .play_status = .{ .status = value } });
+    fn status(self: *Packets, value: i32) []const u8 {
+        return support.encode(&self.storage[1], bedwire.control.PlayStatus{ .status = value });
     }
 
     fn initialized(self: *Packets, runtime_id: u64) []const u8 {
-        return self.typed(2, .{ .set_local_player_as_initialised = .{ .player_id = runtime_id } });
+        return support.encode(&self.storage[2], bedwire.control.SetLocalPlayerAsInitialised{ .runtime_id = runtime_id });
     }
 
     fn gameplay(self: *Packets) []const u8 {
         return support.packet(&self.storage[3], support.opaque_packet_id, "x");
-    }
-
-    fn typed(self: *Packets, slot: usize, value: protocol.typed.Packet) []const u8 {
-        var writer = protocol.Writer.init(&self.storage[slot]);
-        protocol.typed.encode(&writer, .{ .header = .{ .packet_id = modern.packetId(protocol.typed.packetKind(value)).? }, .packet = value }) catch unreachable;
-        return writer.written();
     }
 };
 
@@ -51,9 +44,9 @@ test "both sides record the runtime ID, the spawn and the matching ack" {
         try testing.expectEqual(State.spawn_ready, session.settle());
     }
 
-    try pair.serverToClientDiscard(&.{p.status(.loginsuccess)});
+    try pair.serverToClientDiscard(&.{p.status(bedwire.control.PlayStatus.login_success)});
     try testing.expect(!pair.client.startup.spawned);
-    try pair.serverToClientDiscard(&.{p.status(.playerspawn)});
+    try pair.serverToClientDiscard(&.{p.status(bedwire.control.PlayStatus.player_spawn)});
     try pair.clientToServerDiscard(&.{p.initialized(7)});
     for ([_]*support.Session{ &pair.server, &pair.client }) |session| {
         try testing.expect(session.startup.spawned and session.startup.initialized);
@@ -66,7 +59,7 @@ test "a spawn that arrives before StartGame still counts" {
     defer pair.deinit();
     var p: Packets = .{};
 
-    try pair.serverToClientDiscard(&.{p.status(.playerspawn)});
+    try pair.serverToClientDiscard(&.{p.status(bedwire.control.PlayStatus.player_spawn)});
     try pair.serverToClientDiscard(&.{p.startGame(3)});
     try pair.client.advance(.spawn_ready);
     try pair.server.advance(.spawn_ready);
@@ -84,7 +77,7 @@ test "the ack must name the StartGame runtime ID and follow the spawn" {
     _ = pair.server.settle();
     _ = pair.client.settle();
     try testing.expectError(error.InvalidState, pair.client.encodeOne(p.initialized(5)));
-    try pair.serverToClientDiscard(&.{p.status(.playerspawn)});
+    try pair.serverToClientDiscard(&.{p.status(bedwire.control.PlayStatus.player_spawn)});
     try testing.expectError(error.InvalidState, pair.client.encodeOne(p.initialized(6)));
     try testing.expect(!pair.client.startup.initialized);
 
@@ -111,7 +104,7 @@ test "advance refuses to skip startup conditions" {
     try testing.expectError(error.InvalidState, pair.server.advance(.spawn_ready));
 
     pair.client.state = .waiting_for_start_game;
-    try pair.serverToClientDiscard(&.{ p.startGame(9), p.status(.playerspawn) });
+    try pair.serverToClientDiscard(&.{ p.startGame(9), p.status(bedwire.control.PlayStatus.player_spawn) });
     try testing.expectEqual(State.spawn_ready, pair.server.settle());
     try testing.expectError(error.InvalidState, pair.server.advance(.in_game));
     try testing.expectEqual(State.spawn_ready, pair.server.settle());
@@ -153,8 +146,8 @@ test "random startup traffic never reaches the game without its conditions" {
             const from_server = random.boolean();
             const packet: []const u8 = switch (random.uintLessThan(u8, 9)) {
                 0 => p.startGame(random.intRangeAtMost(u8, 1, 3)),
-                1 => p.status(.playerspawn),
-                2 => p.status(.loginsuccess),
+                1 => p.status(bedwire.control.PlayStatus.player_spawn),
+                2 => p.status(bedwire.control.PlayStatus.login_success),
                 3 => p.initialized(random.intRangeAtMost(u8, 1, 3)),
                 4 => build.make(modern, .resource_packs_info),
                 5 => build.make(modern, .resource_pack_stack),

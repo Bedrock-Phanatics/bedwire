@@ -1,9 +1,9 @@
 const std = @import("std");
 
-const protocol = @import("bedrock_protocol");
-const PacketKind = protocol.PacketKind;
-const PacketDirection = protocol.PacketDirection;
-const SessionFeatures = protocol.SessionFeatures;
+const control = @import("../wire/control.zig");
+const PacketKind = control.PacketKind;
+const PacketDirection = control.Direction;
+const SessionFeatures = @import("features.zig").SessionFeatures;
 
 pub const Role = enum {
     client,
@@ -44,24 +44,12 @@ pub const State = enum {
         };
     }
 
+    /// Other packet IDs pass as `null` and may travel either way here; `Directions` narrows them.
     pub fn permits(self: State, session_features: SessionFeatures, sender: Role, kind: ?PacketKind) bool {
-        const packet_direction = if (kind) |known| protocol.Current.packetDirection(known) else .bidirectional;
-        return self.permitsWithDirection(session_features, sender, kind, packet_direction);
-    }
-
-    pub fn permitsWithDirection(self: State, session_features: SessionFeatures, sender: Role, kind: ?PacketKind, packet_direction: PacketDirection) bool {
         if (self == .disconnected) return false;
         if (kind == .disconnect) return true;
         if (self == .closing) return false;
-        const effective_direction: PacketDirection = if (kind) |known| switch (known) {
-            .client_cache_status, .set_local_player_as_initialised => .client_to_server,
-            else => packet_direction,
-        } else packet_direction;
-        return self.permitsKnown(session_features, sender, kind, effective_direction);
-    }
-
-    fn permitsKnown(self: State, session_features: SessionFeatures, sender: Role, kind: ?PacketKind, packet_direction: PacketDirection) bool {
-        const effective_direction = packet_direction;
+        const effective_direction: PacketDirection = if (kind) |known| known.direction() else .bidirectional;
         return switch (self) {
             .transport_ready => sender == .client and
                 kind == .request_network_settings and
@@ -113,6 +101,21 @@ pub const State = enum {
     }
 };
 
+/// Which non-control packet IDs each side may send. Shared read-only between sessions.
+pub const Directions = struct {
+    pub const IdSet = std.StaticBitSet(1 << @bitSizeOf(control.PacketId));
+
+    client: IdSet = .full,
+    server: IdSet = .full,
+
+    pub fn permits(self: *const Directions, sender: Role, id: control.PacketId) bool {
+        return switch (sender) {
+            .client => self.client.isSet(id),
+            .server => self.server.isSet(id),
+        };
+    }
+};
+
 pub const Startup = struct {
     packs_completed: bool = false,
     runtime_id: ?u64 = null,
@@ -142,11 +145,9 @@ fn isHandshake(kind: ?PacketKind) bool {
     };
 }
 
+// Every control kind has its own stage rule, so only other IDs count as gameplay.
 fn isGenericGameplay(kind: ?PacketKind) bool {
-    return switch (kind orelse return true) {
-        .request_network_settings, .network_settings, .login, .play_status, .server_to_client_handshake, .client_to_server_handshake, .disconnect, .resource_packs_info, .resource_pack_stack, .resource_pack_client_response, .resource_pack_data_info, .resource_pack_chunk_data, .resource_pack_chunk_request, .resource_packs_ready_for_validation, .client_cache_status, .start_game, .request_chunk_radius, .chunk_radius_updated, .set_local_player_as_initialised => false,
-        else => true,
-    };
+    return kind == null;
 }
 
 const testing = std.testing;
@@ -208,8 +209,6 @@ test "gameplay stages refuse every handshake kind" {
     try testing.expect(State.in_game.permits(modern, .server, null));
     try testing.expect(State.in_game.permits(modern, .server, .play_status));
     try testing.expect(!State.in_game.permits(modern, .client, .play_status));
-    try testing.expect(State.in_game.permits(modern, .client, .server_bound_data_store));
-    try testing.expect(!State.in_game.permits(modern, .server, .server_bound_data_store));
     try testing.expect(State.in_game.permits(modern, .server, .chunk_radius_updated));
     try testing.expect(!State.in_game.permits(modern, .client, .chunk_radius_updated));
     try testing.expect(State.in_game.permits(modern, .client, .client_cache_status));
@@ -225,9 +224,10 @@ test "pre-game stages keep session packet directions" {
     try testing.expect(!State.waiting_for_start_game.permits(modern, .server, .client_cache_status));
     try testing.expect(!State.spawn_ready.permits(modern, .server, .request_chunk_radius));
     try testing.expect(!State.spawn_ready.permits(modern, .client, .chunk_radius_updated));
-    try testing.expect(State.spawn_ready.permits(modern, .server, .set_time));
-    try testing.expect(!State.in_game.permits(modern, .client, .set_time));
-    try testing.expect(State.in_game.permits(modern, .server, .set_time));
+    try testing.expect(State.spawn_ready.permits(modern, .server, null));
+    try testing.expect(!State.waiting_for_start_game.permits(modern, .client, null));
+    try testing.expect(State.in_game.permits(modern, .server, .request_chunk_radius));
+    try testing.expect(State.in_game.permits(modern, .client, .request_chunk_radius));
 }
 
 test "closing and disconnected admit nothing but disconnect" {
@@ -245,4 +245,14 @@ test "single-packet batching covers exactly the handshake stages" {
     try testing.expect(State.encrypted_handshake.singlePacketBatch());
     try testing.expect(!State.resource_packs.singlePacketBatch());
     try testing.expect(!State.in_game.singlePacketBatch());
+}
+
+test "direction tables default to permitting every ID from both sides" {
+    var directions: Directions = .{};
+    try testing.expect(directions.permits(.client, 1023) and directions.permits(.server, 0));
+    directions.client = .empty;
+    directions.client.set(144);
+    try testing.expect(directions.permits(.client, 144));
+    try testing.expect(!directions.permits(.client, 145));
+    try testing.expect(directions.permits(.server, 145));
 }

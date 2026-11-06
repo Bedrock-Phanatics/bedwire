@@ -206,7 +206,7 @@ test "a handshake token signed by another key is refused" {
 fn acceptHandshakeWithAllocationFailure(allocator: std.mem.Allocator, token: []const u8, secret: support.Ecdsa.SecretKey) !void {
     var pool = try bedwire.BufferPool.init(allocator, support.limits, .{ .rx_slots = 1, .tx_slots = 1 });
     defer pool.deinit();
-    var client = try support.Session.init(.client, .{ .pool = &pool });
+    var client = try support.open(.client, .{ .pool = &pool });
     defer client.deinit();
     client.state = .authenticating;
     client.received.insert(.server_to_client_handshake);

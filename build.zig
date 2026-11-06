@@ -22,14 +22,10 @@ pub fn build(b: *std.Build) !void {
     const options = b.addOptions();
     options.addOption(usize, "fuzz_iterations", fuzz_iterations);
 
-    const protocol = b.dependency("bedrock_protocol", .{ .target = target, .optimize = optimize });
-    const protocol_module = protocol.module("bedrock_protocol");
-
     const bedwire = b.addModule("bedwire", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "bedrock_protocol", .module = protocol_module }},
     });
     bedwire.addOptions("compression_options", compression_options);
     if (native) |library| bedwire.linkLibrary(library);
@@ -43,7 +39,6 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "bedwire", .module = bedwire },
-            .{ .name = "bedrock_protocol", .module = protocol_module },
             .{ .name = "build_options", .module = options.createModule() },
         },
     }) });
@@ -52,12 +47,10 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
     test_step.dependOn(&b.addRunArtifact(suite).step);
 
-    const bench_protocol = b.dependency("bedrock_protocol", .{ .target = target, .optimize = .fast });
     const bench_bedwire = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = .fast,
-        .imports = &.{.{ .name = "bedrock_protocol", .module = bench_protocol.module("bedrock_protocol") }},
     });
     bench_bedwire.addOptions("compression_options", compression_options);
     if (native) |library| bench_bedwire.linkLibrary(library);

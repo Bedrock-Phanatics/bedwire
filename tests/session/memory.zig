@@ -42,7 +42,7 @@ test "steady-state ingest and encode make no allocator calls" {
 fn initCase(allocator: std.mem.Allocator) !void {
     var pool = try bedwire.BufferPool.init(allocator, support.limits, .{ .rx_slots = 2, .tx_slots = 1 });
     defer pool.deinit();
-    var session = try support.Session.init(.server, .{ .pool = &pool });
+    var session = try support.open(.server, .{ .pool = &pool });
     session.deinit();
 }
 
@@ -71,7 +71,7 @@ test "limits are validated before any buffer is reserved" {
     defer pool.deinit();
 
     const invalid: bedwire.Limits = .{ .max_frame_bytes = 0 };
-    try testing.expectError(error.InvalidLimits, support.Session.init(.server, .{ .limits = invalid, .pool = &pool }));
+    try testing.expectError(error.InvalidLimits, support.open(.server, .{ .limits = invalid, .pool = &pool }));
 }
 
 test "session limits exceeding pool limits are rejected" {
@@ -81,14 +81,14 @@ test "session limits exceeding pool limits are rejected" {
     var excessive = support.limits;
     excessive.max_frame_bytes += 1;
 
-    try testing.expectError(error.IncompatibleLimits, support.Session.init(.server, .{
+    try testing.expectError(error.IncompatibleLimits, support.open(.server, .{
         .limits = excessive,
         .pool = &pool,
     }));
 }
 
 test "contradictory profile features are invalid" {
-    const broken: @import("bedrock_protocol").SessionFeatures = .{ .supports_deflate = false, .supports_snappy = false };
+    const broken: bedwire.SessionFeatures = .{ .supports_deflate = false, .supports_snappy = false };
     try testing.expectError(error.UnsupportedProtocol, broken.validate());
 }
 
@@ -127,14 +127,14 @@ test "session max_frame_bytes is enforced when pool limits are larger" {
     var session_frame_limits = pool_limits;
     session_frame_limits.max_frame_bytes = 256;
 
-    var session = try support.Session.init(.server, .{
+    var session = try support.open(.server, .{
         .pool = &pool,
         .limits = session_frame_limits,
     });
     defer session.deinit();
     session.state = .in_game;
 
-    var client = try support.Session.init(.client, .{
+    var client = try support.open(.client, .{
         .pool = &pool,
         .limits = pool_limits,
     });
@@ -161,7 +161,7 @@ test "session max_frame_bytes is enforced when pool limits are larger" {
     session_batch_limits.max_batch_bytes = 256;
     session_batch_limits.max_packet_bytes = 256;
 
-    var batch_session = try support.Session.init(.server, .{
+    var batch_session = try support.open(.server, .{
         .pool = &pool,
         .limits = session_batch_limits,
     });
@@ -214,9 +214,9 @@ test "borrowed ingest reads uncompressed plaintext in place and still copies the
     defer pool.deinit();
 
     for ([_]bool{ false, true }) |compressed| {
-        var sender = try support.Session.init(.server, .{ .pool = &pool });
+        var sender = try support.open(.server, .{ .pool = &pool });
         defer sender.deinit();
-        var receiver = try support.Session.init(.client, .{ .pool = &pool });
+        var receiver = try support.open(.client, .{ .pool = &pool });
         defer receiver.deinit();
         for ([_]*support.Session{ &sender, &receiver }) |session| {
             try session.compression.negotiate(.snappy, if (compressed) 0 else 4096);
