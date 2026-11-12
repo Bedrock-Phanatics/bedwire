@@ -55,7 +55,8 @@ pub const State = enum {
                 kind == .request_network_settings and
                 session_features.uses_request_network_settings,
 
-            .network_settings => sender == .server and kind == .network_settings,
+            // An outdated client is told so with a PlayStatus in place of the settings.
+            .network_settings => sender == .server and (kind == .network_settings or kind == .play_status),
 
             .authenticating => switch (sender) {
                 .client => kind == .login,
@@ -208,6 +209,8 @@ test "gameplay stages refuse every handshake kind" {
     try testing.expect(State.in_game.permits(modern, .client, null));
     try testing.expect(State.in_game.permits(modern, .server, null));
     try testing.expect(State.in_game.permits(modern, .server, .play_status));
+    try testing.expect(State.network_settings.permits(modern, .server, .play_status));
+    try testing.expect(!State.network_settings.permits(modern, .client, .play_status));
     try testing.expect(!State.in_game.permits(modern, .client, .play_status));
     try testing.expect(State.in_game.permits(modern, .server, .chunk_radius_updated));
     try testing.expect(!State.in_game.permits(modern, .client, .chunk_radius_updated));
