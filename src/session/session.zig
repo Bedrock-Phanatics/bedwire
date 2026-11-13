@@ -4,6 +4,7 @@ const SessionFeatures = @import("features.zig").SessionFeatures;
 
 const Limits = @import("../limits.zig").Limits;
 const batch = @import("../framing/batch.zig");
+const varint = @import("../framing/varint.zig");
 const compression = @import("../compression/algorithm.zig");
 const chain = @import("../auth/chain.zig");
 const oidc = @import("../auth/oidc.zig");
@@ -244,9 +245,12 @@ pub const Session = struct {
         var session_payload: []const u8 = body;
         if (self.crypto) |*crypto| session_payload = try crypto.openFrom(rx_slot.frame, body);
 
+        // A client still logging in sends one packet a batch, so it can't ask for more inflated bytes than one holds
+        const single = self.role == .server and self.state.singlePacketBatch();
+        const room = if (single) @min(rx_slot.batch.len, self.limits.max_packet_bytes +| varint.max_u32_bytes) else rx_slot.batch.len;
         var raw = try self.compression.decodeWithContext(
             session_payload,
-            rx_slot.batch,
+            rx_slot.batch[0..room],
             &rx_slot.history,
             self.limits,
             rx_slot.decoder,

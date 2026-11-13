@@ -310,3 +310,28 @@ test "clients get a smaller frame limit until they are in game" {
     try testing.expectError(error.LimitExceeded, session.ingest(&frame));
     try testing.expectEqual(bedwire.State.disconnected, session.state);
 }
+
+test "a client still logging in can't inflate more than one packet" {
+    const limits: bedwire.Limits = .{ .max_frame_bytes = 4096, .max_batch_bytes = 65536, .max_packet_bytes = 1024, .max_handshake_frame_bytes = 4096 };
+
+    var history: [bedwire.compression.flate.history_len]u8 = undefined;
+    var compressed: [4096]u8 = undefined;
+    const bomb = try bedwire.compression.flate.compress(&@as([60000]u8, @splat(0)), &compressed, &history);
+
+    var pool = try bedwire.BufferPool.init(testing.allocator, limits, .{ .rx_slots = 1, .tx_slots = 1 });
+    defer pool.deinit();
+    @memset(pool.rx_slots[0].batch, 0xaa);
+    var session = try support.open(.server, .{ .pool = &pool, .limits = limits });
+    defer session.deinit();
+    session.state = .authenticating;
+    try session.compression.negotiate(.deflate, 0);
+
+    var frame: [4096]u8 = undefined;
+    frame[0] = 0xfe;
+    frame[1] = @backingInt(Algorithm.deflate);
+    @memcpy(frame[2..][0..bomb.len], bomb);
+
+    try testing.expectError(error.LimitExceeded, session.ingest(frame[0 .. 2 + bomb.len]));
+    try testing.expectEqual(@as(u8, 0xaa), pool.rx_slots[0].batch[limits.max_packet_bytes + 64]);
+    try testing.expectEqual(bedwire.State.disconnected, session.state);
+}
