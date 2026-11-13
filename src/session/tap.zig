@@ -112,6 +112,8 @@ pub const Tap = struct {
         if (self.active_generation != null) return error.InvalidState;
         if (self.current_phase == .encrypted) return error.Opaque;
         const body = try batch.body(payload, self.policy.batch_header, self.limits);
+        if (direction == .client_to_server and self.current_phase != .established and
+            body.len > self.limits.max_handshake_frame_bytes) return error.LimitExceeded;
         const token = try self.pool.acquireRx();
         errdefer self.pool.releaseRx(token);
         const slot = self.pool.getRx(token) orelse return error.InvalidState;
@@ -165,7 +167,7 @@ pub const Tap = struct {
                     _ = try control.decode(control.ServerToClientHandshake, bytes, self.limits);
                     next_phase = .encrypted;
                 },
-                .play_status => if (next_phase == .awaiting_handshake and direction == .server_to_client and self.policy.encryption == .disabled) {
+                .play_status => if (next_phase == .awaiting_handshake and direction == .server_to_client and self.policy.encryption != .required) {
                     _ = try control.decode(control.PlayStatus, bytes, self.limits);
                     next_phase = .established;
                 },

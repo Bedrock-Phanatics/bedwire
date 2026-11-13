@@ -310,3 +310,43 @@ test "tap refuses a client announcing another protocol version" {
     const broken: bedwire.SessionFeatures = .{ .supports_deflate = false, .supports_snappy = false };
     try testing.expectError(error.UnsupportedProtocol, bedwire.Tap.init(.{ .pool = &pool, .features = broken, .protocol_version = 1 }));
 }
+
+test "a tap that allows encryption follows a server that skips it" {
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, bedwire.PoolConfig.observer());
+    defer pool.deinit();
+    var tap = try bedwire.Tap.init(.{ .features = support.modern.features, .protocol_version = support.modern.protocol_version, .pool = &pool, .policy = .{ .encryption = .optional } });
+    defer tap.deinit();
+    var builder: support.Builder = .{};
+    var storage: [support.limits.max_frame_bytes]u8 = undefined;
+
+    var request = try tap.observe(.client_to_server, try plain(&storage, builder.make(support.modern, .request_network_settings)));
+    request.deinit();
+    var settings = try tap.observe(.server_to_client, try plain(&storage, builder.make(support.modern, .network_settings)));
+    settings.deinit();
+    var login = try tap.observe(.client_to_server, try compressed(&storage, builder.make(support.modern, .login), .snappy, 0));
+    login.deinit();
+    var status = try tap.observe(.server_to_client, try compressed(&storage, builder.make(support.modern, .play_status), .snappy, 0));
+    status.deinit();
+    try testing.expectEqual(bedwire.TapPhase.established, tap.phase());
+}
+
+test "a client still logging in is held to the handshake frame size behind a tap" {
+    var limits = support.limits;
+    limits.max_handshake_frame_bytes = 8;
+    var pool = try bedwire.BufferPool.init(testing.allocator, support.limits, bedwire.PoolConfig.observer());
+    defer pool.deinit();
+    var tap = try bedwire.Tap.init(.{ .features = support.modern.features, .protocol_version = support.modern.protocol_version, .pool = &pool, .limits = limits });
+    defer tap.deinit();
+    var builder: support.Builder = .{};
+    var storage: [256]u8 = undefined;
+
+    var request = try tap.observe(.client_to_server, try plain(&storage, builder.make(support.modern, .request_network_settings)));
+    request.deinit();
+    const settings_frame = try plain(&storage, builder.make(support.modern, .network_settings));
+    try testing.expect(settings_frame.len > 8);
+    var settings = try tap.observe(.server_to_client, settings_frame);
+    settings.deinit();
+    try testing.expectError(error.LimitExceeded, tap.observe(.client_to_server, try compressed(&storage, builder.make(support.modern, .login), .snappy, 0)));
+    try testing.expectEqual(bedwire.TapPhase.awaiting_login, tap.phase());
+    try testing.expect(pool.isIdle());
+}
