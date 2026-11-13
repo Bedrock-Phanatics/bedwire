@@ -712,12 +712,14 @@ pub const Session = struct {
             observed.kinds.insert(known);
         }
         observed.count += 1;
-        observed.state = try self.after(observed.state, kind, sender);
+        observed.state = try self.after(observed.state, packet, kind, sender);
     }
 
     // Without encryption the server's PlayStatus ends the login, so packs can follow in the same batch
-    fn after(self: *const Self, state: State, kind: ?PacketKind, sender: Role) !State {
+    fn after(self: *const Self, state: State, packet: []const u8, kind: ?PacketKind, sender: Role) !State {
         if (self.policy.encryption != .disabled or state != .authenticating or kind != .play_status or sender != .server) return state;
+        // A refusal, such as an outdated client, leaves the login where it was
+        if ((try control.decode(control.PlayStatus, packet, self.limits)).status != control.PlayStatus.login_success) return state;
         if (self.role == .server and self.peer_key == null) return error.Unauthenticated;
         return .resource_packs;
     }

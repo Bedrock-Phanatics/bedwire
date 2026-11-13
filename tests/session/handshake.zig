@@ -629,3 +629,25 @@ test "a host-derived server key interoperates with the client handshake" {
     try pair.client.advance(.resource_packs);
     try pair.serverToClientDiscard(&.{build.make(descriptor, .resource_packs_info)});
 }
+
+test "a refusing PlayStatus is sent before the login is accepted and ends nothing" {
+    const descriptor = support.modern;
+    var pair = try support.Pair.init(testing.allocator, descriptor);
+    defer pair.deinit();
+    pair.client.policy = .{ .encryption = .disabled, .batch_header = false };
+    pair.server.policy = pair.client.policy;
+
+    var build: support.Builder = .{};
+    try pair.clientToServerDiscard(&.{build.make(descriptor, .request_network_settings)});
+    try pair.serverToClientDiscard(&.{build.make(descriptor, .network_settings)});
+    try pair.server.negotiateCompression(.snappy, 0);
+    try pair.client.negotiateCompression(.snappy, 0);
+    try pair.clientToServerDiscard(&.{build.make(descriptor, .login)});
+
+    var storage: [16]u8 = undefined;
+    const refused = support.encode(&storage, bedwire.control.PlayStatus{ .status = 1 });
+    try pair.serverToClientDiscard(&.{refused});
+    try testing.expectEqual(bedwire.State.authenticating, pair.server.state);
+    try testing.expectEqual(bedwire.State.authenticating, pair.client.state);
+    try testing.expectError(error.Unauthenticated, pair.server.encode(&.{build.make(descriptor, .play_status)}));
+}
