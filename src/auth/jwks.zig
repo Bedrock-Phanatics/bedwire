@@ -111,18 +111,21 @@ pub const KeySet = struct {
             }
 
             const kid_str = jwt.string(item, "kid") catch return error.InvalidJwks;
-            if (kid_str.len == 0 or kid_str.len > limits.max_kid_bytes or kid_str.len > 64) return error.InvalidJwks;
+            if (kid_str.len == 0) return error.InvalidJwks;
+            // A key of a shape this can't hold is skipped, so the issuer adding one doesn't take the others down
+            if (kid_str.len > limits.max_kid_bytes or kid_str.len > 64) continue;
 
             const n_str = jwt.string(item, "n") catch return error.InvalidJwks;
             var n_bytes: [256]u8 = undefined;
             const n_decoded_len = std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(n_str) catch return error.InvalidJwks;
-            if (n_decoded_len != 256) return error.InvalidJwks;
+            if (n_decoded_len != 256) continue;
             std.base64.url_safe_no_pad.Decoder.decode(&n_bytes, n_str) catch return error.InvalidJwks;
 
             const e_str = jwt.string(item, "e") catch return error.InvalidJwks;
             var e_buf: [4]u8 = undefined;
             const e_decoded_len = std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(e_str) catch return error.InvalidJwks;
-            if (e_decoded_len == 0 or e_decoded_len > 4) return error.InvalidJwks;
+            if (e_decoded_len == 0) return error.InvalidJwks;
+            if (e_decoded_len > 4) continue;
             std.base64.url_safe_no_pad.Decoder.decode(e_buf[0..e_decoded_len], e_str) catch return error.InvalidJwks;
 
             const pub_key = std.crypto.Certificate.rsa.PublicKey.fromBytes(e_buf[0..e_decoded_len], &n_bytes) catch return error.InvalidJwks;
