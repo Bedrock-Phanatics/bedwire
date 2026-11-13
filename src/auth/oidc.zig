@@ -74,7 +74,7 @@ pub fn verifyOidc(
     const xuid = (jwt.string(token.payload.value, "xid") catch null) orelse
         (try jwt.string(token.payload.value, "XUID"));
 
-    _ = std.fmt.parseInt(u64, xuid, 10) catch return error.InvalidClaims;
+    if (!identity.validXuid(xuid)) return error.InvalidClaims;
 
     var uuid_buf: [36]u8 = undefined;
     const uuid_slice: []const u8 = blk: {

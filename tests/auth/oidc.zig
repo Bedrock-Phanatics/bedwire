@@ -95,6 +95,8 @@ test "tokens that fail a claim, key or signature check are refused" {
         .{ .payload = "{\"iss\":\"https://authorization.franchise.minecraft-services.net\"," ++ aud ++ ",\"cpk\":\"$cpk\",\"xname\":\"Alex\",\"exp\":2000,\"xid\":\"1\"}", .expected = error.InvalidClaims },
         .{ .payload = "{" ++ iss ++ ",\"aud\":\"https://other-service.net\",\"cpk\":\"$cpk\",\"xname\":\"Alex\",\"exp\":2000,\"xid\":\"1\"}", .expected = error.InvalidClaims },
         .{ .payload = "{" ++ claims ++ ",\"exp\":2000,\"xid\":\"not-numeric-xuid\"}", .expected = error.InvalidClaims },
+        .{ .payload = "{" ++ claims ++ ",\"exp\":2000,\"xid\":\"+987654321\"}", .expected = error.InvalidClaims },
+        .{ .payload = "{" ++ claims ++ ",\"exp\":2000,\"xid\":\"987_654_321\"}", .expected = error.InvalidClaims },
         .{ .payload = "{" ++ claims ++ ",\"exp\":2000,\"xid\":\"987654321\",\"leguuid\":\"not-a-valid-uuid\"}", .expected = error.InvalidClaims },
         .{ .options = .{ .client_data_seed = 11 }, .expected = error.InvalidSignature },
         .{ .options = .{ .kid = "unknown-kid" }, .expected = error.UnknownKey },

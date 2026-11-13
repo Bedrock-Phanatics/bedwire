@@ -39,13 +39,18 @@ pub fn validateUuid(uuid: []const u8) bool {
     return true;
 }
 
+/// Digits only, since parseInt alone also takes a sign and underscores.
+pub fn validXuid(xuid: []const u8) bool {
+    for (xuid) |byte| if (!std.ascii.isDigit(byte)) return false;
+    _ = std.fmt.parseInt(u64, xuid, 10) catch return false;
+    return true;
+}
+
 pub fn validateAndCreate(allocator: std.mem.Allocator, claims: Claims, limits: Limits) !Identity {
     if (claims.display_name.len == 0 or claims.display_name.len > limits.max_identity_bytes) return error.InvalidClaims;
     if (!validateUuid(claims.uuid)) return error.InvalidClaims;
 
-    if (claims.online) {
-        _ = std.fmt.parseInt(u64, claims.xuid, 10) catch return error.InvalidClaims;
-    }
+    if (claims.online and !validXuid(claims.xuid)) return error.InvalidClaims;
     if (claims.xuid.len > limits.max_identity_bytes) return error.InvalidClaims;
 
     const display_name = try allocator.dupe(u8, claims.display_name);
