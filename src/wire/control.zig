@@ -97,6 +97,17 @@ pub const Header = packed struct(u14) {
     pub fn toWire(self: Header) u32 {
         return @as(u14, @bitCast(self));
     }
+
+    /// Fourteen bits fit two varint bytes, so a longer header is overlong or names no packet.
+    pub fn read(packet: []const u8) ?Header {
+        if (packet.len == 0) return null;
+        const low = packet[0];
+        if (low < 0x80) return @bitCast(@as(u14, low));
+        if (packet.len == 1) return null;
+        const high = packet[1];
+        if (high == 0 or high >= 0x80) return null;
+        return @bitCast(@as(u14, low & 0x7f) | @as(u14, high) << 7);
+    }
 };
 
 pub const Envelope = struct { header: Header, payload: []const u8 };
@@ -656,4 +667,13 @@ test "decoders survive arbitrary bytes" {
             _ = decode(T, input[0..len], test_limits) catch {};
         }
     }
+}
+
+test "the two byte header read agrees with the varint reader" {
+    for (0..256) |low| for (0..256) |high| for (1..4) |len| {
+        const bytes = [_]u8{ @intCast(low), @intCast(high), 1 };
+        const expected: ?Header = if (parse(bytes[0..len])) |envelope| envelope.header else |_| null;
+        try std.testing.expectEqual(expected, Header.read(bytes[0..len]));
+    };
+    try std.testing.expectEqual(@as(?Header, null), Header.read(&.{}));
 }

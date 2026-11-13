@@ -44,7 +44,7 @@ pub const Tap = struct {
                 self.exhausted = true;
                 return null;
             };
-            const header = parseHeader(bytes) catch {
+            const header = control.Header.read(bytes) orelse {
                 self.exhausted = true;
                 return null;
             };
@@ -130,7 +130,7 @@ pub const Tap = struct {
         while (try reader.next()) |bytes| {
             count += 1;
             if (count != 1 and next_phase != .established) return error.InvalidState;
-            const header = try parseHeader(bytes);
+            const header = control.Header.read(bytes) orelse return error.MalformedBatch;
             if (header.sender_subclient != 0 or header.target_subclient != 0) return error.InvalidState;
             const kind = control.PacketKind.fromId(header.packet_id);
             switch (kind orelse continue) {
@@ -198,8 +198,3 @@ pub const Tap = struct {
         return version >= 0 and @as(u32, @intCast(version)) == self.protocol_version;
     }
 };
-
-fn parseHeader(bytes: []const u8) !control.Header {
-    const envelope = control.parse(bytes) catch return error.MalformedBatch;
-    return envelope.header;
-}

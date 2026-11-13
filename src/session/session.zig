@@ -100,7 +100,7 @@ pub const Session = struct {
                 self.exhausted = true;
                 return null;
             };
-            const header = parseHeader(bytes) catch {
+            const header = control.Header.read(bytes) orelse {
                 self.exhausted = true;
                 return null;
             };
@@ -700,7 +700,7 @@ pub const Session = struct {
     }
 
     inline fn step(self: *const Self, observed: *Observed, packet: []const u8, sender: Role) !void {
-        const header = try parseHeader(packet);
+        const header = control.Header.read(packet) orelse return error.MalformedBatch;
         const kind = PacketKind.fromId(header.packet_id);
         try self.check(observed, kind, header, sender);
 
@@ -815,11 +815,6 @@ fn controls(kind: PacketKind) bool {
         => true,
         else => false,
     };
-}
-
-fn parseHeader(packet: []const u8) !control.Header {
-    const envelope = control.parse(packet) catch return error.MalformedBatch;
-    return envelope.header;
 }
 
 pub fn verifyLoginRequest(allocator: std.mem.Allocator, bytes: []const u8, policy: TrustPolicy, session_policy: SessionPolicy, limits: Limits) !identity_mod.Identity {
