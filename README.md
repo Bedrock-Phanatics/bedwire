@@ -147,7 +147,7 @@ The application fetches and refreshes trusted keys. Authentication returns an ow
 
 ## Compression
 
-Sessions support Snappy and raw DEFLATE. The default pure Zig DEFLATE encoder uses level 1; set `PoolConfig.deflate_level` to a value from 1 to 9 to configure it. At level 1, batches up to 512 bytes are written as one fixed-Huffman block instead of going through std's encoder, which is 20 to 50 times cheaper for them but can be up to a third larger. Levels 2 to 9 always use std's encoder. The optional libdeflate backend uses reusable level-3 contexts allocated with the pool. It can improve compression throughput at the cost of additional memory per slot, and is not necessarily faster for every workload.
+Sessions support Snappy and raw DEFLATE. The default pure Zig DEFLATE encoder uses level 1; set `PoolConfig.deflate_level` to a value from 1 to 9 to configure it. Level 1 is Bedwire's own encoder: one hash probe per position, then each block is written stored, with the fixed codes or with its own, whichever is smallest. It is 3 to 10 times faster than std's level 1 and within a few percent of its size on game traffic. Batches up to 512 bytes skip the block choice and always use the fixed codes, which can leave them up to a third larger. Levels 2 to 9 use std's encoder. The optional libdeflate backend uses reusable level-3 contexts allocated with the pool. It can improve compression throughput at the cost of additional memory per slot, and is not necessarily faster for every workload.
 
 ## Testing and benchmarks
 

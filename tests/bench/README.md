@@ -281,3 +281,29 @@ Movement batches come out 12-16% smaller and decode 13-25% faster, at a cost of
 up to 11% on plain encode. In raw codec runs, incompressible 60 KiB inputs went
 from 139 µs to 3 µs. Compressible and text-like inputs were 3-24% faster with
 equal or smaller output.
+
+## 0.8.0 pass
+
+Level 1 of the pure Zig backend no longer goes through std's compressor past 512 bytes. `zig build bench-deflate`
+times the encoder alone on the matrix workloads, best of 15 rounds, and checks every output inflates back. Same
+host as above, std and the new encoder built from the same tree and run alternately, twice each with the same
+result to within 1%.
+
+| Input | std level 1 | New level 1 | Speedup | Compressed bytes |
+| --- | ---: | ---: | ---: | ---: |
+| MovePlayer batch, 1,088 B | 20,236 ns | 5,856 ns | 3.5x | 460 to 463 |
+| MovePlayer batch, 2,482 B | 34,646 ns | 10,270 ns | 3.4x | 964 to 998 |
+| MovePlayer batch, 16,898 B | 136,212 ns | 50,925 ns | 2.7x | 5,865 to 6,306 |
+| LevelChunk model, 262,154 B | 1,511,020 ns | 316,170 ns | 4.8x | 68,986 to 68,982 |
+| Noise, 1,026 B | 31,540 ns | 3,434 ns | 9.2x | 1,031 to 1,031 |
+| Noise, 16,416 B | 179,937 ns | 16,786 ns | 10.7x | 16,435 to 16,431 |
+| Zeros, 16,416 B | 65,581 ns | 3,820 ns | 17x | 67 to 140 |
+
+The encoder keeps one 16-bit position per hash slot and takes the first match it finds, so it gives up some size
+on dense small packets (7.5% on the 16 KiB MovePlayer batch) and nothing on chunk-like data. Blocks that would not
+shrink are stored, which is where the gain on noise comes from. Hashing the positions inside a match was tried and
+dropped: at most 1.6% smaller for 5 to 8% more time.
+
+Through a whole session the matrix shows the same change (`results/windows-x86_64-v080-*.csv`, medians of three
+runs before, one run after): realistic DEFLATE encodes went from 165 to 70 us at 16 KiB and from 1,829 to 401 us at
+256 KiB. Packet headers are also read without the general varint loop now, which is within noise on these rows.

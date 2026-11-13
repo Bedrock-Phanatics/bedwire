@@ -98,6 +98,15 @@ pub fn build(b: *std.Build) !void {
     b.step("bench-scale", "Run the packet group, session scale and resource pack benchmark")
         .dependOn(&b.addRunArtifact(scale_bench).step);
 
+    const deflate_bench = b.addExecutable(.{ .name = "bedwire-deflate", .root_module = b.createModule(.{
+        .root_source_file = b.path("tests/bench/deflate.zig"),
+        .target = target,
+        .optimize = .fast,
+        .imports = &.{.{ .name = "bedwire", .module = bench_bedwire }},
+    }) });
+    b.step("bench-deflate", "Time the pure Zig level 1 DEFLATE encoder and report its ratios")
+        .dependOn(&b.addRunArtifact(deflate_bench).step);
+
     if (b.option([]const u8, "libdeflate-path", "libdeflate source directory for optional codec benchmarks")) |source| {
         const root: std.Build.LazyPath = .{ .cwd_relative = source };
         const libdeflate = native orelse buildLibdeflate(b, target, root);
