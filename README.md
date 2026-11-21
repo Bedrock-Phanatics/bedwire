@@ -143,7 +143,7 @@ Login verification supports Microsoft OIDC/JWKS or legacy certificate chains, ac
 
 ClientData is verified with the identity key and its client-controlled claims are checked before an identity is returned. Absent claims are allowed, but present ones must have the right type and size, and every skin, cape and animation frame must decode to exactly width × height × 4 bytes. Proxies can run the same check on relayed metadata with `bedwire.auth.client_data.validate()`.
 
-The application fetches and refreshes trusted keys. Authentication returns an owned `Identity` that must be released with `identity.deinit()`. Do not treat offline or proxy-issued identities as Microsoft-authenticated.
+The application fetches and refreshes trusted keys. Authentication returns an owned `Identity` that must be released with `identity.deinit()`. Do not treat offline or proxy-issued identities as Microsoft-authenticated. `Identity.playfab_created_s` holds the Unix time from the verified OIDC token's `pfcd` claim, or null when absent or malformed; chain logins never set it.
 
 ## Compression
 

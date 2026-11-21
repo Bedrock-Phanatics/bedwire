@@ -156,3 +156,22 @@ test "signed ClientData claims are validated after the signature" {
     try testing.expectError(error.InvalidClientData, verify(testing.allocator, valid, .{ .client_data = "{\"DeviceOS\":\"Android\"}" }));
     try testing.expectError(error.InvalidJson, verify(testing.allocator, valid, .{ .client_data = "{\"DeviceOS\":7,\"DeviceOS\":1}" }));
 }
+
+test "pfcd becomes the PlayFab creation time only from a verified token" {
+    const tail = ",\"exp\":2000,\"xid\":\"987654321\"";
+    var iso = try verify(testing.allocator, "{" ++ claims ++ tail ++ ",\"pfcd\":\"2021-03-09T20:36:00.067Z\"}", .{});
+    defer iso.deinit();
+    try testing.expectEqual(@as(?i64, 1_615_322_160), iso.playfab_created_s);
+
+    var seconds = try verify(testing.allocator, "{" ++ claims ++ tail ++ ",\"pfcd\":1615322160}", .{});
+    defer seconds.deinit();
+    try testing.expectEqual(@as(?i64, 1_615_322_160), seconds.playfab_created_s);
+
+    inline for ([_][]const u8{ "", ",\"pfcd\":\"yesterday\"", ",\"pfcd\":true", ",\"pfcd\":null", ",\"pfcd\":-4" }) |claim| {
+        var id = try verify(testing.allocator, "{" ++ claims ++ tail ++ claim ++ "}", .{});
+        defer id.deinit();
+        try testing.expectEqual(@as(?i64, null), id.playfab_created_s);
+    }
+
+    try testing.expectError(error.InvalidSignature, verify(testing.allocator, "{" ++ claims ++ tail ++ ",\"pfcd\":\"2021-03-09T20:36:00Z\"}", .{ .tamper = true }));
+}

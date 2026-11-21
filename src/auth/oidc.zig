@@ -93,6 +93,8 @@ pub fn verifyOidc(
         .xuid = xuid,
         .key = client_key,
         .online = true,
+        // Read after the signature check, and a malformed value just leaves the date unknown
+        .playfab_created_s = if (token.payload.value.object.get("pfcd")) |pfcd| identity.parseTimestamp(pfcd) else null,
     }, limits);
 }
 
